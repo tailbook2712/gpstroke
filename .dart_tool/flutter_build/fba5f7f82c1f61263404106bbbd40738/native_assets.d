@@ -1,1 +1,0 @@
- /Users/tailbook_etu2712/development/projects/walk_tracker_app/.dart_tool/flutter_build/fba5f7f82c1f61263404106bbbd40738/native_assets.yaml: 
