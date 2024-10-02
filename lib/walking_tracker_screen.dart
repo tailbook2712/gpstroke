@@ -25,6 +25,8 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
   // しきい値 (距離・速度)
   final double distanceThreshold = 3.0; // 3メートル以上動いたら「移動中」とみなす
   final double speedThreshold = 0.5;    // 速度が0.5 m/s 以上なら移動と判定
+  final int smoothingWindow = 3;        // 平滑化のためのウィンドウサイズ
+  final double noiseThreshold = 2.0;    // ノイズとみなす移動距離
 
   @override
   void initState() {
@@ -96,6 +98,11 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
     _accelerometerSubscription?.cancel(); // 加速度センサーの停止
   }
 
+  // ノイズ除去: 小さすぎる距離移動は無視
+  bool _isNoise(double distance) {
+    return distance < noiseThreshold;
+  }
+
   // ユーザーが移動中かどうかを判定する
   void _checkIfUserIsMoving(Position newPosition) {
     if (_previousPosition != null) {
@@ -107,21 +114,31 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
         newPosition.longitude,
       );
 
-      // 移動履歴の保存
+      // ノイズ（小さな移動）を無視
+      if (_isNoise(distance)) {
+        return; // ノイズとして無視
+      }
+
+      // 平滑化: 過去の位置データと平均して急激な変化を抑える
       _positions.add(newPosition);
+      if (_positions.length > smoothingWindow) {
+        _positions.removeAt(0); // ウィンドウサイズを超えたら古いデータを削除
+      }
 
-      // 少なくとも3つのデータがあるとき過去の履歴を基に判定
-      if (_positions.length >= 3) {
-        double totalDistance = 0;
-        for (int i = _positions.length - 3; i < _positions.length - 1; i++) {
-          totalDistance += Geolocator.distanceBetween(
-            _positions[i].latitude, _positions[i].longitude,
-            _positions[i + 1].latitude, _positions[i + 1].longitude,
-          );
-        }
+      // 平均位置を計算
+      double avgLatitude = _positions.map((pos) => pos.latitude).reduce((a, b) => a + b) / _positions.length;
+      double avgLongitude = _positions.map((pos) => pos.longitude).reduce((a, b) => a + b) / _positions.length;
 
-        // 移動距離と速度、そして加速度センサーの判定を組み合わせる
-        if ((totalDistance > distanceThreshold && newPosition.speed > speedThreshold) || _accelerometerMoving) {
+      // 平均位置から移動距離を再計算
+      double smoothedDistance = Geolocator.distanceBetween(
+        avgLatitude, avgLongitude,
+        newPosition.latitude, newPosition.longitude,
+      );
+
+      // 移動履歴の保存
+      if (_positions.length >= smoothingWindow) {
+        // 移動距離と速度、加速度センサーの判定を組み合わせる
+        if ((smoothedDistance > distanceThreshold && newPosition.speed > speedThreshold) || _accelerometerMoving) {
           setState(() {
             _isMoving = true;
           });
