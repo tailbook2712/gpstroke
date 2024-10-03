@@ -3,6 +3,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:sensors_plus/sensors_plus.dart'; // 加速度センサー用
 import 'package:flutter_background_geolocation/flutter_background_geolocation.dart'
     as bg; // flutter_background_geolocation のインポート
+import 'package:connectivity_plus/connectivity_plus.dart'; // Wi-Fi接続確認用
 import 'dart:async';
 import 'dart:math';
 
@@ -19,16 +20,24 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
   bool _isTracking = false; // 追跡中かどうかのフラグ
   Timer? _timer;
 
-  // 加速度センサーの値を保持
-  double _accelerationThreshold = 0.5; // より敏感に移動を検出
+  // 加速度センサーとジャイロスコープの変数
+  double _currentVelocity = 0.0; // 現在の速度
+  double _currentDirection = 0.0; // 現在の方向（ラジアン単位）
+  double _previousX = 0.0; // 前のX座標
+  double _previousY = 0.0; // 前のY座標
+  double _deltaTime = 0.1; // 時間間隔
+  double _accelerationThreshold = 1.0; // 加速度がこれ以上なら移動中とみなす
   bool _accelerometerMoving = false; // 加速度センサーの結果
   StreamSubscription<AccelerometerEvent>? _accelerometerSubscription;
+  StreamSubscription<GyroscopeEvent>? _gyroscopeSubscription;
 
   // しきい値 (距離・速度)
-  final double distanceThreshold = 2.0; // より敏感に移動を検出
-  final double speedThreshold = 0.5; // 速度が0.5 m/s 以上なら移動と判定
+  final double distanceThreshold = 3.0; // 3メートル以上動いたら「移動中」とみなす
+  final double speedThreshold = 0.3; // 速度が0.3 m/s 以上なら移動と判定
   final int smoothingWindow = 3; // 平滑化のためのウィンドウサイズ
-  final double noiseThreshold = 1.0; // より敏感にノイズを無視
+  final double noiseThreshold = 2.0; // ノイズとみなす移動距離
+
+  bool _isIndoors = false; // 室内判定のフラグ
 
   @override
   void initState() {
@@ -40,7 +49,7 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
   // flutter_background_geolocationのデータを使ってPositionオブジェクトを作成
   void _initializeBackgroundGeolocation() {
     bg.BackgroundGeolocation.onLocation((bg.Location location) {
-      // 必要なパラメータをすべて指定してPositionオブジェクトを作成
+      // 位置情報が更新された場合に呼び出される
       _checkIfUserIsMoving(Position(
         latitude: location.coords.latitude,
         longitude: location.coords.longitude,
@@ -57,7 +66,7 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
 
     bg.BackgroundGeolocation.ready(bg.Config(
       desiredAccuracy: bg.Config.DESIRED_ACCURACY_HIGH,
-      distanceFilter: 10.0, // 10mごとに更新
+      distanceFilter: 5.0, // 5メートルごとに更新 (より細かい更新)
       stopOnTerminate: false,
       startOnBoot: true,
     )).then((bg.State state) {
@@ -71,18 +80,54 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
   void _startAccelerometerTracking() {
     // すでに購読があればキャンセルしてリッスンし直す
     _accelerometerSubscription?.cancel();
+    _gyroscopeSubscription?.cancel();
 
+    // 加速度センサー
     _accelerometerSubscription = accelerometerEvents.listen((AccelerometerEvent event) {
-      // 加速度の大きさを計算
       double acceleration = sqrt(event.x * event.x + event.y * event.y + event.z * event.z);
-
-      // 一定の加速度以上なら移動中とみなす
-      if (acceleration > _accelerationThreshold) {
-        _accelerometerMoving = true;
-      } else {
-        _accelerometerMoving = false;
-      }
+      _currentVelocity += acceleration * _deltaTime; // 速度を更新
+      _accelerometerMoving = acceleration > _accelerationThreshold; // 一定の加速度以上なら移動中
     });
+
+    // ジャイロスコープ
+    _gyroscopeSubscription = gyroscopeEvents.listen((GyroscopeEvent event) {
+      double deltaHeading = event.z; // Z軸の回転が方向の変化
+      _currentDirection += deltaHeading * _deltaTime; // 方向を更新
+    });
+  }
+
+  // Wi-Fi接続状況を確認して室内かどうかを判断
+  Future<bool> _isConnectedToWiFi() async {
+    var connectivityResult = await Connectivity().checkConnectivity();
+    return connectivityResult == ConnectivityResult.wifi;
+  }
+
+  // GPSの精度やWi-Fi接続状況を使って室内かどうかを判定する
+  Future<void> _checkIndoorStatus(Position newPosition) async {
+    bool isWiFiConnected = await _isConnectedToWiFi();
+    bool isGPSAccurate = newPosition.accuracy < 30.0; // GPS精度が30m以下なら正確
+
+    // Wi-Fiに接続しているか、GPSが不正確であれば室内と判定
+    if (isWiFiConnected || !isGPSAccurate) {
+      _isIndoors = true;
+      print('室内にいる可能性があります。');
+    } else {
+      _isIndoors = false;
+      print('室外にいる可能性があります。');
+    }
+  }
+
+  // 室内にいる場合のデッドレコニングを使った移動軌跡の補完
+  void _useDeadReckoning() {
+    // 移動距離を推定
+    double deltaX = _currentVelocity * cos(_currentDirection) * _deltaTime;
+    double deltaY = _currentVelocity * sin(_currentDirection) * _deltaTime;
+
+    // 座標を更新
+    _previousX += deltaX;
+    _previousY += deltaY;
+
+    print('デッドレコニングによる推定位置 X: $_previousX, Y: $_previousY');
   }
 
   // 位置情報の許可をリクエストし、バックグラウンドで位置情報を追跡
@@ -131,8 +176,14 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
   }
 
   // ユーザーが移動中かどうかを判定する
-  void _checkIfUserIsMoving(Position newPosition) {
-    if (_previousPosition != null) {
+  Future<void> _checkIfUserIsMoving(Position newPosition) async {
+    // 室内かどうかの確認
+    await _checkIndoorStatus(newPosition);
+
+    if (_isIndoors) {
+      // 室内の場合はデッドレコニングで位置を補完
+      _useDeadReckoning();
+    } else if (_previousPosition != null) {
       // 距離を計算
       double distance = Geolocator.distanceBetween(
         _previousPosition!.latitude,
@@ -143,7 +194,8 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
 
       // ノイズ（小さな移動）を無視
       if (_isNoise(distance)) {
-        return; // ノイズとして無視
+        print('ノイズとして無視されました');
+        return;
       }
 
       // 平滑化: 過去の位置データと平均して急激な変化を抑える
@@ -152,29 +204,21 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
         _positions.removeAt(0); // ウィンドウサイズを超えたら古いデータを削除
       }
 
-      // 平均位置を計算
-      double avgLatitude = _positions.map((pos) => pos.latitude).reduce((a, b) => a + b) / _positions.length;
-      double avgLongitude = _positions.map((pos) => pos.longitude).reduce((a, b) => a + b) / _positions.length;
-
-      // 平均位置から移動距離を再計算
-      double smoothedDistance = Geolocator.distanceBetween(
-        avgLatitude, avgLongitude,
-        newPosition.latitude, newPosition.longitude,
-      );
-
-      // 移動履歴の保存
-      if (_positions.length >= smoothingWindow) {
-        // 移動距離と速度、加速度センサーの判定を組み合わせる
-        if ((smoothedDistance > distanceThreshold && newPosition.speed > speedThreshold) || _accelerometerMoving) {
-          setState(() {
-            _isMoving = true;
-          });
-        } else {
-          setState(() {
-            _isMoving = false;
-          });
-        }
+      // 移動距離と速度、加速度センサーの判定を両方満たしている場合に移動中と判定
+      if (newPosition.speed > speedThreshold && _accelerometerMoving) {
+        setState(() {
+          _isMoving = true;
+          _currentPosition = newPosition; // 位置情報を更新
+          print('移動中: 距離 = $distance, 速度 = ${newPosition.speed}');
+        });
+      } else {
+        setState(() {
+          _isMoving = false;
+          print('停止中');
+        });
       }
+    } else {
+      _currentPosition = newPosition;
     }
 
     _previousPosition = newPosition;
@@ -183,6 +227,7 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
   @override
   void dispose() {
     _accelerometerSubscription?.cancel(); // 加速度センサーのストリームを停止
+    _gyroscopeSubscription?.cancel(); // ジャイロスコープのストリームを停止
     bg.BackgroundGeolocation.stop(); // flutter_background_geolocation の停止
     super.dispose();
   }
