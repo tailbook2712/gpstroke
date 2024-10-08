@@ -3,7 +3,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:flutter_background_geolocation/flutter_background_geolocation.dart' as bg;
 import 'dart:async';
 import 'package:walk_tracker_app/walking_history_screen.dart';
-import 'database_helper.dart'; // データベースヘルパーのインポート
+import 'database_helper.dart';
 
 class WalkingTrackerScreen extends StatefulWidget {
   @override
@@ -17,12 +17,9 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
   bool _isMoving = false; // 移動中かどうかのフラグ
   bool _isTracking = false; // 追跡中かどうかのフラグ
   bool _isRecording = false; // 記録中かどうかのフラグ
-  Timer? _stopTimer; // 停止検知用タイマー
-  final int stopDetectionInterval = 5; // 停止検知の秒数
 
   final double distanceThreshold = 3.0; // 3メートル以上動いたら「移動中」とみなす
   final double speedThreshold = 0.3; // 速度が0.3 m/s 以上なら移動と判定
-  final int smoothingWindow = 3; // 平滑化のためのウィンドウサイズ
   final double noiseThreshold = 2.0; // ノイズとみなす移動距離
 
   late DatabaseHelper _dbHelper;
@@ -32,7 +29,42 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
   void initState() {
     super.initState();
     _dbHelper = DatabaseHelper(); // データベースヘルパーを初期化
+    _checkPermissionAndStartTracking(); // 位置情報の許可をリクエストして追跡を開始
     _initializeBackgroundGeolocation(); // flutter_background_geolocation の初期化
+  }
+
+  // 位置情報の許可をリクエストし、位置情報を取得する
+  Future<void> _checkPermissionAndStartTracking() async {
+    LocationPermission permission;
+
+    // 位置情報の許可を確認
+    permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied) {
+      // 許可が拒否されている場合、許可をリクエスト
+      permission = await Geolocator.requestPermission();
+      if (permission == LocationPermission.denied) {
+        print("位置情報の許可が拒否されました。");
+        return;
+      }
+    }
+
+    // 許可が永久に拒否されている場合
+    if (permission == LocationPermission.deniedForever) {
+      print("位置情報の許可が永久に拒否されています。設定から変更してください。");
+      return;
+    }
+
+    // 許可が確認できたら位置情報の追跡を開始
+    _startTracking();
+  }
+
+  // 位置情報の追跡を開始する関数
+  void _startTracking() {
+    setState(() {
+      _isTracking = true;
+    });
+
+    bg.BackgroundGeolocation.start(); // flutter_background_geolocation の追跡を開始
   }
 
   // 記録開始ボタン押下時の処理
@@ -43,7 +75,6 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
     });
     // 新しいグループIDを取得
     _currentGroupId = await _dbHelper.getNewGroupId();
-    print('記録を開始しました');
   }
 
   // 記録停止ボタン押下時の処理
@@ -61,7 +92,6 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
         position.timestamp!.toIso8601String(),
       );
     }
-    print('記録を停止しました');
   }
 
   // flutter_background_geolocationのデータを使ってPositionオブジェクトを作成
@@ -103,27 +133,25 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
         newPosition.longitude,
       );
 
+      // ノイズとみなす移動距離の場合は無視
       if (_isNoise(distance)) {
-        print('ノイズとして無視されました');
         return;
       }
 
       // 記録中であれば座標を保存
       if (_isRecording) {
         _positions.add(newPosition);
-        print('座標が記録されました: ${newPosition.latitude}, ${newPosition.longitude}');
       }
-
+      
+      // 移動中かどうかの判定
       if (newPosition.speed > speedThreshold) {
         setState(() {
           _isMoving = true;
           _currentPosition = newPosition;
-          print('移動中: 距離 = $distance, 速度 = ${newPosition.speed}');
         });
       } else {
         setState(() {
           _isMoving = false;
-          print('停止中');
         });
       }
     } else {
@@ -140,7 +168,6 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
 
   @override
   void dispose() {
-    _stopTimer?.cancel(); // 停止検知のタイマーを停止
     bg.BackgroundGeolocation.stop(); // flutter_background_geolocation の停止
     super.dispose();
   }
