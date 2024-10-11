@@ -3,8 +3,9 @@ import 'package:geolocator/geolocator.dart';
 
 class PolylinePainter extends CustomPainter {
   final List<Position> positions;
+  final double minLat, maxLat, minLon, maxLon; // 指定範囲を追加
 
-  PolylinePainter({required this.positions});
+  PolylinePainter({required this.positions, required this.minLat, required this.maxLat, required this.minLon, required this.maxLon});
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -15,12 +16,7 @@ class PolylinePainter extends CustomPainter {
       ..strokeWidth = 4.0
       ..style = PaintingStyle.stroke;
 
-    // 画面サイズに合わせて座標をスケール変換
-    double minLat = positions.map((p) => p.latitude).reduce((a, b) => a < b ? a : b);
-    double maxLat = positions.map((p) => p.latitude).reduce((a, b) => a > b ? a : b);
-    double minLon = positions.map((p) => p.longitude).reduce((a, b) => a < b ? a : b);
-    double maxLon = positions.map((p) => p.longitude).reduce((a, b) => a > b ? a : b);
-
+    // 緯度・経度をスケール変換するための範囲
     double latRange = maxLat - minLat == 0 ? 1 : maxLat - minLat; // 0除算を避ける
     double lonRange = maxLon - minLon == 0 ? 1 : maxLon - minLon;
 
@@ -39,6 +35,6 @@ class PolylinePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant CustomPainter oldDelegate) {
-    return true;
+    return true; // データが変更された場合に再描画
   }
 }
