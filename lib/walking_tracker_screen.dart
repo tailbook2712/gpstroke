@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:flutter_background_geolocation/flutter_background_geolocation.dart' as bg;
+import 'package:flutter_background_geolocation/flutter_background_geolocation.dart'
+    as bg;
+import 'package:walk_tracker_app/polyline_history_screen.dart';
+import 'package:walk_tracker_app/polyline_screen.dart';
 import 'dart:async';
 import 'package:walk_tracker_app/walking_history_screen.dart';
 import 'database_helper.dart';
@@ -82,7 +85,7 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
     setState(() {
       _isRecording = false;
     });
-    
+
     // 記録された位置情報を保存
     for (var position in _positions) {
       await _dbHelper.insertPosition(
@@ -142,7 +145,7 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
       if (_isRecording) {
         _positions.add(newPosition);
       }
-      
+
       // 移動中かどうかの判定
       if (newPosition.speed > speedThreshold) {
         setState(() {
@@ -199,7 +202,8 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
                   itemCount: _positions.length,
                   itemBuilder: (context, index) {
                     return ListTile(
-                      title: Text("位置 ${index + 1}: ${_positions[index].latitude}, ${_positions[index].longitude}"),
+                      title: Text(
+                          "位置 ${index + 1}: ${_positions[index].latitude}, ${_positions[index].longitude}"),
                     );
                   },
                 ),
@@ -219,10 +223,23 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
               onPressed: () {
                 Navigator.push(
                   context,
-                  MaterialPageRoute(builder: (context) => WalkingHistoryScreen()),
+                  MaterialPageRoute(
+                      builder: (context) => WalkingHistoryScreen()),
                 );
               },
               child: Text('記録履歴を見る'),
+            ),
+            SizedBox(height: 20),
+            ElevatedButton(
+              onPressed: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (contect) => PolylineHistoryScreen(),
+                  ),
+                );
+              },
+              child: Text('軌跡を見る'),
             ),
           ],
         ),
