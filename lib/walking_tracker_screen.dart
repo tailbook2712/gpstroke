@@ -1,12 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:flutter_background_geolocation/flutter_background_geolocation.dart'
-    as bg;
+import 'package:flutter_background_geolocation/flutter_background_geolocation.dart' as bg;
 import 'package:walk_tracker_app/polyline_history_screen.dart';
-import 'package:walk_tracker_app/polyline_screen.dart';
 import 'dart:async';
 import 'package:walk_tracker_app/walking_history_screen.dart';
 import 'database_helper.dart';
+import 'firestore_service.dart'; // Firestoreサービスをインポート
 
 class WalkingTrackerScreen extends StatefulWidget {
   @override
@@ -26,12 +25,14 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
   final double noiseThreshold = 2.0; // ノイズとみなす移動距離
 
   late DatabaseHelper _dbHelper;
+  late FirestoreService _firestoreService; // Firestoreサービスのインスタンス
   int _currentGroupId = 0; // グループIDを管理
 
   @override
   void initState() {
     super.initState();
     _dbHelper = DatabaseHelper(); // データベースヘルパーを初期化
+    _firestoreService = FirestoreService(); // Firestoreサービスを初期化
     _checkPermissionAndStartTracking(); // 位置情報の許可をリクエストして追跡を開始
     _initializeBackgroundGeolocation(); // flutter_background_geolocation の初期化
   }
@@ -86,9 +87,18 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
       _isRecording = false;
     });
 
-    // 記録された位置情報を保存
+    // 記録された位置情報をローカルデータベースとFirestoreに保存
     for (var position in _positions) {
+      // ローカルDBに保存
       await _dbHelper.insertPosition(
+        _currentGroupId,
+        position.latitude,
+        position.longitude,
+        position.timestamp!.toIso8601String(),
+      );
+      
+      // Firestoreにも保存
+      await _firestoreService.savePosition(
         _currentGroupId,
         position.latitude,
         position.longitude,
@@ -99,20 +109,26 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
 
   // flutter_background_geolocationのデータを使ってPositionオブジェクトを作成
   void _initializeBackgroundGeolocation() {
-    bg.BackgroundGeolocation.onLocation((bg.Location location) {
-      _checkIfUserIsMoving(Position(
-        latitude: location.coords.latitude,
-        longitude: location.coords.longitude,
-        timestamp: DateTime.now(),
-        accuracy: location.coords.accuracy,
-        altitude: location.coords.altitude,
-        altitudeAccuracy: location.coords.altitudeAccuracy ?? 0.0,
-        heading: location.coords.heading,
-        speed: location.coords.speed,
-        speedAccuracy: location.coords.speedAccuracy ?? 0.0,
-        headingAccuracy: location.coords.headingAccuracy ?? 0.0,
-      ));
-    });
+    bg.BackgroundGeolocation.onLocation(
+      (bg.Location location) {
+        _checkIfUserIsMoving(Position(
+          latitude: location.coords.latitude,
+          longitude: location.coords.longitude,
+          timestamp: DateTime.now(),
+          accuracy: location.coords.accuracy,
+          altitude: location.coords.altitude,
+          altitudeAccuracy: location.coords.altitudeAccuracy ?? 0.0,
+          heading: location.coords.heading,
+          speed: location.coords.speed,
+          speedAccuracy: location.coords.speedAccuracy ?? 0.0,
+          headingAccuracy: location.coords.headingAccuracy ?? 0.0,
+        ));
+      },
+      (bg.LocationError error) {
+        // エラー時のハンドリング
+        print("[onLocation] ERROR: ${error.code}, ${error.message}");
+      }
+    );
 
     bg.BackgroundGeolocation.ready(bg.Config(
       desiredAccuracy: bg.Config.DESIRED_ACCURACY_HIGH,

@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "36151156004",
+    "project_id": "walktrackerapp-9e00e",
+    "storage_bucket": "walktrackerapp-9e00e.appspot.com"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:36151156004:android:7fa5bfef935ba4514f27b1",
+        "android_client_info": {
+          "package_name": "com.example.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyC6DJzKfyXr3Fo7bRZbVC8gImRV_D0w9LM"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
