@@ -125,16 +125,16 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
         ));
       },
       (bg.LocationError error) {
-        // エラー時のハンドリング
         print("[onLocation] ERROR: ${error.code}, ${error.message}");
       }
     );
 
     bg.BackgroundGeolocation.ready(bg.Config(
       desiredAccuracy: bg.Config.DESIRED_ACCURACY_HIGH,
-      distanceFilter: 5.0, // 5メートルごとに更新
-      stopOnTerminate: false,
-      startOnBoot: true,
+      distanceFilter: 5.0, // 更新間隔
+      stopOnTerminate: false, // アプリ終了時も動作を継続
+      startOnBoot: true, // 再起動後も位置情報追跡を継続
+      enableHeadless: true, // バックグラウンドでの動作
     )).then((bg.State state) {
       if (!state.enabled) {
         bg.BackgroundGeolocation.start();
