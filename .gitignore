@@ -27,7 +27,6 @@ ios/Flutter/Flutter.podspec
 ios/Runner.xcworkspace/
 ios/Flutter/App.framework
 ios/Flutter/Flutter.podspec.lock
-ios/Runner/AppDelegate.swift
 
 # Android関連
 android/.gradle/
@@ -35,7 +34,6 @@ android/app/build/
 android/.idea/
 android/local.properties
 android/app/app.iml
-android/app/src/main/AndroidManifest.xml
 
 # Firebase関連
 firebase_app_id_file.json
@@ -49,7 +47,3 @@ firebase_app_id_file.json
 # Web関連
 web/.dart_tool/
 web/build/
-
-# 環境変数ファイルを無視する
-.env
-lib/env.dart
