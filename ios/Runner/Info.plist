@@ -29,11 +29,11 @@
 
     <!-- 位置情報に関する設定 -->
     <key>NSLocationWhenInUseUsageDescription</key>
-    <string>位置情報を使用します。</string>
+    <string>アプリが位置情報を使用します．</string>
     <key>NSLocationAlwaysUsageDescription</key>
-    <string>バックグラウンドで位置情報を使用します。</string>
+    <string>アプリがバックグラウンドで位置情報を使用します．移動軌跡を記録します．</string>
     <key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
-    <string>アプリがフォアグラウンドとバックグラウンドの両方で位置情報を使用します。</string>
+    <string>アプリがフォアグラウンドとバックグラウンドの両方で位置情報を使用し，移動軌跡を記録します．</string>
 
     <!-- バックグラウンドモード -->
     <key>UIBackgroundModes</key>
@@ -41,10 +41,19 @@
         <string>location</string>
     </array>
 
-    <!-- 動作データ（加速度センサー）の使用に関する説明を追加 -->
+    <!-- 加速度センサーの使用 -->
     <key>NSMotionUsageDescription</key>
-    <string>アプリが歩行データを取得するためにモーションデータを使用します。</string>
-	<key>CADisableMinimumFrameDurationOnPhone</key>
+    <string>アプリがモーションデータを使用して歩行軌跡を記録します。</string>
+
+    <!-- Optional: 一時的に正確な位置情報を要求するための説明（iOS 14以降） -->
+    <key>NSLocationTemporaryUsageDescriptionDictionary</key>
+    <dict>
+        <key>PreciseLocation</key>
+        <string>アプリが移動の正確な位置を記録し、ルートを表示するために必要です。</string>
+    </dict>
+
+	<!-- その他の設定 -->
+    <key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
