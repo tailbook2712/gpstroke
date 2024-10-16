@@ -60,6 +60,11 @@ class DatabaseHelper {
       },
     );
   }
+  // すべての位置情報を取得
+  Future<List<Map<String, dynamic>>> getAllPositions() async {
+    Database db = await database;
+    return await db.query(table);
+  }
 
   // 新しい位置情報グループIDを取得
   Future<int> getNewGroupId() async {
@@ -101,5 +106,11 @@ class DatabaseHelper {
         headingAccuracy: 0.0,
       );
     }).toList();
+  }
+  
+  // 指定したグループを削除するメソッド
+  Future<void> deletePositionGroup(int groupId) async {
+    Database db = await database;
+    await db.delete(table, where: '$columnGroupId = ?', whereArgs: [groupId]);
   }
 }

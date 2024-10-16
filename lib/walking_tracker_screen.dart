@@ -1,11 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:flutter_background_geolocation/flutter_background_geolocation.dart' as bg;
+import 'package:walk_tracker_app/art_display_screen.dart';
 import 'package:walk_tracker_app/polyline_history_screen.dart';
 import 'dart:async';
 import 'package:walk_tracker_app/walking_history_screen.dart';
 import 'database_helper.dart';
-import 'firestore_service.dart'; // Firestoreサービスをインポート
+import 'firestore_service.dart';
 
 class WalkingTrackerScreen extends StatefulWidget {
   @override
@@ -35,6 +36,7 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
     _firestoreService = FirestoreService(); // Firestoreサービスを初期化
     _checkPermissionAndStartTracking(); // 位置情報の許可をリクエストして追跡を開始
     _initializeBackgroundGeolocation(); // flutter_background_geolocation の初期化
+    _restoreDataFromFirestore(); // Firestoreからデータを復元
   }
 
   // 位置情報の許可をリクエストし、位置情報を取得する
@@ -87,24 +89,33 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
       _isRecording = false;
     });
 
-    // 記録された位置情報をローカルデータベースとFirestoreに保存
+    // 位置情報をマップ形式で変換して保存
+    List<Map<String, dynamic>> positionData = _positions.map((position) {
+      return {
+        'latitude': position.latitude,
+        'longitude': position.longitude,
+        'timestamp': position.timestamp!.toIso8601String(),
+      };
+    }).toList();
+
+    // ローカルDBに保存
     for (var position in _positions) {
-      // ローカルDBに保存
       await _dbHelper.insertPosition(
         _currentGroupId,
         position.latitude,
         position.longitude,
         position.timestamp!.toIso8601String(),
       );
-      
-      // Firestoreにも保存
-      await _firestoreService.savePosition(
-        _currentGroupId,
-        position.latitude,
-        position.longitude,
-        position.timestamp!.toIso8601String(),
-      );
     }
+
+    // Firestoreにもグループとして保存
+    await _firestoreService.savePositionGroup(_currentGroupId, positionData);
+  }
+
+  // 記録されたグループを削除
+  Future<void> _deletePositionGroup(int groupId) async {
+    await _dbHelper.deletePositionGroup(groupId);
+    await _firestoreService.deletePositionGroup(groupId);
   }
 
   // flutter_background_geolocationのデータを使ってPositionオブジェクトを作成
@@ -185,6 +196,25 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
     return distance < noiseThreshold;
   }
 
+  // Firestoreからデータを復元
+  Future<void> _restoreDataFromFirestore() async {
+    try {
+      List<Map<String, dynamic>> allPositions = await _firestoreService.getAllPositions();
+      for (var position in allPositions) {
+        // ローカルデータベースに保存
+        await _dbHelper.insertPosition(
+          position['groupId'],
+          position['latitude'],
+          position['longitude'],
+          position['timestamp'],
+        );
+      }
+      print("Firestoreからローカルデータベースにデータを復元しました");
+    } catch (e) {
+      print("データの復元に失敗しました: $e");
+    }
+  }
+
   @override
   void dispose() {
     bg.BackgroundGeolocation.stop(); // flutter_background_geolocation の停止
@@ -226,12 +256,12 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
               ),
             SizedBox(height: 20),
             ElevatedButton(
-              onPressed: _isRecording ? null : _startRecording, // 記録中は無効
+              onPressed: _isRecording ? null : _startRecording, // 記録開始
               child: Text('記録開始'),
             ),
             SizedBox(height: 10),
             ElevatedButton(
-              onPressed: _isRecording ? _stopRecording : null, // 記録停止時は無効
+              onPressed: _isRecording ? _stopRecording : null, // 記録停止
               child: Text('記録停止'),
             ),
             SizedBox(height: 20),
@@ -240,7 +270,8 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
                 Navigator.push(
                   context,
                   MaterialPageRoute(
-                      builder: (context) => WalkingHistoryScreen()),
+                      builder: (context) => WalkingHistoryScreen()
+                  ),
                 );
               },
               child: Text('記録履歴を見る'),
@@ -251,11 +282,22 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
                 Navigator.push(
                   context,
                   MaterialPageRoute(
-                    builder: (contect) => PolylineHistoryScreen(),
+                      builder: (context) => PolylineHistoryScreen()
                   ),
                 );
               },
-              child: Text('軌跡を見る'),
+              child: Text('軌跡履歴を見る'),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                      builder: (context) => ArtDisplayScreen()
+                  ),
+                );
+              },
+              child: Text('アートを生成'),
             ),
           ],
         ),
