@@ -47,5 +47,3 @@ firebase_app_id_file.json
 # Web関連
 web/.dart_tool/
 web/build/
-
-.env

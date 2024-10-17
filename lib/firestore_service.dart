@@ -1,56 +1,60 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 class FirestoreService {
-  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  final FirebaseFirestore _db = FirebaseFirestore.instance;
 
-  // 位置情報をFirestoreに保存
-  Future<void> savePosition(
-      int groupId, double latitude, double longitude, String timestamp) async {
+  // 位置情報グループをFirestoreに保存する
+  Future<void> savePositionGroup(int groupId, List<Map<String, dynamic>> positions) async {
     try {
-      // 位置情報グループコレクションの参照
-      DocumentReference groupRef = _firestore
-          .collection('location_groups') // 位置情報グループコレクション
-          .doc(groupId.toString()); // グループIDでドキュメントを取得
-
-      // グループが存在しない場合は作成
-      await groupRef.set({'created_at': FieldValue.serverTimestamp()},
-          SetOptions(merge: true));
-
-      // 位置情報をサブコレクションに追加
-      await groupRef.collection('positions').add({
-        'latitude': latitude,
-        'longitude': longitude,
-        'timestamp': timestamp,
-      });
+      for (var position in positions) {
+        await _db.collection('walking_positions').add({
+          'groupId': groupId,
+          'latitude': position['latitude'],
+          'longitude': position['longitude'],
+          'timestamp': position['timestamp'],
+        });
+      }
+      print("位置情報グループをFirestoreに保存しました: GroupID $groupId");
     } catch (e) {
-      print("Firestoreへの保存中にエラーが発生しました: $e");
+      print("Firestoreへの保存エラー: $e");
     }
   }
 
-  // 位置情報グループの取得
-  Future<List<Map<String, dynamic>>> getPositionsByGroupId(int groupId) async {
+  // 特定のグループIDの位置情報をFirestoreから削除する
+  Future<void> deletePositionGroup(int groupId) async {
     try {
-      // グループの位置情報サブコレクションを取得
-      QuerySnapshot snapshot = await _firestore
-          .collection('location_groups')
-          .doc(groupId.toString())
-          .collection('positions')
+      var batch = _db.batch();
+
+      // グループIDに一致するドキュメントを削除
+      var snapshots = await _db
+          .collection('walking_positions')
+          .where('groupId', isEqualTo: groupId)
           .get();
 
-      return snapshot.docs.map((doc) => doc.data() as Map<String, dynamic>).toList();
+      for (var doc in snapshots.docs) {
+        batch.delete(doc.reference);
+      }
+
+      await batch.commit();
+      print("FirestoreからGroupID $groupId の位置情報を削除しました");
     } catch (e) {
-      print("Firestoreからの取得中にエラーが発生しました: $e");
-      return [];
+      print("Firestoreから削除エラー: $e");
     }
   }
-
-  // 全ての位置情報グループIDを取得
-  Future<List<int>> getAllGroupIds() async {
+  // Firestoreからすべての位置情報を取得するメソッド
+  Future<List<Map<String, dynamic>>> getAllPositions() async {
     try {
-      QuerySnapshot snapshot = await _firestore.collection('location_groups').get();
-      return snapshot.docs.map((doc) => int.parse(doc.id)).toList();
+      QuerySnapshot snapshot = await _db.collection('walking_positions').get();
+      return snapshot.docs.map((doc) {
+        return {
+          'groupId': doc['groupId'],
+          'latitude': doc['latitude'],
+          'longitude': doc['longitude'],
+          'timestamp': doc['timestamp'],
+        };
+      }).toList();
     } catch (e) {
-      print("FirestoreからのグループID取得中にエラーが発生しました: $e");
+      print("Firestoreからのデータ取得エラー: $e");
       return [];
     }
   }

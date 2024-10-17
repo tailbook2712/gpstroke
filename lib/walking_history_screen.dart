@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
-import 'database_helper.dart'; // データベースヘルパーのインポート
-import 'walking_detail_screen.dart'; // 詳細画面のインポート
+import 'walking_detail_screen.dart';  // WalkingDetailScreenをインポート
+import 'database_helper.dart';
+import 'firestore_service.dart';
 
 class WalkingHistoryScreen extends StatefulWidget {
   @override
@@ -9,21 +10,27 @@ class WalkingHistoryScreen extends StatefulWidget {
 
 class _WalkingHistoryScreenState extends State<WalkingHistoryScreen> {
   late DatabaseHelper _dbHelper;
-  List<int> _groupIds = [];
+  late FirestoreService _firestoreService;
+  late Future<List<int>> _groupIds; // グループIDを表示する
 
   @override
   void initState() {
     super.initState();
     _dbHelper = DatabaseHelper();
-    _fetchGroupIds(); // データベースからグループIDを取得
+    _firestoreService = FirestoreService();
+    _groupIds = _dbHelper.getAllGroupIds(); // ローカルの全てのグループIDを取得
   }
 
-  // データベースからすべてのグループIDを取得
-  Future<void> _fetchGroupIds() async {
-    List<int> groupIds = await _dbHelper.getAllGroupIds();
+  // グループを削除する関数
+  Future<void> _deleteGroup(int groupId) async {
+    await _dbHelper.deletePositionGroup(groupId); // ローカルデータベースから削除
+    await _firestoreService.deletePositionGroup(groupId); // Firestoreから削除
     setState(() {
-      _groupIds = groupIds;
+      _groupIds = _dbHelper.getAllGroupIds(); // リストを更新
     });
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('グループ $groupId を削除しました')),
+    );
   }
 
   @override
@@ -32,20 +39,37 @@ class _WalkingHistoryScreenState extends State<WalkingHistoryScreen> {
       appBar: AppBar(
         title: Text('記録された歩行履歴'),
       ),
-      body: ListView.builder(
-        itemCount: _groupIds.length,
-        itemBuilder: (context, index) {
-          return ListTile(
-            title: Text('グループID: ${_groupIds[index]}'),
-            onTap: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (context) => WalkingDetailScreen(groupId: _groupIds[index]),
-                ),
-              );
-            },
-          );
+      body: FutureBuilder<List<int>>(
+        future: _groupIds,
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return Center(child: CircularProgressIndicator());
+          } else if (snapshot.hasData && snapshot.data!.isNotEmpty) {
+            return ListView.builder(
+              itemCount: snapshot.data!.length,
+              itemBuilder: (context, index) {
+                int groupId = snapshot.data![index];
+                return ListTile(
+                  title: Text('グループID: $groupId'),
+                  trailing: IconButton(
+                    icon: Icon(Icons.delete),
+                    onPressed: () => _deleteGroup(groupId), // グループ削除
+                  ),
+                  onTap: () {
+                    // WalkingDetailScreenへの遷移
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => WalkingDetailScreen(groupId: groupId), // タップされたグループIDを渡す
+                      ),
+                    );
+                  },
+                );
+              },
+            );
+          } else {
+            return Center(child: Text('記録されたグループがありません'));
+          }
         },
       ),
     );
