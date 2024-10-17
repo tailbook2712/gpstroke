@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:flutter_background_geolocation/flutter_background_geolocation.dart' as bg;
-import 'package:walk_tracker_app/art_display_screen.dart';
 import 'package:walk_tracker_app/polyline_history_screen.dart';
 import 'dart:async';
 import 'package:walk_tracker_app/walking_history_screen.dart';
@@ -287,17 +286,6 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
                 );
               },
               child: Text('軌跡履歴を見る'),
-            ),
-            ElevatedButton(
-              onPressed: () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                      builder: (context) => ArtDisplayScreen()
-                  ),
-                );
-              },
-              child: Text('アートを生成'),
             ),
           ],
         ),
