@@ -27,7 +27,7 @@ ios/Flutter/Flutter.podspec
 ios/Runner.xcworkspace/
 ios/Flutter/App.framework
 ios/Flutter/Flutter.podspec.lock
-ios/Runner/Environment.swift
+*ios/Runner/Environment.swift
 
 # Android関連
 android/.gradle/
