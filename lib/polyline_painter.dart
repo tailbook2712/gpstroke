@@ -3,7 +3,7 @@ import 'package:geolocator/geolocator.dart';
 
 class PolylinePainter extends CustomPainter {
   final List<Position> positions;
-  final double minLat, maxLat, minLon, maxLon; // 指定範囲を追加
+  final double minLat, maxLat, minLon, maxLon;
 
   PolylinePainter({required this.positions, required this.minLat, required this.maxLat, required this.minLon, required this.maxLon});
 
@@ -21,16 +21,30 @@ class PolylinePainter extends CustomPainter {
     double lonRange = maxLon - minLon == 0 ? 1 : maxLon - minLon;
 
     // 座標リストを画面上に描画できる座標に変換
-    List<Offset> scaledPoints = positions.map((position) {
-      double x = (position.longitude - minLon) / lonRange * size.width;
-      double y = (position.latitude - minLat) / latRange * size.height;
-      return Offset(x, size.height - y); // y座標を反転して描画
-    }).toList();
+    List<Offset> scaledPoints = [];
+    Position? previousPosition;
 
-    // ポリラインを描画
-    for (int i = 0; i < scaledPoints.length - 1; i++) {
-      canvas.drawLine(scaledPoints[i], scaledPoints[i + 1], paint);
+    for (var position in positions) {
+      // 直前の位置と現在位置が異なる場合のみ追加（重複除外）
+      if (previousPosition == null ||
+          previousPosition.latitude != position.latitude ||
+          previousPosition.longitude != position.longitude) {
+        double x = (position.longitude - minLon) / lonRange * size.width;
+        double y = (position.latitude - minLat) / latRange * size.height;
+        scaledPoints.add(Offset(x, size.height - y));
+      }
+      previousPosition = position;
     }
+
+    // ポリラインを描画（一本の連続した線として描画）
+    Path path = Path();
+    if (scaledPoints.isNotEmpty) {
+      path.moveTo(scaledPoints.first.dx, scaledPoints.first.dy);
+      for (var point in scaledPoints) {
+        path.lineTo(point.dx, point.dy);
+      }
+    }
+    canvas.drawPath(path, paint); // Pathで連続した線を描画
   }
 
   @override

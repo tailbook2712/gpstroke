@@ -3,44 +3,32 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 class FirestoreService {
   final FirebaseFirestore _db = FirebaseFirestore.instance;
 
-  // 位置情報グループをFirestoreに保存する
+  // 位置情報グループをFirestoreに保存するメソッド (位置情報を1つの配列としてまとめて保存)
   Future<void> savePositionGroup(int groupId, List<Map<String, dynamic>> positions) async {
     try {
-      for (var position in positions) {
-        await _db.collection('walking_positions').add({
-          'groupId': groupId,
-          'latitude': position['latitude'],
-          'longitude': position['longitude'],
-          'timestamp': position['timestamp'],
-        });
-      }
+      // groupIdに対応するドキュメントに位置情報をまとめて保存
+      await _db.collection('walking_groups').doc(groupId.toString()).set({
+        'positions': positions,
+      });
       print("位置情報グループをFirestoreに保存しました: GroupID $groupId");
     } catch (e) {
       print("Firestoreへの保存エラー: $e");
     }
   }
 
-  // 特定のグループIDの位置情報をFirestoreから削除する
-  Future<void> deletePositionGroup(int groupId) async {
+  // GroupIDごとの位置情報を取得するメソッド
+  Future<List<Map<String, dynamic>>> getPositionsByGroupId(int groupId) async {
     try {
-      var batch = _db.batch();
-
-      // グループIDに一致するドキュメントを削除
-      var snapshots = await _db
-          .collection('walking_positions')
-          .where('groupId', isEqualTo: groupId)
-          .get();
-
-      for (var doc in snapshots.docs) {
-        batch.delete(doc.reference);
-      }
-
-      await batch.commit();
-      print("FirestoreからGroupID $groupId の位置情報を削除しました");
+      // groupIdに対応するドキュメントから位置情報を取得
+      DocumentSnapshot doc = await _db.collection('walking_groups').doc(groupId.toString()).get();
+      List<Map<String, dynamic>> positions = List<Map<String, dynamic>>.from(doc['positions']);
+      return positions;
     } catch (e) {
-      print("Firestoreから削除エラー: $e");
+      print("Firestoreからのデータ取得エラー: $e");
+      return [];
     }
   }
+
   // Firestoreからすべての位置情報を取得するメソッド
   Future<List<Map<String, dynamic>>> getAllPositions() async {
     try {
@@ -56,6 +44,17 @@ class FirestoreService {
     } catch (e) {
       print("Firestoreからのデータ取得エラー: $e");
       return [];
+    }
+  }
+
+  // 特定のGroupIDの位置情報をFirestoreから削除するメソッド
+  Future<void> deletePositionGroup(int groupId) async {
+    try {
+      // groupIdに対応するドキュメントを削除
+      await _db.collection('walking_groups').doc(groupId.toString()).delete();
+      print("FirestoreからGroupID $groupId の位置情報を削除しました");
+    } catch (e) {
+      print("Firestoreから削除エラー: $e");
     }
   }
 }
