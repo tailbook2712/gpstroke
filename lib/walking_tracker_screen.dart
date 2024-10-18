@@ -162,7 +162,7 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
         newPosition.longitude,
       );
 
-      // ノイズとみなす移動距離の場合は無視
+      // ノイズとみなす移動距離の場合は無視（閾値は2m程度）
       if (_isNoise(distance)) {
         return;
       }
@@ -192,9 +192,8 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
 
   // ノイズ除去: 小さすぎる距離移動は無視
   bool _isNoise(double distance) {
-    return distance < noiseThreshold;
+    return distance < noiseThreshold; // ここで2m以下の移動を無視
   }
-
   // Firestoreからデータを復元
   Future<void> _restoreDataFromFirestore() async {
     try {
