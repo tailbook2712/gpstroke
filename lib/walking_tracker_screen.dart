@@ -1,11 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:flutter_background_geolocation/flutter_background_geolocation.dart' as bg;
-import 'package:walk_tracker_app/polyline_history_screen.dart';
+import 'package:flutter_background_geolocation/flutter_background_geolocation.dart'
+    as bg;
 import 'dart:async';
 import 'package:walk_tracker_app/walking_history_screen.dart';
 import 'database_helper.dart';
 import 'firestore_service.dart';
+import 'package:walk_tracker_app/artwork_creation_screen.dart';
+import 'package:walk_tracker_app/polyline_history_screen.dart';
 
 class WalkingTrackerScreen extends StatefulWidget {
   @override
@@ -25,6 +27,7 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
   final double noiseThreshold = 2.0; // ノイズとみなす移動距離
 
   late DatabaseHelper _dbHelper;
+  List<List<Position>> trajectories = []; // 記録された移動軌跡
   late FirestoreService _firestoreService; // Firestoreサービスのインスタンス
   int _currentGroupId = 0; // グループIDを管理
 
@@ -36,6 +39,7 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
     _checkPermissionAndStartTracking(); // 位置情報の許可をリクエストして追跡を開始
     _initializeBackgroundGeolocation(); // flutter_background_geolocation の初期化
     _restoreDataFromFirestore(); // Firestoreからデータを復元
+    _loadTrajectories(); // 移動軌跡をロード
   }
 
   // 位置情報の許可をリクエストし、位置情報を取得する
@@ -119,25 +123,22 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
 
   // flutter_background_geolocationのデータを使ってPositionオブジェクトを作成
   void _initializeBackgroundGeolocation() {
-    bg.BackgroundGeolocation.onLocation(
-      (bg.Location location) {
-        _checkIfUserIsMoving(Position(
-          latitude: location.coords.latitude,
-          longitude: location.coords.longitude,
-          timestamp: DateTime.now(),
-          accuracy: location.coords.accuracy,
-          altitude: location.coords.altitude,
-          altitudeAccuracy: location.coords.altitudeAccuracy ?? 0.0,
-          heading: location.coords.heading,
-          speed: location.coords.speed,
-          speedAccuracy: location.coords.speedAccuracy ?? 0.0,
-          headingAccuracy: location.coords.headingAccuracy ?? 0.0,
-        ));
-      },
-      (bg.LocationError error) {
-        print("[onLocation] ERROR: ${error.code}, ${error.message}");
-      }
-    );
+    bg.BackgroundGeolocation.onLocation((bg.Location location) {
+      _checkIfUserIsMoving(Position(
+        latitude: location.coords.latitude,
+        longitude: location.coords.longitude,
+        timestamp: DateTime.now(),
+        accuracy: location.coords.accuracy,
+        altitude: location.coords.altitude,
+        altitudeAccuracy: location.coords.altitudeAccuracy ?? 0.0,
+        heading: location.coords.heading,
+        speed: location.coords.speed,
+        speedAccuracy: location.coords.speedAccuracy ?? 0.0,
+        headingAccuracy: location.coords.headingAccuracy ?? 0.0,
+      ));
+    }, (bg.LocationError error) {
+      print("[onLocation] ERROR: ${error.code}, ${error.message}");
+    });
 
     bg.BackgroundGeolocation.ready(bg.Config(
       desiredAccuracy: bg.Config.DESIRED_ACCURACY_HIGH,
@@ -194,6 +195,7 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
   bool _isNoise(double distance) {
     return distance < noiseThreshold; // ここで2m以下の移動を無視
   }
+
   // Firestoreからデータを復元
   Future<void> _restoreDataFromFirestore() async {
     try {
@@ -211,6 +213,21 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
     } catch (e) {
       print("データの復元に失敗しました: $e");
     }
+  }
+
+  // 移動軌跡をデータベースから取得する関数
+  Future<void> _loadTrajectories() async {
+    List<int> groupIds = await _dbHelper.getAllGroupIds(); // すべてのグループIDを取得
+    List<List<Position>> loadedTrajectories = [];
+
+    for (int groupId in groupIds) {
+      List<Position> positions = await _dbHelper.getPositionsAsPositionsByGroupId(groupId);
+      loadedTrajectories.add(positions);
+    }
+
+    setState(() {
+      trajectories = loadedTrajectories; // 取得した移動軌跡をセット
+    });
   }
 
   @override
@@ -268,8 +285,7 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
                 Navigator.push(
                   context,
                   MaterialPageRoute(
-                      builder: (context) => WalkingHistoryScreen()
-                  ),
+                      builder: (context) => WalkingHistoryScreen()),
                 );
               },
               child: Text('記録履歴を見る'),
@@ -280,11 +296,23 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
                 Navigator.push(
                   context,
                   MaterialPageRoute(
-                      builder: (context) => PolylineHistoryScreen()
-                  ),
+                      builder: (context) => PolylineHistoryScreen()),
                 );
               },
               child: Text('軌跡履歴を見る'),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => ArtworkCreationScreen(
+                      trajectories: trajectories,
+                    ),
+                  ),
+                );
+              },
+              child: Text('アート作成'),
             ),
           ],
         ),
