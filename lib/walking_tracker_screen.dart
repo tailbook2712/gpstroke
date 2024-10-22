@@ -199,6 +199,7 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
   // Firestoreからデータを復元
   Future<void> _restoreDataFromFirestore() async {
     try {
+      // Firestoreから全ての位置情報を取得
       List<Map<String, dynamic>> allPositions = await _firestoreService.getAllPositions();
       for (var position in allPositions) {
         // ローカルデータベースに保存
