@@ -1,7 +1,11 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:flutter_background_geolocation/flutter_background_geolocation.dart'
     as bg;
+import 'package:path_provider/path_provider.dart';
+import 'package:walk_tracker_app/artwork_list_screen.dart';
 import 'dart:async';
 import 'package:walk_tracker_app/walking_history_screen.dart';
 import 'database_helper.dart';
@@ -30,6 +34,7 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
   List<List<Position>> trajectories = []; // 記録された移動軌跡
   late FirestoreService _firestoreService; // Firestoreサービスのインスタンス
   int _currentGroupId = 0; // グループIDを管理
+  List<File> savedArtworks = []; // 保存されたアートワークのリスト
 
   @override
   void initState() {
@@ -40,6 +45,33 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
     _initializeBackgroundGeolocation(); // flutter_background_geolocation の初期化
     _restoreDataFromFirestore(); // Firestoreからデータを復元
     _loadTrajectories(); // 移動軌跡をロード
+    _loadSavedArtworks(); // アートワークをロード
+  }
+
+  // アートワークを保存しているディレクトリからアートワークをロード
+  Future<void> _loadSavedArtworks() async {
+    try {
+      // アートワークを保存しているディレクトリを取得
+      final directory = await getApplicationDocumentsDirectory();
+      final artworksDirectory = Directory('${directory.path}/artworks');
+
+      if (await artworksDirectory.exists()) {
+        // ディレクトリ内のファイルを取得
+        List<FileSystemEntity> files = artworksDirectory.listSync();
+        List<File> artworkFiles = files
+            .whereType<File>()
+            .where((file) => file.path.endsWith('.png'))
+            .toList();
+
+        setState(() {
+          savedArtworks = artworkFiles; // 保存されたアートワークのリストを更新
+        });
+      } else {
+        print("アートワークディレクトリが存在しません");
+      }
+    } catch (e) {
+      print("アートワークのロード中にエラーが発生しました: $e");
+    }
   }
 
   // 位置情報の許可をリクエストし、位置情報を取得する
@@ -303,8 +335,8 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
               child: Text('軌跡履歴を見る'),
             ),
             ElevatedButton(
-              onPressed: () {
-                Navigator.push(
+              onPressed: () async {
+                final result = await Navigator.push(
                   context,
                   MaterialPageRoute(
                     builder: (context) => ArtworkCreationScreen(
@@ -312,8 +344,26 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
                     ),
                   ),
                 );
+
+                // 保存されたアートワークが帰ってきた場合はリストに追加
+                if(result != null && result is File) {
+                  setState(() {
+                    savedArtworks.add(result);
+                  });
+                }
               },
               child: Text('アート作成'),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => ArtworkListScreen(savedArtworks: savedArtworks,),
+                  ),
+                );
+              },
+              child: Text("絵の一覧"),
             ),
           ],
         ),
