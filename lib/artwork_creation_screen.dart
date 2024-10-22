@@ -16,6 +16,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
   TransformablePolyline? selectedItem;
   final GlobalKey _canvasKey = GlobalKey();
   final double canvasPadding = 20.0;
+  List<List<Position>> recordedTrajectories = [];
 
   // 拡大・縮小の制限
   final double minScale = 0.5;
@@ -28,6 +29,18 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
   final double scaleFactor = 0.05;
   final double rotationFactor = 0.1;
   bool rotateMode = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadRecordTrajectories(); //記録された移動軌跡を読み込む
+  }
+
+  Future<void> _loadRecordTrajectories() async {
+    setState(() {
+      recordedTrajectories = widget.trajectories; //最新の移動軌跡を反映
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -51,14 +64,17 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
               },
               child: DragTarget<List<Position>>(
                 onAcceptWithDetails: (details) {
-                  RenderBox renderBox = _canvasKey.currentContext?.findRenderObject() as RenderBox;
+                  RenderBox renderBox = _canvasKey.currentContext
+                      ?.findRenderObject() as RenderBox;
 
                   // ドロップされた位置をキャンバスのローカル座標に変換
-                  Offset localPosition = renderBox.globalToLocal(details.offset);
+                  Offset localPosition =
+                      renderBox.globalToLocal(details.offset);
 
                   setState(() {
                     selectedTrajectories.add(
-                      TransformablePolyline(details.data, localPosition - Offset(75, 75)),
+                      TransformablePolyline(
+                          details.data, localPosition - Offset(75, 75)),
                     );
                   });
                 },
@@ -69,8 +85,10 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                     child: Stack(
                       children: selectedTrajectories.map((item) {
                         return Positioned(
-                          left: item.position.dx.clamp(canvasPadding, screenWidth - canvasPadding),
-                          top: item.position.dy.clamp(canvasPadding, screenHeight - canvasPadding),
+                          left: item.position.dx.clamp(
+                              canvasPadding, screenWidth - canvasPadding),
+                          top: item.position.dy.clamp(
+                              canvasPadding, screenHeight - canvasPadding),
                           child: GestureDetector(
                             onTap: () {
                               setState(() {
@@ -91,16 +109,19 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                                   if (rotateMode) {
                                     // 回転の処理（スピード調整）
                                     if (details.rotation.abs() > 0.01) {
-                                      item.rotation += details.rotation * rotationFactor;
+                                      item.rotation +=
+                                          details.rotation * rotationFactor;
                                     }
                                   } else {
                                     // 拡大・縮小のスピードを調整
                                     if (details.scale != 1.0) {
-                                      item.scale = (item.scale + (details.scale - 1) * scaleFactor)
+                                      item.scale = (item.scale +
+                                              (details.scale - 1) * scaleFactor)
                                           .clamp(minScale, maxScale);
                                     }
                                   }
-                                  item.position += details.focalPointDelta; // ドラッグ（パン）ジェスチャーとして移動
+                                  item.position += details
+                                      .focalPointDelta; // ドラッグ（パン）ジェスチャーとして移動
                                 });
                               }
                             },
@@ -116,14 +137,16 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                               children: [
                                 Transform(
                                   transform: Matrix4.identity()
-                                    ..translate(item.position.dx, item.position.dy)
+                                    ..translate(
+                                        item.position.dx, item.position.dy)
                                     ..scale(item.scale)
                                     ..rotateZ(item.rotation),
                                   origin: Offset(75, 75),
                                   child: Container(
                                     decoration: BoxDecoration(
                                       border: selectedItem == item
-                                          ? Border.all(color: Colors.red, width: 2.0)
+                                          ? Border.all(
+                                              color: Colors.red, width: 2.0)
                                           : null,
                                     ),
                                     child: Padding(
@@ -146,7 +169,9 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                                     top: (item.scale * 75) - 25,
                                     right: (item.scale * 75) - 25,
                                     child: IconButton(
-                                      icon: Icon(rotateMode ? Icons.rotate_right : Icons.open_with),
+                                      icon: Icon(rotateMode
+                                          ? Icons.rotate_right
+                                          : Icons.open_with),
                                       color: Colors.blue,
                                       onPressed: () {
                                         setState(() {
@@ -171,19 +196,27 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
             height: 120,
             child: ListView.builder(
               scrollDirection: Axis.horizontal,
-              itemCount: widget.trajectories.length,
+              itemCount: recordedTrajectories.length,
               itemBuilder: (context, index) {
                 return Draggable<List<Position>>(
-                  data: widget.trajectories[index],
+                  data: recordedTrajectories[index],
                   feedback: Material(
                     child: CustomPaint(
                       size: Size(60, 60),
                       painter: PolylinePainter(
                         positions: widget.trajectories[index],
-                        minLat: widget.trajectories[index].map((p) => p.latitude).reduce((a, b) => a < b ? a : b),
-                        maxLat: widget.trajectories[index].map((p) => p.latitude).reduce((a, b) => a > b ? a : b),
-                        minLon: widget.trajectories[index].map((p) => p.longitude).reduce((a, b) => a < b ? a : b),
-                        maxLon: widget.trajectories[index].map((p) => p.longitude).reduce((a, b) => a > b ? a : b),
+                        minLat: widget.trajectories[index]
+                            .map((p) => p.latitude)
+                            .reduce((a, b) => a < b ? a : b),
+                        maxLat: widget.trajectories[index]
+                            .map((p) => p.latitude)
+                            .reduce((a, b) => a > b ? a : b),
+                        minLon: widget.trajectories[index]
+                            .map((p) => p.longitude)
+                            .reduce((a, b) => a < b ? a : b),
+                        maxLon: widget.trajectories[index]
+                            .map((p) => p.longitude)
+                            .reduce((a, b) => a > b ? a : b),
                       ),
                     ),
                   ),
@@ -198,10 +231,18 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                     child: CustomPaint(
                       painter: PolylinePainter(
                         positions: widget.trajectories[index],
-                        minLat: widget.trajectories[index].map((p) => p.latitude).reduce((a, b) => a < b ? a : b),
-                        maxLat: widget.trajectories[index].map((p) => p.latitude).reduce((a, b) => a > b ? a : b),
-                        minLon: widget.trajectories[index].map((p) => p.longitude).reduce((a, b) => a < b ? a : b),
-                        maxLon: widget.trajectories[index].map((p) => p.longitude).reduce((a, b) => a > b ? a : b),
+                        minLat: widget.trajectories[index]
+                            .map((p) => p.latitude)
+                            .reduce((a, b) => a < b ? a : b),
+                        maxLat: widget.trajectories[index]
+                            .map((p) => p.latitude)
+                            .reduce((a, b) => a > b ? a : b),
+                        minLon: widget.trajectories[index]
+                            .map((p) => p.longitude)
+                            .reduce((a, b) => a < b ? a : b),
+                        maxLon: widget.trajectories[index]
+                            .map((p) => p.longitude)
+                            .reduce((a, b) => a > b ? a : b),
                       ),
                     ),
                   ),
@@ -229,8 +270,12 @@ class TransformablePolyline {
   TransformablePolyline(this.polyline, this.position)
       : scale = 0.6,
         rotation = 0.0,
-        minLat = polyline.map((p) => p.latitude).reduce((a, b) => a < b ? a : b),
-        maxLat = polyline.map((p) => p.latitude).reduce((a, b) => a > b ? a : b),
-        minLon = polyline.map((p) => p.longitude).reduce((a, b) => a < b ? a : b),
-        maxLon = polyline.map((p) => p.longitude).reduce((a, b) => a > b ? a : b);
+        minLat =
+            polyline.map((p) => p.latitude).reduce((a, b) => a < b ? a : b),
+        maxLat =
+            polyline.map((p) => p.latitude).reduce((a, b) => a > b ? a : b),
+        minLon =
+            polyline.map((p) => p.longitude).reduce((a, b) => a < b ? a : b),
+        maxLon =
+            polyline.map((p) => p.longitude).reduce((a, b) => a > b ? a : b);
 }

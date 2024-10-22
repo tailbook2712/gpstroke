@@ -5,7 +5,13 @@ class PolylinePainter extends CustomPainter {
   final List<Position> positions;
   final double minLat, maxLat, minLon, maxLon;
 
-  PolylinePainter({required this.positions, required this.minLat, required this.maxLat, required this.minLon, required this.maxLon});
+  PolylinePainter({
+    required this.positions,
+    required this.minLat,
+    required this.maxLat,
+    required this.minLon,
+    required this.maxLon,
+  });
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -31,20 +37,21 @@ class PolylinePainter extends CustomPainter {
           previousPosition.longitude != position.longitude) {
         double x = (position.longitude - minLon) / lonRange * size.width;
         double y = (position.latitude - minLat) / latRange * size.height;
-        scaledPoints.add(Offset(x, size.height - y));
+        scaledPoints.add(Offset(x, size.height - y)); // Y座標の逆転
       }
       previousPosition = position;
     }
 
-    // ポリラインを描画（一本の連続した線として描画）
-    Path path = Path();
-    if (scaledPoints.isNotEmpty) {
+    // ポリラインを描画（閉じない）
+    if (scaledPoints.length > 1) {
+      Path path = Path();
       path.moveTo(scaledPoints.first.dx, scaledPoints.first.dy);
-      for (var point in scaledPoints) {
-        path.lineTo(point.dx, point.dy);
+      for (var i = 1; i < scaledPoints.length; i++) {
+        path.lineTo(scaledPoints[i].dx, scaledPoints[i].dy);
       }
+      // 終点と始点を結ばないようにする（path.close()は使用しない）
+      canvas.drawPath(path, paint);
     }
-    canvas.drawPath(path, paint); // Pathで連続した線を描画
   }
 
   @override
