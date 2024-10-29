@@ -32,15 +32,21 @@ class FirestoreService {
   // Firestoreからすべての位置情報を取得するメソッド
   Future<List<Map<String, dynamic>>> getAllPositions() async {
     try {
-      QuerySnapshot snapshot = await _db.collection('walking_positions').get();
-      return snapshot.docs.map((doc) {
-        return {
-          'groupId': doc['groupId'],
-          'latitude': doc['latitude'],
-          'longitude': doc['longitude'],
-          'timestamp': doc['timestamp'],
-        };
-      }).toList();
+      QuerySnapshot snapshot = await _db.collection('walking_groups').get();
+      List<Map<String, dynamic>> allPositions = [];
+
+      for (var doc in snapshot.docs) {
+        List<dynamic> positions = doc['positions'];
+        for (var position in positions) {
+          allPositions.add({
+            'groupId': int.parse(doc.id),
+            'latitude': position['latitude'],
+            'longitude': position['longitude'],
+            'timestamp': position['timestamp'],
+          });
+        }
+      }
+      return allPositions;
     } catch (e) {
       print("Firestoreからのデータ取得エラー: $e");
       return [];

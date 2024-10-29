@@ -1,8 +1,7 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:flutter_background_geolocation/flutter_background_geolocation.dart'
-    as bg;
+import 'package:flutter_background_geolocation/flutter_background_geolocation.dart' as bg;
 import 'package:path_provider/path_provider.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:walk_tracker_app/artwork_list_screen.dart';
@@ -31,6 +30,7 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
   List<List<Position>> trajectories = [];
   late FirestoreService _firestoreService;
   int _currentGroupId = 0;
+  int _polylineIdCounter = 0; // Polyline IDカウンター
   List<File> savedArtworks = [];
 
   GoogleMapController? _mapController;
@@ -47,13 +47,6 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
     _loadTrajectories();
     _loadSavedArtworks();
     _setInitialCameraPosition();
-
-    _polylines.add(Polyline(
-      polylineId: PolylineId("current_route"),
-      points: [],
-      color: Colors.blue,
-      width: 5,
-    ));
   }
 
   // 絵の作成画面から戻ってきたときに、保存されたアートワークをリロードする
@@ -109,8 +102,20 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
     setState(() {
       _isRecording = true;
       _positions.clear();
+      _polylineIdCounter++;
     });
     _currentGroupId = await _dbHelper.getNewGroupId();
+
+    // 新しい Polyline を作成し追加
+    _polylines.add(
+      Polyline(
+        polylineId: PolylineId("route_${_polylineIdCounter}"),
+        points: [],
+        color: Colors.blue,
+        width: 5,
+      ),
+    );
+    setState(() {});
   }
 
   void _stopRecording() async {
@@ -184,23 +189,26 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
       // 速度に基づく遅延間隔を計算
       int recordingInterval;
       if (newPosition.speed < 1) {
-        recordingInterval = 5000; // ゆっくり歩く場合は5秒間隔
+        recordingInterval = 7000; // ゆっくり歩く場合は7秒間隔
       } else if (newPosition.speed < 5) {
-        recordingInterval = 3000; // 中程度の速度の場合は3秒間隔
+        recordingInterval = 5000; // 中程度の速度の場合は5秒間隔
       } else {
-        recordingInterval = 1000; // 速い速度の場合は1秒間隔
+        recordingInterval = 2000; // 速い速度の場合は2秒間隔
       }
 
       if (_isRecording) {
         _positions.add(newPosition);
 
+        // 現在の Polyline に追加
+        Polyline currentPolyline = _polylines
+            .firstWhere((polyline) => polyline.polylineId.value == "route_${_polylineIdCounter}");
+
+        List<LatLng> updatedPoints = List.from(currentPolyline.points)
+          ..add(LatLng(newPosition.latitude, newPosition.longitude));
+
         _polylines = {
-          Polyline(
-            polylineId: PolylineId("current_route"),
-            points: _positions.map((pos) => LatLng(pos.latitude, pos.longitude)).toList(),
-            color: Colors.blue,
-            width: 5,
-          ),
+          ..._polylines.where((polyline) => polyline.polylineId.value != "route_${_polylineIdCounter}"),
+          currentPolyline.copyWith(pointsParam: updatedPoints),
         };
         setState(() {});
 

@@ -6,9 +6,8 @@ import 'package:geolocator/geolocator.dart';
 class DatabaseHelper {
   static final _databaseName = "walking_tracker.db";
   static final _databaseVersion = 1;
-
   static final table = 'walking_positions';
-  
+
   static final columnId = '_id';
   static final columnGroupId = 'group_id';
   static final columnLatitude = 'latitude';
