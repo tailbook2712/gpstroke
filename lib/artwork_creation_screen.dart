@@ -1,7 +1,9 @@
 import 'dart:typed_data';
 import 'dart:ui';
+
 import 'package:flutter/rendering.dart';
 import 'package:path_provider/path_provider.dart';
+import 'dart:ui' as ui;
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
@@ -20,14 +22,18 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
   List<TransformablePolyline> selectedTrajectories = [];
   TransformablePolyline? selectedItem;
   final GlobalKey _canvasKey = GlobalKey();
-  final GlobalKey _boundaryKey = GlobalKey();
+  final GlobalKey _boundaryKey = GlobalKey(); // 保存用のRepaintBoundaryのキー
   final double canvasPadding = 20.0;
   List<List<Position>> recordedTrajectories = [];
 
+  // 拡大・縮小の制限
   final double minScale = 0.5;
   final double maxScale = 1.5;
+
   bool isScaling = false;
   bool isRotating = false;
+
+  // 拡大縮小のスピード調整用の係数
   final double scaleFactor = 0.05;
   final double rotationFactor = 0.1;
   bool rotateMode = false;
@@ -35,43 +41,55 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
   @override
   void initState() {
     super.initState();
-    _loadRecordTrajectories();
+    _loadRecordTrajectories(); // 記録された移動軌跡を読み込む
   }
 
   Future<void> _loadRecordTrajectories() async {
     setState(() {
-      recordedTrajectories = widget.trajectories;
+      recordedTrajectories = widget.trajectories; // 最新の移動軌跡を反映
     });
   }
 
+  // アートワークを保存する関数
   Future<void> _saveArtwork() async {
     try {
+      // RepaintBoundaryの画像を取得
       RenderRepaintBoundary boundary = _boundaryKey.currentContext!.findRenderObject() as RenderRepaintBoundary;
       var image = await boundary.toImage();
       ByteData? byteData = await image.toByteData(format: ImageByteFormat.png);
       Uint8List pngBytes = byteData!.buffer.asUint8List();
 
+      // 保存ディレクトリを作成
       final directory = await getApplicationDocumentsDirectory();
       final artworksDirectory = Directory('${directory.path}/artworks');
       if (!(await artworksDirectory.exists())) {
-        await artworksDirectory.create(recursive: true);
+        await artworksDirectory.create(recursive: true); // ディレクトリを作成
       }
 
+      // ファイル名を現在の日時に基づいて作成
       String timestamp = DateTime.now().millisecondsSinceEpoch.toString();
       File imgFile = File('${artworksDirectory.path}/artwork_$timestamp.png');
+
+      // ファイルに画像データを書き込む
       await imgFile.writeAsBytes(pngBytes);
+
+      print("アートワークが保存されました: ${imgFile.path}");
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('アートワークが保存されました!')),
       );
+
+      // 保存したファイルを返す
       Navigator.pop(context, imgFile);
+        
     } catch (e) {
+      print("アートワーク保存中にエラーが発生しました: $e");
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('アートワークの保存に失敗しました。')),
       );
     }
   }
-
+  
   @override
   Widget build(BuildContext context) {
     double screenWidth = MediaQuery.of(context).size.width;
@@ -79,18 +97,19 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text('絵の作成'),
+        title: Text('アート作成'),
         actions: [
           IconButton(
             icon: Icon(Icons.save),
-            onPressed: _saveArtwork,
+            onPressed: _saveArtwork, // 保存ボタンを押すとアートワークが保存される
           ),
         ],
       ),
       body: Column(
         children: [
+          // キャンバス部分（RepaintBoundaryでラップ）
           Flexible(
-            flex: 8,
+            flex: 3,
             child: GestureDetector(
               onTap: () {
                 setState(() {
@@ -98,10 +117,12 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                 });
               },
               child: RepaintBoundary(
-                key: _boundaryKey,
+                key: _boundaryKey, // キャンバスをキャプチャするためのキー
                 child: DragTarget<List<Position>>(
                   onAcceptWithDetails: (details) {
                     RenderBox renderBox = _canvasKey.currentContext?.findRenderObject() as RenderBox;
+
+                    // ドロップされた位置をキャンバスのローカル座標に変換
                     Offset localPosition = renderBox.globalToLocal(details.offset);
 
                     setState(() {
@@ -137,16 +158,18 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                                 if (selectedItem == item) {
                                   setState(() {
                                     if (rotateMode) {
+                                      // 回転の処理（スピード調整）
                                       if (details.rotation.abs() > 0.01) {
                                         item.rotation += details.rotation * rotationFactor;
                                       }
                                     } else {
+                                      // 拡大・縮小のスピードを調整
                                       if (details.scale != 1.0) {
                                         item.scale = (item.scale + (details.scale - 1) * scaleFactor)
                                             .clamp(minScale, maxScale);
                                       }
                                     }
-                                    item.position += details.focalPointDelta;
+                                    item.position += details.focalPointDelta; // ドラッグ（パン）ジェスチャーとして移動
                                   });
                                 }
                               },
@@ -213,9 +236,9 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
               ),
             ),
           ),
-          SizedBox(height: 10),
+          SizedBox(height: 5),
           Container(
-            height: 100,
+            height: 120,
             child: ListView.builder(
               scrollDirection: Axis.horizontal,
               itemCount: recordedTrajectories.length,
@@ -237,7 +260,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                   child: Container(
                     width: 70,
                     height: 70,
-                    margin: EdgeInsets.symmetric(horizontal: 10),
+                    margin: EdgeInsets.symmetric(horizontal: 15),
                     decoration: BoxDecoration(
                       border: Border.all(color: Colors.blue),
                       borderRadius: BorderRadius.circular(10),
