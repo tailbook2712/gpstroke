@@ -55,7 +55,7 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
       width: 5,
     ));
   }
-  
+
   // 絵の作成画面から戻ってきたときに、保存されたアートワークをリロードする
   Future<void> _loadSavedArtworks() async {
     try {
@@ -181,20 +181,31 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
         return;
       }
 
+      // 速度に基づく遅延間隔を計算
+      int recordingInterval;
+      if (newPosition.speed < 1) {
+        recordingInterval = 5000; // ゆっくり歩く場合は5秒間隔
+      } else if (newPosition.speed < 5) {
+        recordingInterval = 3000; // 中程度の速度の場合は3秒間隔
+      } else {
+        recordingInterval = 1000; // 速い速度の場合は1秒間隔
+      }
+
       if (_isRecording) {
         _positions.add(newPosition);
 
         _polylines = {
           Polyline(
             polylineId: PolylineId("current_route"),
-            points: _positions
-                .map((pos) => LatLng(pos.latitude, pos.longitude))
-                .toList(),
+            points: _positions.map((pos) => LatLng(pos.latitude, pos.longitude)).toList(),
             color: Colors.blue,
             width: 5,
           ),
         };
         setState(() {});
+
+        // 記録の頻度を速度に応じて調整
+        await Future.delayed(Duration(milliseconds: recordingInterval));
       }
 
       if (newPosition.speed > speedThreshold) {
@@ -231,6 +242,10 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
         );
       }
       print("Firestoreからローカルデータベースにデータを復元しました");
+
+      // ローカルDBからデータを`trajectories`に反映
+      await _loadTrajectories();
+      setState(() {}); // trajectoriesの更新を反映
     } catch (e) {
       print("データの復元に失敗しました: $e");
     }
@@ -251,6 +266,16 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
     });
   }
 
+  void _navigateToArtworkCreationScreen() async {
+    await _restoreDataFromFirestore(); // データ復元を完了してから
+    Navigator.push(
+        context,
+        MaterialPageRoute(
+            builder: (context) => ArtworkCreationScreen(trajectories: trajectories),
+        ),
+    );
+  }
+
   @override
   void dispose() {
     bg.BackgroundGeolocation.stop();
@@ -261,7 +286,7 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text('歩行軌跡記録アプリ'),
+        title: Text('軌跡の記録'),
       ),
       body: Stack(
         children: [
@@ -308,13 +333,7 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
               // 軌跡の記録画面（現在の画面）
               break;
             case 1:
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (context) =>
-                      ArtworkCreationScreen(trajectories: trajectories),
-                ),
-              );
+              _navigateToArtworkCreationScreen();
               break;
             case 2:
               Navigator.push(
