@@ -206,7 +206,9 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
         _polylines = {
           Polyline(
             polylineId: PolylineId("current_route"),
-            points: _positions.map((pos) => LatLng(pos.latitude, pos.longitude)).toList(),
+            points: _positions
+                .map((pos) => LatLng(pos.latitude, pos.longitude))
+                .toList(),
             color: Colors.blue,
             width: 5,
           ),
@@ -278,10 +280,20 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
   void _navigateToArtworkCreationScreen() async {
     await _restoreDataFromFirestore(); // データ復元を完了してから
     Navigator.push(
-        context,
-        MaterialPageRoute(
-            builder: (context) => ArtworkCreationScreen(trajectories: trajectories),
-        ),
+      context,
+      MaterialPageRoute(
+        builder: (context) => ArtworkCreationScreen(trajectories: trajectories),
+      ),
+    );
+  }
+
+  Future<void> _navigatetoArtworkGalleryScreen() async {
+    await _loadSavedArtworks();
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => ArtworkListScreen(savedArtworks: savedArtworks),
+      ),
     );
   }
 
@@ -345,13 +357,7 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
               _navigateToArtworkCreationScreen();
               break;
             case 2:
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (context) =>
-                      ArtworkListScreen(savedArtworks: savedArtworks),
-                ),
-              );
+              _navigatetoArtworkGalleryScreen();
               break;
           }
         },
