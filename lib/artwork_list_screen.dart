@@ -12,7 +12,7 @@ class ArtworkListScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text('Saved Artworks'),
+        title: Text('ギャラリー'),
       ),
       body: Padding(
         padding: const EdgeInsets.all(16.0),
