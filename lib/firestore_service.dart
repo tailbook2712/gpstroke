@@ -16,6 +16,24 @@ class FirestoreService {
     }
   }
 
+  // 歩数・距離・日付を含む歩行データをFirestoreに保存するメソッド
+  Future<void> saveWalkingData({
+    required String date,
+    required int steps,
+    required double distance,
+  }) async {
+    try {
+      await _db.collection('walking_records').add({
+        'date': date,
+        'steps': steps,
+        'distance': distance,
+      });
+      print("歩行データをFirestoreに保存しました: 日付 $date, 歩数 $steps, 距離 $distance km");
+    } catch (e) {
+      print("Firestoreへの保存エラー: $e");
+    }
+  }
+
   // GroupIDごとの位置情報を取得するメソッド
   Future<List<Map<String, dynamic>>> getPositionsByGroupId(int groupId) async {
     try {

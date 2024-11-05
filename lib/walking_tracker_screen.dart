@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
@@ -9,6 +10,7 @@ import 'package:walk_tracker_app/artwork_list_screen.dart';
 import 'package:walk_tracker_app/artwork_creation_screen.dart';
 import 'database_helper.dart';
 import 'firestore_service.dart';
+import 'package:pedometer/pedometer.dart';
 
 class WalkingTrackerScreen extends StatefulWidget {
   @override
@@ -22,6 +24,8 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
   bool _isMoving = false;
   bool _isTracking = false;
   bool _isRecording = false;
+  double _totalDistance = 0.0; // 一回の記録で歩いた距離
+  int _stepCount = 0; // 一回の記録での歩数
 
   final double distanceThreshold = 3.0;
   final double speedThreshold = 0.3;
@@ -30,6 +34,8 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
   late DatabaseHelper _dbHelper;
   List<List<Position>> trajectories = [];
   late FirestoreService _firestoreService;
+  StreamSubscription<Position>? _positionStream;
+  StreamSubscription<StepCount>? _stepStream;
   int _currentGroupId = 0;
   List<File> savedArtworks = [];
 
@@ -108,15 +114,36 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
   void _startRecording() async {
     setState(() {
       _isRecording = true;
+      _totalDistance = 0.0; // 記録開始時に距離をリセット
+      _stepCount = 0; // 記録開始時に歩数をリセット
       _positions.clear();
+    });
+
+    // リスナーの設定 (位置情報と歩数計のリスナーを再開)
+    _positionStream = Geolocator.getPositionStream().listen((Position position) {
+      if (_isRecording) {
+        _updateDistance(position);
+      }
+    });
+
+    _stepStream = Pedometer.stepCountStream.listen((StepCount event) {
+      if (_isRecording) {
+        _updateStepCount(event.steps);
+      }
     });
     _currentGroupId = await _dbHelper.getNewGroupId();
   }
 
-  void _stopRecording() async {
+  // 記録を停止する関数
+  Future<void> _stopRecording() async {
     setState(() {
       _isRecording = false;
     });
+
+    // ストリームをキャンセルしてリスナーを停止
+    _positionStream?.cancel();
+    _stepStream?.cancel();
+
 
     if (_positions.isEmpty) return;
 
@@ -143,9 +170,23 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
         position.timestamp!.toIso8601String(),
       );
     }
+
+    await _dbHelper.insertRecord({
+      'groupId': _currentGroupId,
+      'date': DateTime.now().toString(),
+      'steps': _stepCount,
+      'distance': _totalDistance,
+    });
+
+    await _firestoreService.saveWalkingData(
+      date: DateTime.now().toString(),
+      steps: _stepCount,
+      distance: _totalDistance,
+    );
     await _firestoreService.savePositionGroup(_currentGroupId, positionData);
   }
 
+  // バックグラウンドジオロケーションの初期化
   void _initializeBackgroundGeolocation() {
     bg.BackgroundGeolocation.onLocation((bg.Location location) {
       _checkIfUserIsMoving(Position(
@@ -177,6 +218,7 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
     });
   }
 
+  // ユーザーの移動をチェックする関数
   Future<void> _checkIfUserIsMoving(Position newPosition) async {
     if (_previousPosition != null) {
       double distance = Geolocator.distanceBetween(
@@ -219,6 +261,7 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
         await Future.delayed(Duration(milliseconds: recordingInterval));
       }
 
+      // 距離と速度に基づいてユーザーが移動しているかどうかを判断
       if (newPosition.speed > speedThreshold) {
         setState(() {
           _isMoving = true;
@@ -236,10 +279,33 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
     _previousPosition = newPosition;
   }
 
+  // ノイズを除去する関数
   bool _isNoise(double distance) {
     return distance < noiseThreshold;
   }
 
+  //　距離を計算する関数
+  void _updateDistance(Position newPosition) {
+    if (_previousPosition != null) {
+      final distance = Geolocator.distanceBetween(
+        _previousPosition!.latitude,
+        _previousPosition!.longitude,
+        newPosition.latitude,
+        newPosition.longitude,
+      );
+      _totalDistance += distance;
+    }
+    _previousPosition = newPosition;
+  }
+
+  // 歩数を計算する関数
+  void _updateStepCount(int stepCount) {
+    setState(() {
+      _stepCount = stepCount;
+    });
+  }
+
+  // Firestoreからデータを復元
   Future<void> _restoreDataFromFirestore() async {
     try {
       List<Map<String, dynamic>> allPositions =
@@ -262,6 +328,7 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
     }
   }
 
+  // ローカルデータベースから軌跡を読み込む
   Future<void> _loadTrajectories() async {
     List<int> groupIds = await _dbHelper.getAllGroupIds();
     List<List<Position>> loadedTrajectories = [];
@@ -277,6 +344,7 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
     });
   }
 
+  // アートワーク作成画面に遷移する関数
   void _navigateToArtworkCreationScreen() async {
     await _restoreDataFromFirestore(); // データ復元を完了してから
     Navigator.push(
@@ -287,6 +355,7 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
     );
   }
 
+  // アートワークギャラリー画面に遷移する関数
   Future<void> _navigatetoArtworkGalleryScreen() async {
     await _loadSavedArtworks();
     Navigator.push(
@@ -307,7 +376,17 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text('軌跡の記録'),
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('軌跡の記録', style: TextStyle(fontSize: 20)),
+            SizedBox(height: 4),
+            Text(
+              '歩数: $_stepCount 歩  距離: ${(_totalDistance / 1000).toStringAsFixed(2)}km',
+              style: TextStyle(fontSize: 14),
+            ),
+          ],
+        ),
       ),
       body: Stack(
         children: [
