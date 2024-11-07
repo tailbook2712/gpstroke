@@ -142,4 +142,13 @@ class DatabaseHelper {
     await db.delete(tablePositions, where: '$columnGroupId = ?', whereArgs: [groupId]);
     await db.delete(tableRecords, where: '$columnRecordGroupId = ?', whereArgs: [groupId]);
   }
+
+  // すべての歩行記録を取得するメソッド（日付の降順で並べ替え）
+  Future<List<Map<String, dynamic>>> getAllRecords() async {
+    Database db = await database;
+    return await db.query(
+      tableRecords,
+      orderBy: '$columnDate DESC', // 日付を降順に並べ替え
+    );
+  }
 }

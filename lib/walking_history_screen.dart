@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'walking_detail_screen.dart';  // WalkingDetailScreenをインポート
+import 'walking_detail_screen.dart';
 import 'database_helper.dart';
 import 'firestore_service.dart';
 
@@ -11,14 +11,14 @@ class WalkingHistoryScreen extends StatefulWidget {
 class _WalkingHistoryScreenState extends State<WalkingHistoryScreen> {
   late DatabaseHelper _dbHelper;
   late FirestoreService _firestoreService;
-  late Future<List<int>> _groupIds; // グループIDを表示する
+  late Future<List<Map<String, dynamic>>> _walkingRecords; // 歩行記録を表示する
 
   @override
   void initState() {
     super.initState();
     _dbHelper = DatabaseHelper();
     _firestoreService = FirestoreService();
-    _groupIds = _dbHelper.getAllGroupIds(); // ローカルの全てのグループIDを取得
+    _walkingRecords = _dbHelper.getAllRecords(); // ローカルの全ての歩行記録を取得
   }
 
   // グループを削除する関数
@@ -26,7 +26,7 @@ class _WalkingHistoryScreenState extends State<WalkingHistoryScreen> {
     await _dbHelper.deletePositionGroup(groupId); // ローカルデータベースから削除
     await _firestoreService.deletePositionGroup(groupId); // Firestoreから削除
     setState(() {
-      _groupIds = _dbHelper.getAllGroupIds(); // リストを更新
+      _walkingRecords = _dbHelper.getAllRecords(); // リストを更新
     });
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text('グループ $groupId を削除しました')),
@@ -39,8 +39,8 @@ class _WalkingHistoryScreenState extends State<WalkingHistoryScreen> {
       appBar: AppBar(
         title: Text('記録された歩行履歴'),
       ),
-      body: FutureBuilder<List<int>>(
-        future: _groupIds,
+      body: FutureBuilder<List<Map<String, dynamic>>>(
+        future: _walkingRecords,
         builder: (context, snapshot) {
           if (snapshot.connectionState == ConnectionState.waiting) {
             return Center(child: CircularProgressIndicator());
@@ -48,9 +48,15 @@ class _WalkingHistoryScreenState extends State<WalkingHistoryScreen> {
             return ListView.builder(
               itemCount: snapshot.data!.length,
               itemBuilder: (context, index) {
-                int groupId = snapshot.data![index];
+                final record = snapshot.data![index];
+                final groupId = record['group_id'];
+                final date = record['date'];
+                final steps = record['steps'];
+                final distance = (record['distance'] / 1000).toStringAsFixed(2);
+
                 return ListTile(
-                  title: Text('グループID: $groupId'),
+                  title: Text('日付: $date'),
+                  subtitle: Text('歩数: $steps 歩 | 距離: $distance km'),
                   trailing: IconButton(
                     icon: Icon(Icons.delete),
                     onPressed: () => _deleteGroup(groupId), // グループ削除
@@ -60,7 +66,12 @@ class _WalkingHistoryScreenState extends State<WalkingHistoryScreen> {
                     Navigator.push(
                       context,
                       MaterialPageRoute(
-                        builder: (context) => WalkingDetailScreen(groupId: groupId), // タップされたグループIDを渡す
+                        builder: (context) => WalkingDetailScreen(
+                          groupId: groupId,
+                          date: date,
+                          steps: steps,
+                          distance: distance,
+                        ), // タップされたデータを渡す
                       ),
                     );
                   },
