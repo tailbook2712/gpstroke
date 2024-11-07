@@ -2,6 +2,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 
 import 'artwork_detail_screen.dart';
+import 'walking_history_screen.dart';
 
 class ArtworkListScreen extends StatelessWidget {
   final List<File> savedArtworks; // 保存されたアートワークのファイルリスト
@@ -52,6 +53,18 @@ class ArtworkListScreen extends StatelessWidget {
             );
           },
         ),
+      ),
+      floatingActionButton: FloatingActionButton(
+        onPressed: () {
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (context) => WalkingHistoryScreen(),
+            ),
+          );
+        },
+        child: Icon(Icons.history),
+        tooltip: '保存された軌跡のリスト',
       ),
     );
   }

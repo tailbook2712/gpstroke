@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
@@ -9,6 +10,7 @@ import 'package:walk_tracker_app/artwork_list_screen.dart';
 import 'package:walk_tracker_app/artwork_creation_screen.dart';
 import 'database_helper.dart';
 import 'firestore_service.dart';
+import 'package:pedometer/pedometer.dart';
 
 class WalkingTrackerScreen extends StatefulWidget {
   @override
@@ -22,6 +24,9 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
   bool _isMoving = false;
   bool _isTracking = false;
   bool _isRecording = false;
+  double _totalDistance = 0.0;
+  int _stepCount = 0;
+  int _initialStepCount = 0; // 記録開始時の初期歩数
 
   final double distanceThreshold = 3.0;
   final double speedThreshold = 0.3;
@@ -30,6 +35,8 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
   late DatabaseHelper _dbHelper;
   List<List<Position>> trajectories = [];
   late FirestoreService _firestoreService;
+  StreamSubscription<Position>? _positionStream;
+  StreamSubscription<StepCount>? _stepStream;
   int _currentGroupId = 0;
   List<File> savedArtworks = [];
 
@@ -48,6 +55,7 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
     _loadSavedArtworks();
     _setInitialCameraPosition();
 
+    // ポリラインを初期化
     _polylines.add(Polyline(
       polylineId: PolylineId("current_route"),
       points: [],
@@ -56,7 +64,7 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
     ));
   }
 
-  // 絵の作成画面から戻ってきたときに、保存されたアートワークをリロードする
+  // 保存されたアートワークを読み込む
   Future<void> _loadSavedArtworks() async {
     try {
       final directory = await getApplicationDocumentsDirectory();
@@ -80,7 +88,7 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
     }
   }
 
-  // 位置情報の取得
+  // 位置情報の許可を確認してトラッキングを開始
   Future<void> _checkPermissionAndStartTracking() async {
     LocationPermission permission;
     permission = await Geolocator.checkPermission();
@@ -98,6 +106,7 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
     _startTracking();
   }
 
+  // 位置情報のトラッキングを開始
   void _startTracking() {
     setState(() {
       _isTracking = true;
@@ -105,28 +114,69 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
     bg.BackgroundGeolocation.start();
   }
 
+  // 位置情報の記録を開始
   void _startRecording() async {
     setState(() {
       _isRecording = true;
+      _totalDistance = 0.0;
+      _stepCount = 0;
       _positions.clear();
+    });
+
+    // 歩数のstreamを監視
+    _stepStream = Pedometer.stepCountStream.listen((StepCount event) {
+      if (_isRecording) {
+        setState(() {
+          if (_initialStepCount == 0) {
+            _initialStepCount = event.steps; // 記録開始時の歩数を保存
+          }
+          _stepCount = event.steps - _initialStepCount; // 初期歩数を差し引いて0からカウント
+        });
+      }
+    });
+
+    // 位置情報のstreamを監視
+    _positionStream =
+        Geolocator.getPositionStream().listen((Position position) {
+      if (_isRecording) {
+        _updateDistance(position);
+      }
     });
     _currentGroupId = await _dbHelper.getNewGroupId();
   }
 
-  void _stopRecording() async {
+  // 位置情報の記録を停止
+  Future<void> _stopRecording() async {
     setState(() {
       _isRecording = false;
+      _initialStepCount = 0; // 次の記録のために初期化
     });
+
+    // streamをキャンセル
+    _positionStream?.cancel();
+    _stepStream?.cancel();
 
     if (_positions.isEmpty) return;
 
-    // _positionsの内容をコピーして、新しいリストを作成
+    // 記録された位置情報を保存
     List<Position> recordedPositions = List<Position>.from(_positions);
 
-    // リセットして、次回の記録に備える
-    _positions.clear();
+    // 最初と最後の座標を繋がないようにリセット
+    _polylines = {
+      Polyline(
+        polylineId: PolylineId("current_route"),
+        points: _positions
+            .map((pos) => LatLng(pos.latitude, pos.longitude))
+            .toList(),
+        color: Colors.blue,
+        width: 5,
+      ),
+    };
+    setState(() {});
 
-    // 保存処理
+    _positions.clear(); // 次の記録のためにリセット
+
+    // Firestoreとローカルデータベースに保存
     List<Map<String, dynamic>> positionData = _positions.map((position) {
       return {
         'latitude': position.latitude,
@@ -135,6 +185,7 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
       };
     }).toList();
 
+    // ローカルデータベースに保存
     for (var position in recordedPositions) {
       await _dbHelper.insertPosition(
         _currentGroupId,
@@ -143,9 +194,27 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
         position.timestamp!.toIso8601String(),
       );
     }
+
+    // 歩行記録を保存
+    await _dbHelper.insertRecord({
+      'group_id': _currentGroupId,
+      'date': DateTime.now().toString(),
+      'steps': _stepCount,
+      'distance': _totalDistance,
+    });
+
+    // Firestoreに保存
+    await _firestoreService.saveWalkingData(
+      date: DateTime.now().toString(),
+      steps: _stepCount,
+      distance: _totalDistance,
+    );
+
+    // Firestoreに位置情報を保存
     await _firestoreService.savePositionGroup(_currentGroupId, positionData);
   }
 
+  // BackgroundGeolocationの初期化
   void _initializeBackgroundGeolocation() {
     bg.BackgroundGeolocation.onLocation((bg.Location location) {
       _checkIfUserIsMoving(Position(
@@ -164,6 +233,7 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
       print("[onLocation] ERROR: ${error.code}, ${error.message}");
     });
 
+    // BackgroundGeolocationの設定
     bg.BackgroundGeolocation.ready(bg.Config(
       desiredAccuracy: bg.Config.DESIRED_ACCURACY_HIGH,
       distanceFilter: 5.0,
@@ -177,6 +247,7 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
     });
   }
 
+  // ユーザーが移動しているかどうかをチェック
   Future<void> _checkIfUserIsMoving(Position newPosition) async {
     if (_previousPosition != null) {
       double distance = Geolocator.distanceBetween(
@@ -190,19 +261,21 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
         return;
       }
 
-      // 速度に基づく遅延間隔を計算
+      // 移動中の場合、速度に応じて記録間隔を変更
       int recordingInterval;
       if (newPosition.speed < 1) {
-        recordingInterval = 7000; // ゆっくり歩く場合は7秒間隔
+        recordingInterval = 7000;
       } else if (newPosition.speed < 5) {
-        recordingInterval = 5000; // 中程度の速度の場合は5秒間隔
+        recordingInterval = 5000;
       } else {
-        recordingInterval = 3000; // 速い速度の場合は3秒間隔
+        recordingInterval = 3000;
       }
 
+      // 記録中の場合、位置情報を記録
       if (_isRecording) {
         _positions.add(newPosition);
 
+        // ポリラインを更新
         _polylines = {
           Polyline(
             polylineId: PolylineId("current_route"),
@@ -215,7 +288,6 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
         };
         setState(() {});
 
-        // 記録の頻度を速度に応じて調整
         await Future.delayed(Duration(milliseconds: recordingInterval));
       }
 
@@ -240,6 +312,36 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
     return distance < noiseThreshold;
   }
 
+  // 位置情報の距離を更新
+  void _updateDistance(Position newPosition) {
+    if (_previousPosition != null) {
+      final distance = Geolocator.distanceBetween(
+        _previousPosition!.latitude,
+        _previousPosition!.longitude,
+        newPosition.latitude,
+        newPosition.longitude,
+      );
+      _totalDistance += distance;
+    }
+
+    // ポリラインを更新
+    setState(() {
+      _positions.add(newPosition);
+      _polylines = {
+        Polyline(
+          polylineId: PolylineId("current_route"),
+          points: _positions
+              .map((pos) => LatLng(pos.latitude, pos.longitude))
+              .toList(),
+          color: Colors.blue,
+          width: 5,
+        ),
+      };
+    });
+    _previousPosition = newPosition;
+  }
+
+  // Firestoreからデータを復元
   Future<void> _restoreDataFromFirestore() async {
     try {
       List<Map<String, dynamic>> allPositions =
@@ -254,14 +356,14 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
       }
       print("Firestoreからローカルデータベースにデータを復元しました");
 
-      // ローカルDBからデータを`trajectories`に反映
       await _loadTrajectories();
-      setState(() {}); // trajectoriesの更新を反映
+      setState(() {});
     } catch (e) {
       print("データの復元に失敗しました: $e");
     }
   }
 
+  // ローカルデータベースから軌跡を読み込む
   Future<void> _loadTrajectories() async {
     List<int> groupIds = await _dbHelper.getAllGroupIds();
     List<List<Position>> loadedTrajectories = [];
@@ -277,8 +379,9 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
     });
   }
 
+  // アートワーク作成画面に遷移
   void _navigateToArtworkCreationScreen() async {
-    await _restoreDataFromFirestore(); // データ復元を完了してから
+    await _restoreDataFromFirestore();
     Navigator.push(
       context,
       MaterialPageRoute(
@@ -286,7 +389,8 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
       ),
     );
   }
-
+  
+  // アートワークギャラリー画面に遷移
   Future<void> _navigatetoArtworkGalleryScreen() async {
     await _loadSavedArtworks();
     Navigator.push(
@@ -307,18 +411,28 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text('軌跡の記録'),
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            Text('軌跡の記録', style: TextStyle(fontSize: 20)),
+            SizedBox(height: 4),
+            Text(
+              '歩数: $_stepCount 歩  距離: ${(_totalDistance / 1000).toStringAsFixed(2)}km',
+              style: TextStyle(fontSize: 14),
+            ),
+          ],
+        ),
       ),
       body: Stack(
         children: [
           GoogleMap(
             initialCameraPosition: CameraPosition(
-              target: LatLng(35.0, 135.0), // 初期カメラ位置は適当な位置に設定
+              target: LatLng(35.0, 135.0),
               zoom: 16,
             ),
             onMapCreated: (GoogleMapController controller) {
               _mapController = controller;
-              _setInitialCameraPosition(); // マップが作成されたときにカメラを現在位置に移動
+              _setInitialCameraPosition();
             },
             polylines: _polylines,
             myLocationEnabled: true,
@@ -327,7 +441,7 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
         ],
       ),
       floatingActionButton: Padding(
-        padding: const EdgeInsets.only(bottom: 80.0), // ボトムナビゲーションと重ならないよう調整
+        padding: const EdgeInsets.only(bottom: 80.0),
         child: FloatingActionButton(
           onPressed: _isRecording ? _stopRecording : _startRecording,
           child: Icon(_isRecording ? Icons.stop : Icons.play_arrow),
@@ -351,7 +465,6 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
         onTap: (index) {
           switch (index) {
             case 0:
-              // 軌跡の記録画面（現在の画面）
               break;
             case 1:
               _navigateToArtworkCreationScreen();
@@ -365,7 +478,6 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
     );
   }
 
-  // 現在位置を取得してGoogle Mapのカメラ位置を設定する関数
   Future<void> _setInitialCameraPosition() async {
     try {
       Position position = await Geolocator.getCurrentPosition();
@@ -373,7 +485,6 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
         _currentPosition = position;
       });
 
-      // Google Mapのカメラ位置を現在位置に移動
       _mapController?.animateCamera(
         CameraUpdate.newCameraPosition(
           CameraPosition(
