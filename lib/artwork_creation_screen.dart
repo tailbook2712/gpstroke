@@ -1,6 +1,5 @@
 import 'dart:typed_data';
 import 'dart:ui';
-
 import 'package:flutter/rendering.dart';
 import 'package:path_provider/path_provider.dart';
 import 'dart:ui' as ui;
@@ -75,6 +74,15 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
     }
   }
 
+  void _removeSelectedTrajectory() {
+    if (selectedItem != null) {
+      setState(() {
+        selectedTrajectories.remove(selectedItem);
+        selectedItem = null;
+      });
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     double screenWidth = MediaQuery.of(context).size.width;
@@ -104,8 +112,8 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                 key: _boundaryKey,
                 child: DragTarget<List<Position>>(
                   onAcceptWithDetails: (details) {
-                    RenderBox renderBox = _canvasKey.currentContext
-                        ?.findRenderObject() as RenderBox;
+                    RenderBox renderBox = _canvasKey.currentContext!
+                        .findRenderObject() as RenderBox;
                     Offset localPosition =
                         renderBox.globalToLocal(details.offset);
 
@@ -228,7 +236,14 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
               ),
             ),
           ),
-          SizedBox(height: 10),
+          if (selectedItem != null)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 8.0),
+              child: IconButton(
+                icon: Icon(Icons.delete, size: 30, color: Colors.red),
+                onPressed: _removeSelectedTrajectory,
+              ),
+            ),
           Container(
             height: 80,
             child: ListView.builder(
@@ -264,7 +279,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                       height: 70,
                       decoration: BoxDecoration(
                         border: Border.all(color: Colors.blue),
-                        borderRadius: BorderRadius.circular(15), // 角丸の四角形に設定
+                        borderRadius: BorderRadius.circular(15),
                       ),
                       child: Padding(
                         padding: const EdgeInsets.all(8.0),
