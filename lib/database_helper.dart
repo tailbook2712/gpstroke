@@ -2,13 +2,13 @@ import 'package:path/path.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:geolocator/geolocator.dart';
 
-// データベースクラス
 class DatabaseHelper {
   static final _databaseName = "walking_tracker.db";
   static final _databaseVersion = 1;
 
   static final tablePositions = 'walking_positions';
   static final tableRecords = 'walking_records';
+  static final usedTrajectoriesTable = 'used_trajectories';
 
   // walking_positions テーブルのカラム
   static final columnId = '_id';
@@ -24,16 +24,17 @@ class DatabaseHelper {
   static final columnSteps = 'steps';
   static final columnDistance = 'distance';
 
+  // used_trajectories テーブルのカラム
+  static final columnTrajectoryIndex = 'trajectory_index';
+
   static Database? _database;
 
-  // データベースを初期化するメソッド
   Future<Database> get database async {
     if (_database != null) return _database!;
     _database = await _initDatabase();
     return _database!;
   }
 
-  // データベースを初期化
   _initDatabase() async {
     String path = join(await getDatabasesPath(), _databaseName);
     return await openDatabase(
@@ -43,7 +44,6 @@ class DatabaseHelper {
     );
   }
 
-  // テーブルを作成
   Future _onCreate(Database db, int version) async {
     // walking_positions テーブル
     await db.execute('''
@@ -66,6 +66,13 @@ class DatabaseHelper {
         $columnDistance REAL NOT NULL
       )
     ''');
+
+    // used_trajectories テーブル
+    await db.execute('''
+      CREATE TABLE $usedTrajectoriesTable (
+        $columnTrajectoryIndex INTEGER PRIMARY KEY
+      )
+    ''');
   }
 
   // 新しい位置情報を挿入
@@ -86,6 +93,23 @@ class DatabaseHelper {
   Future<int> insertRecord(Map<String, dynamic> record) async {
     Database db = await database;
     return await db.insert(tableRecords, record);
+  }
+
+  // 使用済み軌跡インデックスを保存
+  Future<void> insertUsedTrajectory(int trajectoryIndex) async {
+    Database db = await database;
+    await db.insert(
+      usedTrajectoriesTable,
+      {columnTrajectoryIndex: trajectoryIndex},
+      conflictAlgorithm: ConflictAlgorithm.ignore,
+    );
+  }
+
+  // 使用済み軌跡インデックスの取得
+  Future<List<int>> getUsedTrajectories() async {
+    Database db = await database;
+    final result = await db.query(usedTrajectoriesTable);
+    return result.map((row) => row[columnTrajectoryIndex] as int).toList();
   }
 
   // すべての位置情報を取得
@@ -148,7 +172,7 @@ class DatabaseHelper {
     Database db = await database;
     return await db.query(
       tableRecords,
-      orderBy: '$columnDate DESC', // 日付を降順に並べ替え
+      orderBy: '$columnDate DESC',
     );
   }
 }

@@ -6,6 +6,7 @@ import 'dart:ui' as ui;
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
+import 'database_helper.dart';
 import 'polyline_painter.dart';
 
 class ArtworkCreationScreen extends StatefulWidget {
@@ -24,6 +25,8 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
   final GlobalKey _boundaryKey = GlobalKey();
   final double canvasPadding = 20.0;
   List<List<Position>> recordedTrajectories = [];
+  Set<int> usedTrajectoryIndices = {}; // 保存済みの軌跡インデックスを保持
+  Set<int> temporarilyUsedIndices = {}; // 一時的に使用された軌跡インデックス
 
   final double minScale = 0.5;
   final double maxScale = 1.5;
@@ -42,6 +45,15 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
   Future<void> _loadRecordTrajectories() async {
     setState(() {
       recordedTrajectories = widget.trajectories;
+      _loadUsedTrajectories();
+    });
+  }
+
+  Future<void> _loadUsedTrajectories() async {
+    final dbHelper = DatabaseHelper();
+    final loadedUsedIndices = await dbHelper.getUsedTrajectories();
+    setState(() {
+      usedTrajectoryIndices = loadedUsedIndices.toSet();
     });
   }
 
@@ -63,6 +75,14 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
       File imgFile = File('${artworksDirectory.path}/artwork_$timestamp.png');
       await imgFile.writeAsBytes(pngBytes);
 
+      // 永続的に使用済みとしてデータベースに保存
+      final dbHelper = DatabaseHelper();
+      for (final index in temporarilyUsedIndices) {
+        usedTrajectoryIndices.add(index);
+        dbHelper.insertUsedTrajectory(index);
+      }
+      temporarilyUsedIndices.clear(); // 一時的な使用インデックスをクリア
+
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('アートワークが保存されました!')),
       );
@@ -76,8 +96,13 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
 
   void _removeSelectedTrajectory() {
     if (selectedItem != null) {
+      int indexToRemove = recordedTrajectories.indexOf(selectedItem!.polyline);
       setState(() {
         selectedTrajectories.remove(selectedItem);
+        // 保存されていない軌跡は一時的使用リストから削除し、再度リストに戻す
+        if (temporarilyUsedIndices.contains(indexToRemove)) {
+          temporarilyUsedIndices.remove(indexToRemove);
+        }
         selectedItem = null;
       });
     }
@@ -114,14 +139,16 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                   onAcceptWithDetails: (details) {
                     RenderBox renderBox = _canvasKey.currentContext!
                         .findRenderObject() as RenderBox;
-                    Offset localPosition =
-                        renderBox.globalToLocal(details.offset);
+                    Offset localPosition = renderBox.globalToLocal(details.offset);
+
+                    final index = recordedTrajectories.indexOf(details.data);
 
                     setState(() {
                       selectedTrajectories.add(
                         TransformablePolyline(
                             details.data, localPosition - Offset(75, 75)),
                       );
+                      temporarilyUsedIndices.add(index); // リストから一時的に削除
                     });
                   },
                   builder: (context, candidateData, rejectedData) {
@@ -250,6 +277,12 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
               scrollDirection: Axis.horizontal,
               itemCount: recordedTrajectories.length,
               itemBuilder: (context, index) {
+                // 使用済みまたは一時使用の軌跡は表示しない
+                if (usedTrajectoryIndices.contains(index) ||
+                    temporarilyUsedIndices.contains(index)) {
+                  return SizedBox.shrink();
+                }
+
                 return Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 8.0),
                   child: Draggable<List<Position>>(
