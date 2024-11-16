@@ -135,130 +135,145 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
               },
               child: RepaintBoundary(
                 key: _boundaryKey,
-                child: DragTarget<List<Position>>(
-                  onAcceptWithDetails: (details) {
-                    RenderBox renderBox = _canvasKey.currentContext!
-                        .findRenderObject() as RenderBox;
-                    Offset localPosition = renderBox.globalToLocal(details.offset);
+                child: Stack(
+                  children: [
+                    // グリッド線を描画
+                    CustomPaint(
+                      size: Size.infinite,
+                      painter: GridPainter(gridSize: 50), // グリッドサイズ調整可能
+                    ),
+                    // 軌跡を配置するドラッグターゲット
+                    DragTarget<List<Position>>(
+                      onAcceptWithDetails: (details) {
+                        RenderBox renderBox = _canvasKey.currentContext!
+                            .findRenderObject() as RenderBox;
+                        Offset localPosition =
+                            renderBox.globalToLocal(details.offset);
 
-                    final index = recordedTrajectories.indexOf(details.data);
+                        final index =
+                            recordedTrajectories.indexOf(details.data);
 
-                    setState(() {
-                      selectedTrajectories.add(
-                        TransformablePolyline(
-                            details.data, localPosition - Offset(75, 75)),
-                      );
-                      temporarilyUsedIndices.add(index); // リストから一時的に削除
-                    });
-                  },
-                  builder: (context, candidateData, rejectedData) {
-                    return Container(
-                      key: _canvasKey,
-                      color: Colors.white,
-                      child: Stack(
-                        children: selectedTrajectories.map((item) {
-                          return Positioned(
-                            left: item.position.dx.clamp(
-                                canvasPadding, screenWidth - canvasPadding),
-                            top: item.position.dy.clamp(
-                                canvasPadding, screenHeight - canvasPadding),
-                            child: GestureDetector(
-                              onTap: () {
-                                setState(() {
-                                  selectedItem = item;
-                                });
-                              },
-                              onScaleStart: (_) {
-                                if (selectedItem == item) {
-                                  setState(() {
-                                    isScaling = true;
-                                    isRotating = false;
-                                  });
-                                }
-                              },
-                              onScaleUpdate: (details) {
-                                if (selectedItem == item) {
-                                  setState(() {
-                                    if (rotateMode) {
-                                      if (details.rotation.abs() > 0.01) {
-                                        item.rotation +=
-                                            details.rotation * rotationFactor;
-                                      }
-                                    } else {
-                                      if (details.scale != 1.0) {
-                                        item.scale = (item.scale +
-                                                (details.scale - 1) *
-                                                    scaleFactor)
-                                            .clamp(minScale, maxScale);
-                                      }
+                        setState(() {
+                          selectedTrajectories.add(
+                            TransformablePolyline(
+                                details.data, localPosition - Offset(75, 75)),
+                          );
+                          temporarilyUsedIndices.add(index); // 一時的に使用リストに追加
+                        });
+                      },
+                      builder: (context, candidateData, rejectedData) {
+                        return Container(
+                          key: _canvasKey,
+                          color: Colors.transparent,
+                          child: Stack(
+                            children: selectedTrajectories.map((item) {
+                              return Positioned(
+                                left: item.position.dx.clamp(
+                                    canvasPadding, screenWidth - canvasPadding),
+                                top: item.position.dy.clamp(
+                                    canvasPadding,
+                                    screenHeight - canvasPadding),
+                                child: GestureDetector(
+                                  onTap: () {
+                                    setState(() {
+                                      selectedItem = item;
+                                    });
+                                  },
+                                  onScaleStart: (_) {
+                                    if (selectedItem == item) {
+                                      setState(() {
+                                        isScaling = true;
+                                        isRotating = false;
+                                      });
                                     }
-                                    item.position += details.focalPointDelta;
-                                  });
-                                }
-                              },
-                              onScaleEnd: (_) {
-                                if (selectedItem == item) {
-                                  setState(() {
-                                    isScaling = false;
-                                    isRotating = false;
-                                  });
-                                }
-                              },
-                              child: Stack(
-                                children: [
-                                  Transform(
-                                    transform: Matrix4.identity()
-                                      ..translate(
-                                          item.position.dx, item.position.dy)
-                                      ..scale(item.scale)
-                                      ..rotateZ(item.rotation),
-                                    origin: Offset(75, 75),
-                                    child: Container(
-                                      decoration: BoxDecoration(
-                                        border: selectedItem == item
-                                            ? Border.all(
-                                                color: Colors.red, width: 2.0)
-                                            : null,
-                                      ),
-                                      child: Padding(
-                                        padding: const EdgeInsets.all(40.0),
-                                        child: CustomPaint(
-                                          size: Size(150, 150),
-                                          painter: PolylinePainter(
-                                            positions: item.polyline,
-                                            minLat: item.minLat,
-                                            maxLat: item.maxLat,
-                                            minLon: item.minLon,
-                                            maxLon: item.maxLon,
+                                  },
+                                  onScaleUpdate: (details) {
+                                    if (selectedItem == item) {
+                                      setState(() {
+                                        if (rotateMode) {
+                                          if (details.rotation.abs() > 0.01) {
+                                            item.rotation += details.rotation *
+                                                rotationFactor;
+                                          }
+                                        } else {
+                                          if (details.scale != 1.0) {
+                                            item.scale = (item.scale +
+                                                    (details.scale - 1) *
+                                                        scaleFactor)
+                                                .clamp(minScale, maxScale);
+                                          }
+                                        }
+                                        item.position +=
+                                            details.focalPointDelta;
+                                      });
+                                    }
+                                  },
+                                  onScaleEnd: (_) {
+                                    if (selectedItem == item) {
+                                      setState(() {
+                                        isScaling = false;
+                                        isRotating = false;
+                                      });
+                                    }
+                                  },
+                                  child: Stack(
+                                    children: [
+                                      Transform(
+                                        transform: Matrix4.identity()
+                                          ..translate(item.position.dx,
+                                              item.position.dy)
+                                          ..scale(item.scale)
+                                          ..rotateZ(item.rotation),
+                                        origin: Offset(75, 75),
+                                        child: Container(
+                                          decoration: BoxDecoration(
+                                            border: selectedItem == item
+                                                ? Border.all(
+                                                    color: Colors.red,
+                                                    width: 2.0)
+                                                : null,
+                                          ),
+                                          child: Padding(
+                                            padding: const EdgeInsets.all(40.0),
+                                            child: CustomPaint(
+                                              size: Size(150, 150),
+                                              painter: PolylinePainter(
+                                                positions: item.polyline,
+                                                minLat: item.minLat,
+                                                maxLat: item.maxLat,
+                                                minLon: item.minLon,
+                                                maxLon: item.maxLon,
+                                              ),
+                                            ),
                                           ),
                                         ),
                                       ),
-                                    ),
+                                      if (selectedItem == item)
+                                        Positioned(
+                                          top: (item.scale * 75) - 25,
+                                          right: (item.scale * 75) - 25,
+                                          child: IconButton(
+                                            icon: Icon(rotateMode
+                                                ? Icons.rotate_right
+                                                : Icons.open_with),
+                                            color: Colors.blue,
+                                            onPressed: () {
+                                              setState(() {
+                                                rotateMode = !rotateMode;
+                                              });
+                                            },
+                                          ),
+                                        ),
+                                    ],
                                   ),
-                                  if (selectedItem == item)
-                                    Positioned(
-                                      top: (item.scale * 75) - 25,
-                                      right: (item.scale * 75) - 25,
-                                      child: IconButton(
-                                        icon: Icon(rotateMode
-                                            ? Icons.rotate_right
-                                            : Icons.open_with),
-                                        color: Colors.blue,
-                                        onPressed: () {
-                                          setState(() {
-                                            rotateMode = !rotateMode;
-                                          });
-                                        },
-                                      ),
-                                    ),
-                                ],
-                              ),
-                            ),
-                          );
-                        }).toList(),
-                      ),
-                    );
-                  },
+                                ),
+                              );
+                            }).toList(),
+                          ),
+                        );
+                      },
+                    ),
+                  ],
                 ),
               ),
             ),
@@ -277,7 +292,6 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
               scrollDirection: Axis.horizontal,
               itemCount: recordedTrajectories.length,
               itemBuilder: (context, index) {
-                // 使用済みまたは一時使用の軌跡は表示しない
                 if (usedTrajectoryIndices.contains(index) ||
                     temporarilyUsedIndices.contains(index)) {
                   return SizedBox.shrink();
@@ -365,4 +379,32 @@ class TransformablePolyline {
         maxLat = polyline.map((p) => p.latitude).reduce((a, b) => a > b ? a : b),
         minLon = polyline.map((p) => p.longitude).reduce((a, b) => a < b ? a : b),
         maxLon = polyline.map((p) => p.longitude).reduce((a, b) => a > b ? a : b);
+}
+
+/// グリッド線を描画するクラス
+class GridPainter extends CustomPainter {
+  final double gridSize;
+  final Color gridColor;
+
+  GridPainter({this.gridSize = 50, this.gridColor = Colors.grey});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = gridColor.withOpacity(0.5)
+      ..strokeWidth = 0.5;
+
+    // 垂直線
+    for (double x = 0; x <= size.width; x += gridSize) {
+      canvas.drawLine(Offset(x, 0), Offset(x, size.height), paint);
+    }
+
+    // 水平線
+    for (double y = 0; y <= size.height; y += gridSize) {
+      canvas.drawLine(Offset(0, y), Offset(size.width, y), paint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
