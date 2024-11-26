@@ -2,7 +2,6 @@ import 'dart:typed_data';
 import 'dart:ui';
 import 'package:flutter/rendering.dart';
 import 'package:path_provider/path_provider.dart';
-import 'dart:ui' as ui;
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
@@ -28,8 +27,8 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
   Set<int> usedTrajectoryIndices = {}; // 保存済みの軌跡インデックスを保持
   Set<int> temporarilyUsedIndices = {}; // 一時的に使用された軌跡インデックス
 
-  final double minScale = 0.5;
-  final double maxScale = 1.5;
+  final double minScale = 0.5; // 縮小の下限
+  final double maxScale = 1.3; // 拡大の上限
   bool isScaling = false;
   bool isRotating = false;
   final double scaleFactor = 0.05;
@@ -42,6 +41,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
     _loadRecordTrajectories();
   }
 
+  // データベースから保存済みの軌跡を読み込む
   Future<void> _loadRecordTrajectories() async {
     setState(() {
       recordedTrajectories = widget.trajectories;
@@ -49,6 +49,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
     });
   }
 
+  // データベースから保存済みの軌跡インデックスを読み込む
   Future<void> _loadUsedTrajectories() async {
     final dbHelper = DatabaseHelper();
     final loadedUsedIndices = await dbHelper.getUsedTrajectories();
@@ -56,7 +57,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
       usedTrajectoryIndices = loadedUsedIndices.toSet();
     });
   }
-
+  // アートワークを保存する
   Future<void> _saveArtwork() async {
     try {
       RenderRepaintBoundary boundary = _boundaryKey.currentContext!
@@ -75,13 +76,12 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
       File imgFile = File('${artworksDirectory.path}/artwork_$timestamp.png');
       await imgFile.writeAsBytes(pngBytes);
 
-      // 永続的に使用済みとしてデータベースに保存
       final dbHelper = DatabaseHelper();
       for (final index in temporarilyUsedIndices) {
         usedTrajectoryIndices.add(index);
         dbHelper.insertUsedTrajectory(index);
       }
-      temporarilyUsedIndices.clear(); // 一時的な使用インデックスをクリア
+      temporarilyUsedIndices.clear();
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('アートワークが保存されました!')),
@@ -94,18 +94,88 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
     }
   }
 
+  // 選択された軌跡を削除する
   void _removeSelectedTrajectory() {
     if (selectedItem != null) {
       int indexToRemove = recordedTrajectories.indexOf(selectedItem!.polyline);
       setState(() {
         selectedTrajectories.remove(selectedItem);
-        // 保存されていない軌跡は一時的使用リストから削除し、再度リストに戻す
         if (temporarilyUsedIndices.contains(indexToRemove)) {
           temporarilyUsedIndices.remove(indexToRemove);
         }
         selectedItem = null;
       });
     }
+  }
+
+  // 使用可能な軌跡を表示するモーダルを表示する
+  void _showTrajectoryModal(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) {
+        // 使用可能な軌跡をフィルタリング
+        final availableTrajectories = List.generate(
+          recordedTrajectories.length,
+          (index) => !usedTrajectoryIndices.contains(index) &&
+                  !temporarilyUsedIndices.contains(index)
+              ? recordedTrajectories[index]
+              : null,
+        ).where((trajectory) => trajectory != null).toList();
+
+        return Container(
+          height: MediaQuery.of(context).size.height * 0.5,
+          padding: EdgeInsets.all(10),
+          child: GridView.builder(
+            gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: 3,
+              crossAxisSpacing: 10,
+              mainAxisSpacing: 10,
+            ),
+            itemCount: availableTrajectories.length,
+            itemBuilder: (context, index) {
+              return GestureDetector(
+                onTap: () {
+                  Navigator.pop(context); // モーダルを閉じる
+                  setState(() {
+                    final trajectoryIndex =
+                        recordedTrajectories.indexOf(availableTrajectories[index]!);
+                    temporarilyUsedIndices.add(trajectoryIndex);
+                    selectedTrajectories.add(
+                      TransformablePolyline(
+                        availableTrajectories[index]!,
+                        Offset(
+                          MediaQuery.of(context).size.width / 2 - 120,
+                          MediaQuery.of(context).size.height / 2 - 280,
+                        ),
+                      ),
+                    );
+                  });
+                },
+                child: CustomPaint(
+                  size: Size(60, 60),
+                  painter: PolylinePainter(
+                    positions: availableTrajectories[index]!,
+                    minLat: availableTrajectories[index]!
+                        .map((p) => p.latitude)
+                        .reduce((a, b) => a < b ? a : b),
+                    maxLat: availableTrajectories[index]!
+                        .map((p) => p.latitude)
+                        .reduce((a, b) => a > b ? a : b),
+                    minLon: availableTrajectories[index]!
+                        .map((p) => p.longitude)
+                        .reduce((a, b) => a < b ? a : b),
+                    maxLon: availableTrajectories[index]!
+                        .map((p) => p.longitude)
+                        .reduce((a, b) => a > b ? a : b),
+                  ),
+                ),
+              );
+            },
+          ),
+        );
+      },
+    );
   }
 
   @override
@@ -123,6 +193,10 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
           ),
         ],
       ),
+      floatingActionButton: FloatingActionButton(
+        onPressed: () => _showTrajectoryModal(context),
+        child: Icon(Icons.add),
+      ),
       body: Column(
         children: [
           Flexible(
@@ -137,141 +211,115 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                 key: _boundaryKey,
                 child: Stack(
                   children: [
-                    // グリッド線を描画
                     CustomPaint(
                       size: Size.infinite,
-                      painter: GridPainter(gridSize: 50), // グリッドサイズ調整可能
+                      painter: GridPainter(gridSize: 50),
                     ),
-                    // 軌跡を配置するドラッグターゲット
-                    DragTarget<List<Position>>(
-                      onAcceptWithDetails: (details) {
-                        RenderBox renderBox = _canvasKey.currentContext!
-                            .findRenderObject() as RenderBox;
-                        Offset localPosition =
-                            renderBox.globalToLocal(details.offset);
-
-                        final index =
-                            recordedTrajectories.indexOf(details.data);
-
-                        setState(() {
-                          selectedTrajectories.add(
-                            TransformablePolyline(
-                                details.data, localPosition - Offset(75, 75)),
-                          );
-                          temporarilyUsedIndices.add(index); // 一時的に使用リストに追加
-                        });
-                      },
-                      builder: (context, candidateData, rejectedData) {
-                        return Container(
-                          key: _canvasKey,
-                          color: Colors.transparent,
-                          child: Stack(
-                            children: selectedTrajectories.map((item) {
-                              return Positioned(
-                                left: item.position.dx.clamp(
-                                    canvasPadding, screenWidth - canvasPadding),
-                                top: item.position.dy.clamp(
-                                    canvasPadding,
-                                    screenHeight - canvasPadding),
-                                child: GestureDetector(
-                                  onTap: () {
-                                    setState(() {
-                                      selectedItem = item;
-                                    });
-                                  },
-                                  onScaleStart: (_) {
-                                    if (selectedItem == item) {
-                                      setState(() {
-                                        isScaling = true;
-                                        isRotating = false;
-                                      });
+                    Stack(
+                      children: selectedTrajectories.map((item) {
+                        return Positioned(
+                          left: item.position.dx.clamp(
+                              canvasPadding, screenWidth - canvasPadding),
+                          top: item.position.dy.clamp(
+                              canvasPadding, screenHeight - canvasPadding),
+                          child: GestureDetector(
+                            behavior: HitTestBehavior.opaque,
+                            onTap: () {
+                              setState(() {
+                                selectedItem = item;
+                              });
+                            },
+                            onScaleStart: (_) {
+                              if (selectedItem == item) {
+                                setState(() {
+                                  isScaling = true;
+                                  isRotating = false;
+                                });
+                              }
+                            },
+                            onScaleUpdate: (details) {
+                              if (selectedItem == item) {
+                                setState(() {
+                                  if (rotateMode) {
+                                    if (details.rotation.abs() > 0.01) {
+                                      item.rotation +=
+                                          details.rotation * rotationFactor;
                                     }
-                                  },
-                                  onScaleUpdate: (details) {
-                                    if (selectedItem == item) {
-                                      setState(() {
-                                        if (rotateMode) {
-                                          if (details.rotation.abs() > 0.01) {
-                                            item.rotation += details.rotation *
-                                                rotationFactor;
-                                          }
-                                        } else {
-                                          if (details.scale != 1.0) {
-                                            item.scale = (item.scale +
-                                                    (details.scale - 1) *
-                                                        scaleFactor)
-                                                .clamp(minScale, maxScale);
-                                          }
-                                        }
-                                        item.position +=
-                                            details.focalPointDelta;
-                                      });
+                                  } else {
+                                    if (details.scale != 1.0) {
+                                      item.scale = (item.scale +
+                                              (details.scale - 1) * scaleFactor)
+                                          .clamp(minScale, maxScale);
                                     }
-                                  },
-                                  onScaleEnd: (_) {
-                                    if (selectedItem == item) {
-                                      setState(() {
-                                        isScaling = false;
-                                        isRotating = false;
-                                      });
-                                    }
-                                  },
-                                  child: Stack(
-                                    children: [
-                                      Transform(
-                                        transform: Matrix4.identity()
-                                          ..translate(item.position.dx,
-                                              item.position.dy)
-                                          ..scale(item.scale)
-                                          ..rotateZ(item.rotation),
-                                        origin: Offset(75, 75),
-                                        child: Container(
-                                          decoration: BoxDecoration(
-                                            border: selectedItem == item
-                                                ? Border.all(
-                                                    color: Colors.red,
-                                                    width: 2.0)
-                                                : null,
-                                          ),
-                                          child: Padding(
-                                            padding: const EdgeInsets.all(40.0),
-                                            child: CustomPaint(
-                                              size: Size(150, 150),
-                                              painter: PolylinePainter(
-                                                positions: item.polyline,
-                                                minLat: item.minLat,
-                                                maxLat: item.maxLat,
-                                                minLon: item.minLon,
-                                                maxLon: item.maxLon,
-                                              ),
-                                            ),
-                                          ),
+                                  }
+                                  item.position += details.focalPointDelta;
+                                });
+                              }
+                            },
+                            onScaleEnd: (_) {
+                              if (selectedItem == item) {
+                                setState(() {
+                                  isScaling = false;
+                                  isRotating = false;
+                                });
+                              }
+                            },
+                            child: Stack(
+                              children: [
+                                Transform(
+                                  transform: Matrix4.identity()
+                                    ..translate(item.position.dx,
+                                        item.position.dy)
+                                    ..translate(75 * item.scale,
+                                        75 * item.scale)
+                                    ..rotateZ(item.rotation)
+                                    ..translate(-75 * item.scale,
+                                        -75 * item.scale)
+                                    ..scale(item.scale),
+                                  origin: Offset(75, 75),
+                                  child: Container(
+                                    decoration: BoxDecoration(
+                                      border: selectedItem == item
+                                          ? Border.all(
+                                              color: Colors.red, width: 2.0)
+                                          : null,
+                                    ),
+                                    child: Padding(
+                                      padding: const EdgeInsets.all(40.0),
+                                      child: CustomPaint(
+                                        size: Size(150, 150),
+                                        painter: PolylinePainter(
+                                          positions: item.polyline,
+                                          minLat: item.minLat,
+                                          maxLat: item.maxLat,
+                                          minLon: item.minLon,
+                                          maxLon: item.maxLon,
                                         ),
                                       ),
-                                      if (selectedItem == item)
-                                        Positioned(
-                                          top: (item.scale * 75) - 25,
-                                          right: (item.scale * 75) - 25,
-                                          child: IconButton(
-                                            icon: Icon(rotateMode
-                                                ? Icons.rotate_right
-                                                : Icons.open_with),
-                                            color: Colors.blue,
-                                            onPressed: () {
-                                              setState(() {
-                                                rotateMode = !rotateMode;
-                                              });
-                                            },
-                                          ),
-                                        ),
-                                    ],
+                                    ),
                                   ),
                                 ),
-                              );
-                            }).toList(),
+                                if (selectedItem == item)
+                                  Positioned(
+                                    top: (item.scale * 75) - 25,
+                                    right: (item.scale * 75) - 25,
+                                    child: IconButton(
+                                      icon: Icon(rotateMode
+                                          ? Icons.rotate_right
+                                          : Icons.open_with),
+                                      color: Colors.blue,
+                                      onPressed: () {
+                                        setState(() {
+                                          rotateMode = !rotateMode;
+                                        });
+                                      },
+                                    ),
+                                  ),
+                              ],
+                            ),
                           ),
                         );
-                      },
+                      }).toList(),
                     ),
                   ],
                 ),
@@ -286,79 +334,35 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                 onPressed: _removeSelectedTrajectory,
               ),
             ),
-          Container(
-            height: 80,
-            child: ListView.builder(
-              scrollDirection: Axis.horizontal,
-              itemCount: recordedTrajectories.length,
-              itemBuilder: (context, index) {
-                if (usedTrajectoryIndices.contains(index) ||
-                    temporarilyUsedIndices.contains(index)) {
-                  return SizedBox.shrink();
-                }
-
-                return Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 8.0),
-                  child: Draggable<List<Position>>(
-                    data: recordedTrajectories[index],
-                    feedback: Material(
-                      child: CustomPaint(
-                        size: Size(60, 60),
-                        painter: PolylinePainter(
-                          positions: widget.trajectories[index],
-                          minLat: widget.trajectories[index]
-                              .map((p) => p.latitude)
-                              .reduce((a, b) => a < b ? a : b),
-                          maxLat: widget.trajectories[index]
-                              .map((p) => p.latitude)
-                              .reduce((a, b) => a > b ? a : b),
-                          minLon: widget.trajectories[index]
-                              .map((p) => p.longitude)
-                              .reduce((a, b) => a < b ? a : b),
-                          maxLon: widget.trajectories[index]
-                              .map((p) => p.longitude)
-                              .reduce((a, b) => a > b ? a : b),
-                        ),
-                      ),
-                    ),
-                    child: Container(
-                      width: 70,
-                      height: 70,
-                      decoration: BoxDecoration(
-                        border: Border.all(color: Colors.blue),
-                        borderRadius: BorderRadius.circular(15),
-                      ),
-                      child: Padding(
-                        padding: const EdgeInsets.all(8.0),
-                        child: CustomPaint(
-                          size: Size(60, 60),
-                          painter: PolylinePainter(
-                            positions: widget.trajectories[index],
-                            minLat: widget.trajectories[index]
-                                .map((p) => p.latitude)
-                                .reduce((a, b) => a < b ? a : b),
-                            maxLat: widget.trajectories[index]
-                                .map((p) => p.latitude)
-                                .reduce((a, b) => a > b ? a : b),
-                            minLon: widget.trajectories[index]
-                                .map((p) => p.longitude)
-                                .reduce((a, b) => a < b ? a : b),
-                            maxLon: widget.trajectories[index]
-                                .map((p) => p.longitude)
-                                .reduce((a, b) => a > b ? a : b),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                );
-              },
-            ),
-          ),
         ],
       ),
     );
   }
+}
+
+class GridPainter extends CustomPainter {
+  final double gridSize;
+  final Color gridColor;
+
+  GridPainter({this.gridSize = 50, this.gridColor = Colors.grey});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = gridColor.withOpacity(0.5)
+      ..strokeWidth = 0.5;
+
+    for (double x = 0; x <= size.width; x += gridSize) {
+      canvas.drawLine(Offset(x, 0), Offset(x, size.height), paint);
+    }
+
+    for (double y = 0; y <= size.height; y += gridSize) {
+      canvas.drawLine(Offset(0, y), Offset(size.width, y), paint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
 
 class TransformablePolyline {
@@ -379,32 +383,4 @@ class TransformablePolyline {
         maxLat = polyline.map((p) => p.latitude).reduce((a, b) => a > b ? a : b),
         minLon = polyline.map((p) => p.longitude).reduce((a, b) => a < b ? a : b),
         maxLon = polyline.map((p) => p.longitude).reduce((a, b) => a > b ? a : b);
-}
-
-/// グリッド線を描画するクラス
-class GridPainter extends CustomPainter {
-  final double gridSize;
-  final Color gridColor;
-
-  GridPainter({this.gridSize = 50, this.gridColor = Colors.grey});
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..color = gridColor.withOpacity(0.5)
-      ..strokeWidth = 0.5;
-
-    // 垂直線
-    for (double x = 0; x <= size.width; x += gridSize) {
-      canvas.drawLine(Offset(x, 0), Offset(x, size.height), paint);
-    }
-
-    // 水平線
-    for (double y = 0; y <= size.height; y += gridSize) {
-      canvas.drawLine(Offset(0, y), Offset(size.width, y), paint);
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }

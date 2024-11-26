@@ -263,14 +263,20 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
 
       // 移動中の場合、速度に応じて記録間隔を変更
       int recordingInterval;
-      if (newPosition.speed < 1) {
+      if (newPosition.speed < 1.5) {
+        // ゆっくり歩行
         recordingInterval = 7000;
-      } else if (newPosition.speed < 5) {
+      } else if (newPosition.speed < 3.5) {
+        // 速歩
         recordingInterval = 5000;
-      } else {
+      } else if (newPosition.speed < 10.0) {
+        // 走る
         recordingInterval = 3000;
+      } else {
+        // さらに早い場合
+        recordingInterval = 2000;
       }
-
+      
       // 記録中の場合、位置情報を記録
       if (_isRecording) {
         _positions.add(newPosition);
@@ -389,7 +395,7 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
       ),
     );
   }
-  
+
   // アートワークギャラリー画面に遷移
   Future<void> _navigatetoArtworkGalleryScreen() async {
     await _loadSavedArtworks();
