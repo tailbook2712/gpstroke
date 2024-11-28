@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:typed_data';
 import 'dart:ui';
 import 'package:flutter/rendering.dart';
@@ -68,31 +69,56 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
 
       final directory = await getApplicationDocumentsDirectory();
       final artworksDirectory = Directory('${directory.path}/artworks');
+      final canvasDirectory = Directory('${directory.path}/canvas_states');
+
+      // ディレクトリ作成
       if (!(await artworksDirectory.exists())) {
         await artworksDirectory.create(recursive: true);
       }
+      if (!(await canvasDirectory.exists())) {
+        await canvasDirectory.create(recursive: true);
+      }
 
+      // ファイル名をタイムスタンプで一意に生成
       String timestamp = DateTime.now().millisecondsSinceEpoch.toString();
       File imgFile = File('${artworksDirectory.path}/artwork_$timestamp.png');
+      File canvasFile = File('${canvasDirectory.path}/canvas_$timestamp.json');
+
+      // キャンバス状態を保存
+      final canvasState = selectedTrajectories.map((item) => {
+            'positions': item.polyline.map((p) => {
+                  'latitude': p.latitude,
+                  'longitude': p.longitude,
+                  'timestamp': p.timestamp?.toIso8601String() ?? "",
+                }).toList(),
+            'position': {'dx': item.position.dx, 'dy': item.position.dy},
+            'scale': item.scale,
+            'rotation': item.rotation,
+          }).toList();
+      await canvasFile.writeAsString(jsonEncode(canvasState));
+
+      // スクリーンショットを保存
       await imgFile.writeAsBytes(pngBytes);
 
+      // 使用済みの軌跡を保存
       final dbHelper = DatabaseHelper();
       for (final index in temporarilyUsedIndices) {
         usedTrajectoryIndices.add(index);
-        dbHelper.insertUsedTrajectory(index);
+        await dbHelper.insertUsedTrajectory(index);
       }
       temporarilyUsedIndices.clear();
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('アートワークが保存されました!')),
       );
-      Navigator.pop(context, imgFile);
+      Navigator.pop(context, {'imageFile': imgFile, 'canvasFile': canvasFile});
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('アートワークの保存に失敗しました。')),
+        SnackBar(content: Text('アートワークの保存に失敗しました: $e')),
       );
     }
   }
+
 
   // 選択された軌跡を削除する
   void _removeSelectedTrajectory() {
@@ -211,10 +237,6 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                 key: _boundaryKey,
                 child: Stack(
                   children: [
-                    CustomPaint(
-                      size: Size.infinite,
-                      painter: GridPainter(gridSize: 50),
-                    ),
                     Stack(
                       children: selectedTrajectories.map((item) {
                         return Positioned(
@@ -338,31 +360,6 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
       ),
     );
   }
-}
-
-class GridPainter extends CustomPainter {
-  final double gridSize;
-  final Color gridColor;
-
-  GridPainter({this.gridSize = 50, this.gridColor = Colors.grey});
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..color = gridColor.withOpacity(0.5)
-      ..strokeWidth = 0.5;
-
-    for (double x = 0; x <= size.width; x += gridSize) {
-      canvas.drawLine(Offset(x, 0), Offset(x, size.height), paint);
-    }
-
-    for (double y = 0; y <= size.height; y += gridSize) {
-      canvas.drawLine(Offset(0, y), Offset(size.width, y), paint);
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
 
 class TransformablePolyline {

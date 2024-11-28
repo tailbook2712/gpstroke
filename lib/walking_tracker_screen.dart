@@ -38,7 +38,7 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
   StreamSubscription<Position>? _positionStream;
   StreamSubscription<StepCount>? _stepStream;
   int _currentGroupId = 0;
-  List<File> savedArtworks = [];
+  List<Map<String, dynamic>> savedArtworks = []; // スクリーンショットとキャンバス状態のリスト
 
   GoogleMapController? _mapController;
   Set<Polyline> _polylines = {};
@@ -64,28 +64,37 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
     ));
   }
 
-  // 保存されたアートワークを読み込む
   Future<void> _loadSavedArtworks() async {
-    try {
-      final directory = await getApplicationDocumentsDirectory();
-      final artworksDirectory = Directory('${directory.path}/artworks');
+    final directory = await getApplicationDocumentsDirectory();
+    final artworksDirectory = Directory('${directory.path}/artworks');
+    final canvasDirectory = Directory('${directory.path}/canvas_states');
 
-      if (await artworksDirectory.exists()) {
-        List<FileSystemEntity> files = artworksDirectory.listSync();
-        List<File> artworkFiles = files
-            .whereType<File>()
-            .where((file) => file.path.endsWith('.png'))
-            .toList();
-
-        setState(() {
-          savedArtworks = artworkFiles;
-        });
-      } else {
-        print("アートワークディレクトリが存在しません");
-      }
-    } catch (e) {
-      print("アートワークのロード中にエラーが発生しました: $e");
+    // 両ディレクトリが存在しない場合は空リストのまま返す
+    if (!await artworksDirectory.exists() || !await canvasDirectory.exists()) {
+      savedArtworks = [];
+      return;
     }
+
+    // スクリーンショットとキャンバス状態を対応付けてロード
+    final artworkFiles = artworksDirectory.listSync().whereType<File>();
+    final canvasFiles = canvasDirectory.listSync().whereType<File>();
+
+    savedArtworks = artworkFiles.map((artworkFile) {
+      // 対応するキャンバス状態ファイルを取得
+      final timestamp = artworkFile.path.split('_').last.split('.').first;
+      final canvasFile = canvasFiles.firstWhere(
+        (file) => file.path.contains(timestamp),
+        orElse: () => File(''), // 見つからなければ空ファイル（スキップ）
+      );
+
+      if (canvasFile.existsSync()) {
+        return {
+          'imageFile': artworkFile,
+          'canvasFile': canvasFile,
+        };
+      }
+      return null; // キャンバスファイルがない場合スキップ
+    }).whereType<Map<String, dynamic>>().toList();
   }
 
   // 位置情報の許可を確認してトラッキングを開始

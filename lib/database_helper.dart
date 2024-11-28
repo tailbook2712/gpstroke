@@ -45,7 +45,6 @@ class DatabaseHelper {
   }
 
   Future _onCreate(Database db, int version) async {
-    // walking_positions テーブル
     await db.execute('''
       CREATE TABLE $tablePositions (
         $columnId INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -56,7 +55,6 @@ class DatabaseHelper {
       )
     ''');
 
-    // walking_records テーブル
     await db.execute('''
       CREATE TABLE $tableRecords (
         $columnRecordId INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -67,7 +65,6 @@ class DatabaseHelper {
       )
     ''');
 
-    // used_trajectories テーブル
     await db.execute('''
       CREATE TABLE $usedTrajectoriesTable (
         $columnTrajectoryIndex INTEGER PRIMARY KEY
@@ -75,7 +72,6 @@ class DatabaseHelper {
     ''');
   }
 
-  // 新しい位置情報を挿入
   Future<int> insertPosition(int groupId, double latitude, double longitude, String timestamp) async {
     Database db = await database;
     return await db.insert(
@@ -89,13 +85,11 @@ class DatabaseHelper {
     );
   }
 
-  // 新しい歩行記録を挿入 (group_id, date, steps, distance)
   Future<int> insertRecord(Map<String, dynamic> record) async {
     Database db = await database;
     return await db.insert(tableRecords, record);
   }
 
-  // 使用済み軌跡インデックスを保存
   Future<void> insertUsedTrajectory(int trajectoryIndex) async {
     Database db = await database;
     await db.insert(
@@ -105,20 +99,17 @@ class DatabaseHelper {
     );
   }
 
-  // 使用済み軌跡インデックスの取得
   Future<List<int>> getUsedTrajectories() async {
     Database db = await database;
     final result = await db.query(usedTrajectoriesTable);
     return result.map((row) => row[columnTrajectoryIndex] as int).toList();
   }
 
-  // すべての位置情報を取得
   Future<List<Map<String, dynamic>>> getAllPositions() async {
     Database db = await database;
     return await db.query(tablePositions);
   }
 
-  // 新しい位置情報グループIDを取得
   Future<int> getNewGroupId() async {
     Database db = await database;
     var result = await db.rawQuery('SELECT MAX($columnGroupId) as maxId FROM $tablePositions');
@@ -126,20 +117,17 @@ class DatabaseHelper {
     return (groupId != null ? groupId + 1 : 1);
   }
 
-  // グループIDをすべて取得するメソッド
   Future<List<int>> getAllGroupIds() async {
     Database db = await database;
     var result = await db.rawQuery('SELECT DISTINCT $columnGroupId FROM $tablePositions');
     return result.map((row) => row[columnGroupId] as int).toList();
   }
 
-  // 指定したグループの位置情報を取得するメソッド
   Future<List<Map<String, dynamic>>> getPositionsByGroupId(int groupId) async {
     Database db = await database;
     return await db.query(tablePositions, where: '$columnGroupId = ?', whereArgs: [groupId]);
   }
 
-  // 指定したグループIDの位置情報をPositionオブジェクトとして取得
   Future<List<Position>> getPositionsAsPositionsByGroupId(int groupId) async {
     Database db = await database;
     List<Map<String, dynamic>> result = await db.query(tablePositions, where: '$columnGroupId = ?', whereArgs: [groupId]);
@@ -149,7 +137,7 @@ class DatabaseHelper {
         latitude: row[columnLatitude],
         longitude: row[columnLongitude],
         timestamp: DateTime.parse(row[columnTimestamp]),
-        accuracy: 0.0, // デフォルト値
+        accuracy: 0.0,
         altitude: 0.0,
         heading: 0.0,
         speed: 0.0,
@@ -159,20 +147,29 @@ class DatabaseHelper {
       );
     }).toList();
   }
-  
-  // 指定したグループを削除するメソッド
+
   Future<void> deletePositionGroup(int groupId) async {
     Database db = await database;
     await db.delete(tablePositions, where: '$columnGroupId = ?', whereArgs: [groupId]);
     await db.delete(tableRecords, where: '$columnRecordGroupId = ?', whereArgs: [groupId]);
   }
 
-  // すべての歩行記録を取得するメソッド（日付の降順で並べ替え）
   Future<List<Map<String, dynamic>>> getAllRecords() async {
     Database db = await database;
     return await db.query(
       tableRecords,
       orderBy: '$columnDate DESC',
     );
+  }
+
+  // 指定したグループIDの記録を取得するメソッド
+  Future<Map<String, dynamic>?> getRecordByGroupId(int groupId) async {
+    Database db = await database;
+    List<Map<String, dynamic>> result = await db.query(
+      tableRecords,
+      where: '$columnRecordGroupId = ?',
+      whereArgs: [groupId],
+    );
+    return result.isNotEmpty ? result.first : null;
   }
 }
