@@ -3,7 +3,7 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'database_helper.dart';
 
 class WalkingDetailScreen extends StatefulWidget {
-  final int groupId;
+  final String groupId;
   final String date;
   final int steps;
   final String distance;
@@ -51,45 +51,39 @@ class _WalkingDetailScreenState extends State<WalkingDetailScreen> {
   // 指定されたグループ ID に基づいて位置情報と詳細データを取得
   Future<void> _fetchPositionsAndDetails() async {
     try {
-      // 位置情報を取得
+      // データベースから位置情報を取得
       List<Map<String, dynamic>> positions =
           await _dbHelper.getPositionsByGroupId(widget.groupId);
 
-      setState(() {
-        _polylinePoints = positions.map((position) {
-          return LatLng(position['latitude'], position['longitude']);
-        }).toList();
-
-        if (_polylinePoints.isNotEmpty) {
-          _initialPosition = _polylinePoints.first;
-        }
-
-        _polylines.add(
-          Polyline(
-            polylineId: PolylineId('walking_route_${widget.groupId}'),
-            points: _polylinePoints,
-            color: Colors.blue,
-            width: 4,
-          ),
-        );
-      });
-
-      // 歩行記録が存在するか確認
-      Map<String, dynamic>? record =
-          await _dbHelper.getRecordByGroupId(widget.groupId);
-
-      if (record != null) {
+      if (positions.isNotEmpty) {
         setState(() {
-          // 日付、歩数、距離を更新（既存のウィジェットを上書き）
-          _date = record['date'];
-          _steps = record['steps'];
-          _distance = (record['distance'] / 1000).toStringAsFixed(2);
+          // LatLng に変換
+          _polylinePoints = positions.map((position) {
+            return LatLng(position['latitude'], position['longitude']);
+          }).toList();
+
+          // 初期位置を設定
+          _initialPosition = _polylinePoints.first;
+
+          // ポリラインを追加
+          _polylines.add(
+            Polyline(
+              polylineId: PolylineId('walking_route_${widget.groupId}'),
+              points: _polylinePoints,
+              color: Colors.blue,
+              width: 4,
+            ),
+          );
         });
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("位置情報が見つかりません")),
+        );
       }
     } catch (e) {
-      print("データの取得中にエラーが発生しました: $e");
+      print("データ取得エラー: $e");
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text("データの取得中にエラーが発生しました")),
+        SnackBar(content: Text("データ取得中にエラーが発生しました")),
       );
     }
   }
@@ -122,7 +116,7 @@ class _WalkingDetailScreenState extends State<WalkingDetailScreen> {
           ),
           Expanded(
             child: _initialPosition == null
-                ? Center(child: CircularProgressIndicator())
+                ? Center(child: CircularProgressIndicator()) // ローディングインジケーター
                 : GoogleMap(
                     initialCameraPosition: CameraPosition(
                       target: _initialPosition!,

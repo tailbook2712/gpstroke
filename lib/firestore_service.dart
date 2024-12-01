@@ -6,7 +6,7 @@ class FirestoreService {
 
   // 位置情報と歩行データをFirestoreに保存するメソッド
   Future<void> saveWalkingData({
-    required int groupId,
+    required String groupId,
     required List<Map<String, dynamic>> positions,
     required String date,
     required int steps,

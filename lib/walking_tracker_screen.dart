@@ -13,6 +13,8 @@ import 'database_helper.dart';
 import 'firestore_service.dart';
 import 'package:pedometer/pedometer.dart';
 
+import 'utils/utils.dart';
+
 class WalkingTrackerScreen extends StatefulWidget {
   @override
   _WalkingTrackerScreenState createState() => _WalkingTrackerScreenState();
@@ -182,9 +184,11 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
     }).toList();
 
     final currentDate = DateTime.now().toIso8601String();
-
+    // generateGroupId を使って groupId を生成
+    String groupId = generateGroupId(_positions);
+  
     await _dbHelper.insertWalkingData(
-      groupId: _currentGroupId,
+      groupId: groupId,
       date: currentDate,
       steps: _stepCount,
       distance: _totalDistance,
@@ -193,7 +197,7 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
 
     // Firestore に保存
     await _firestoreService.saveWalkingData(
-      groupId: _currentGroupId,
+      groupId: groupId,
       date: currentDate,
       steps: _stepCount,
       distance: _totalDistance,
@@ -342,7 +346,7 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
       List<Map<String, dynamic>> allWalkingData = await _firestoreService.getAllWalkingData();
       for (var data in allWalkingData) {
         // 各フィールドを取得
-        int groupId = data['groupId'] ?? 0;
+        String groupId = data['groupId'] ?? 0;
         String date = data['timestamp'] ?? DateTime.now().toIso8601String();
         int steps = data['steps'] ?? 0;
         double distance = data['distance'] ?? 0.0;

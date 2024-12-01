@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'artwork_creation_screen.dart';
 import 'database_helper.dart';
+import 'utils/utils.dart';
 import 'walking_detail_screen.dart';
 import 'polyline_painter.dart';
 
@@ -57,6 +58,9 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen> {
             ..rotation = item['rotation'];
         }).toList();
       });
+
+      // デバッグ用
+      await _dbHelper.debugPrintAllWalkingData();
     } catch (e) {
       print("キャンバス状態の読み込みエラー: $e");
     }
@@ -64,11 +68,11 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen> {
 
   Future<void> _showTrajectoryDetails(TransformablePolyline trajectory) async {
     try {
-      // groupIdの取得: positionsからユニークなハッシュを生成
-      int groupId = trajectory.polyline.hashCode;
+      // 一貫性のある groupId を生成
+      String groupId = generateGroupId(trajectory.polyline);
 
       // データベースから記録を取得
-      Map<String, dynamic>? record = await _dbHelper.getRecordByGroupId(groupId);
+      Map<String, dynamic>? record = await _dbHelper.getWalkingDataByGroupId(groupId);
 
       if (record != null) {
         Navigator.push(
@@ -78,7 +82,7 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen> {
               groupId: groupId,
               date: record['date'],
               steps: record['steps'],
-              distance: record['distance'].toStringAsFixed(2),
+              distance: (record['distance'] / 1000).toStringAsFixed(2),
             ),
           ),
         );

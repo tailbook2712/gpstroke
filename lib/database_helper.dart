@@ -43,7 +43,7 @@ class DatabaseHelper {
     await db.execute('''
       CREATE TABLE $tableWalkingData (
         $columnId INTEGER PRIMARY KEY AUTOINCREMENT,
-        $columnGroupId INTEGER NOT NULL,
+        $columnGroupId TEXT NOT NULL,
         $columnDate TEXT NOT NULL,
         $columnSteps INTEGER NOT NULL,
         $columnDistance REAL NOT NULL,
@@ -60,7 +60,7 @@ class DatabaseHelper {
 
   // 歩行データを保存
   Future<int> insertWalkingData({
-    required int groupId,
+    required String groupId,
     required String date,
     required int steps,
     required double distance,
@@ -80,7 +80,7 @@ class DatabaseHelper {
   }
 
   // 指定したグループIDのデータを取得
-  Future<Map<String, dynamic>?> getWalkingDataByGroupId(int groupId) async {
+  Future<Map<String, dynamic>?> getWalkingDataByGroupId(String groupId) async {
     Database db = await database;
     List<Map<String, dynamic>> result = await db.query(
       tableWalkingData,
@@ -126,21 +126,38 @@ class DatabaseHelper {
   Future<Map<String, dynamic>?> getRecordByGroupId(int groupId) async {
     Database db = await database;
     List<Map<String, dynamic>> result = await db.query(
-      'walking_records', // テーブル名
-      where: 'group_id = ?', // 条件
+      tableWalkingData, // 正しいテーブル名を指定
+      where: '$columnGroupId = ?', // 条件
       whereArgs: [groupId], // 条件の引数
     );
+
+    // デバッグログ
+    print("getRecordByGroupId: groupId = $groupId, result = $result");
+
     // 結果が存在する場合は最初のレコードを返す。ない場合は null を返す
     return result.isNotEmpty ? result.first : null;
   }
 
-  // 指定したグループIDの位置情報を取得
-  Future<List<Map<String, dynamic>>> getPositionsByGroupId(int groupId) async {
+  Future<List<Map<String, dynamic>>> getPositionsByGroupId(String groupId) async {
     Database db = await database;
-    return await db.query(
-      'walking_data', // 修正後のテーブル名に合わせてください
-      where: 'group_id = ?',
+    List<Map<String, dynamic>> result = await db.query(
+      tableWalkingData,
+      columns: [columnPositions], // 必要なカラムのみ取得
+      where: '$columnGroupId = ?', // 条件
       whereArgs: [groupId],
     );
+
+    if (result.isNotEmpty) {
+      // positions フィールドを JSON デコードしてリストとして返す
+      return (jsonDecode(result.first[columnPositions]) as List)
+          .cast<Map<String, dynamic>>();
+    }
+    return [];
+  }
+
+  Future<void> debugPrintAllWalkingData() async {
+    Database db = await database;
+    List<Map<String, dynamic>> allData = await db.query(tableWalkingData);
+    print("All walking data: $allData");
   }
 }
