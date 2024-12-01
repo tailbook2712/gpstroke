@@ -2,9 +2,9 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
+import 'artwork_creation_screen.dart';
 import 'database_helper.dart';
 import 'walking_detail_screen.dart';
-import 'artwork_creation_screen.dart';
 import 'polyline_painter.dart';
 
 class ArtworkDetailScreen extends StatefulWidget {
@@ -64,10 +64,10 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen> {
 
   Future<void> _showTrajectoryDetails(TransformablePolyline trajectory) async {
     try {
-      // `groupId`を取得（例: polylineのハッシュ値を使用）
+      // groupIdの取得: positionsからユニークなハッシュを生成
       int groupId = trajectory.polyline.hashCode;
 
-      // データベースから対応する記録を取得
+      // データベースから記録を取得
       Map<String, dynamic>? record = await _dbHelper.getRecordByGroupId(groupId);
 
       if (record != null) {
@@ -78,7 +78,7 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen> {
               groupId: groupId,
               date: record['date'],
               steps: record['steps'],
-              distance: (record['distance'] / 1000).toStringAsFixed(2),
+              distance: record['distance'].toStringAsFixed(2),
             ),
           ),
         );

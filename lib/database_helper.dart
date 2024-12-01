@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:path/path.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:geolocator/geolocator.dart';
@@ -6,23 +8,16 @@ class DatabaseHelper {
   static final _databaseName = "walking_tracker.db";
   static final _databaseVersion = 1;
 
-  static final tablePositions = 'walking_positions';
-  static final tableRecords = 'walking_records';
+  static final tableWalkingData = 'walking_data';
   static final usedTrajectoriesTable = 'used_trajectories';
 
-  // walking_positions テーブルのカラム
+  // walking_data テーブルのカラム
   static final columnId = '_id';
   static final columnGroupId = 'group_id';
-  static final columnLatitude = 'latitude';
-  static final columnLongitude = 'longitude';
-  static final columnTimestamp = 'timestamp';
-
-  // walking_records テーブルのカラム
-  static final columnRecordId = '_id';
-  static final columnRecordGroupId = 'group_id';
   static final columnDate = 'date';
   static final columnSteps = 'steps';
   static final columnDistance = 'distance';
+  static final columnPositions = 'positions'; // JSON形式で位置情報を保存
 
   // used_trajectories テーブルのカラム
   static final columnTrajectoryIndex = 'trajectory_index';
@@ -46,22 +41,13 @@ class DatabaseHelper {
 
   Future _onCreate(Database db, int version) async {
     await db.execute('''
-      CREATE TABLE $tablePositions (
+      CREATE TABLE $tableWalkingData (
         $columnId INTEGER PRIMARY KEY AUTOINCREMENT,
-        $columnGroupId INTEGER,
-        $columnLatitude REAL NOT NULL,
-        $columnLongitude REAL NOT NULL,
-        $columnTimestamp TEXT NOT NULL
-      )
-    ''');
-
-    await db.execute('''
-      CREATE TABLE $tableRecords (
-        $columnRecordId INTEGER PRIMARY KEY AUTOINCREMENT,
-        $columnRecordGroupId INTEGER NOT NULL,
+        $columnGroupId INTEGER NOT NULL,
         $columnDate TEXT NOT NULL,
         $columnSteps INTEGER NOT NULL,
-        $columnDistance REAL NOT NULL
+        $columnDistance REAL NOT NULL,
+        $columnPositions TEXT NOT NULL
       )
     ''');
 
@@ -72,24 +58,39 @@ class DatabaseHelper {
     ''');
   }
 
-  Future<int> insertPosition(int groupId, double latitude, double longitude, String timestamp) async {
+  // 歩行データを保存
+  Future<int> insertWalkingData({
+    required int groupId,
+    required String date,
+    required int steps,
+    required double distance,
+    required List<Map<String, dynamic>> positions,
+  }) async {
     Database db = await database;
     return await db.insert(
-      tablePositions,
+      tableWalkingData,
       {
         columnGroupId: groupId,
-        columnLatitude: latitude,
-        columnLongitude: longitude,
-        columnTimestamp: timestamp,
+        columnDate: date,
+        columnSteps: steps,
+        columnDistance: distance,
+        columnPositions: jsonEncode(positions), // JSON文字列として保存
       },
     );
   }
 
-  Future<int> insertRecord(Map<String, dynamic> record) async {
+  // 指定したグループIDのデータを取得
+  Future<Map<String, dynamic>?> getWalkingDataByGroupId(int groupId) async {
     Database db = await database;
-    return await db.insert(tableRecords, record);
+    List<Map<String, dynamic>> result = await db.query(
+      tableWalkingData,
+      where: '$columnGroupId = ?',
+      whereArgs: [groupId],
+    );
+    return result.isNotEmpty ? result.first : null;
   }
 
+  // 使用済み軌跡インデックスを保存
   Future<void> insertUsedTrajectory(int trajectoryIndex) async {
     Database db = await database;
     await db.insert(
@@ -99,77 +100,47 @@ class DatabaseHelper {
     );
   }
 
+  // 使用済み軌跡インデックスの取得
   Future<List<int>> getUsedTrajectories() async {
     Database db = await database;
     final result = await db.query(usedTrajectoriesTable);
     return result.map((row) => row[columnTrajectoryIndex] as int).toList();
   }
 
-  Future<List<Map<String, dynamic>>> getAllPositions() async {
-    Database db = await database;
-    return await db.query(tablePositions);
-  }
-
-  Future<int> getNewGroupId() async {
-    Database db = await database;
-    var result = await db.rawQuery('SELECT MAX($columnGroupId) as maxId FROM $tablePositions');
-    int? groupId = result.first['maxId'] as int?;
-    return (groupId != null ? groupId + 1 : 1);
-  }
-
-  Future<List<int>> getAllGroupIds() async {
-    Database db = await database;
-    var result = await db.rawQuery('SELECT DISTINCT $columnGroupId FROM $tablePositions');
-    return result.map((row) => row[columnGroupId] as int).toList();
-  }
-
-  Future<List<Map<String, dynamic>>> getPositionsByGroupId(int groupId) async {
-    Database db = await database;
-    return await db.query(tablePositions, where: '$columnGroupId = ?', whereArgs: [groupId]);
-  }
-
-  Future<List<Position>> getPositionsAsPositionsByGroupId(int groupId) async {
-    Database db = await database;
-    List<Map<String, dynamic>> result = await db.query(tablePositions, where: '$columnGroupId = ?', whereArgs: [groupId]);
-    
-    return result.map((row) {
-      return Position(
-        latitude: row[columnLatitude],
-        longitude: row[columnLongitude],
-        timestamp: DateTime.parse(row[columnTimestamp]),
-        accuracy: 0.0,
-        altitude: 0.0,
-        heading: 0.0,
-        speed: 0.0,
-        speedAccuracy: 0.0,
-        altitudeAccuracy: 0.0,
-        headingAccuracy: 0.0,
-      );
-    }).toList();
-  }
-
-  Future<void> deletePositionGroup(int groupId) async {
-    Database db = await database;
-    await db.delete(tablePositions, where: '$columnGroupId = ?', whereArgs: [groupId]);
-    await db.delete(tableRecords, where: '$columnRecordGroupId = ?', whereArgs: [groupId]);
-  }
-
-  Future<List<Map<String, dynamic>>> getAllRecords() async {
+  // すべての記録を取得するメソッド（日付の降順で並べ替え）
+  Future<List<Map<String, dynamic>>> getAllWalkingData() async {
     Database db = await database;
     return await db.query(
-      tableRecords,
+      tableWalkingData,
       orderBy: '$columnDate DESC',
     );
   }
 
-  // 指定したグループIDの記録を取得するメソッド
+  // データ削除 (指定したグループIDのデータを削除)
+  Future<void> deleteWalkingDataByGroupId(int groupId) async {
+    Database db = await database;
+    await db.delete(tableWalkingData, where: '$columnGroupId = ?', whereArgs: [groupId]);
+  }
+
+  // 指定したグループIDに対応する記録を取得
   Future<Map<String, dynamic>?> getRecordByGroupId(int groupId) async {
     Database db = await database;
     List<Map<String, dynamic>> result = await db.query(
-      tableRecords,
-      where: '$columnRecordGroupId = ?',
+      'walking_records', // テーブル名
+      where: 'group_id = ?', // 条件
+      whereArgs: [groupId], // 条件の引数
+    );
+    // 結果が存在する場合は最初のレコードを返す。ない場合は null を返す
+    return result.isNotEmpty ? result.first : null;
+  }
+
+  // 指定したグループIDの位置情報を取得
+  Future<List<Map<String, dynamic>>> getPositionsByGroupId(int groupId) async {
+    Database db = await database;
+    return await db.query(
+      'walking_data', // 修正後のテーブル名に合わせてください
+      where: 'group_id = ?',
       whereArgs: [groupId],
     );
-    return result.isNotEmpty ? result.first : null;
   }
 }
