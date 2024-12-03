@@ -263,7 +263,9 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
           Flexible(
             flex: 8,
             child: GestureDetector(
+              behavior: HitTestBehavior.translucent, // 透明部分のタップも検出
               onTap: () {
+                // キャンバスの白い部分をタップした場合、選択状態を解除
                 setState(() {
                   selectedItem = null;
                 });
@@ -272,112 +274,108 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                 key: _boundaryKey,
                 child: Stack(
                   children: [
-                    Stack(
-                      children: selectedTrajectories.map((item) {
-                        return Positioned(
-                          left: item.position.dx.clamp(
-                              canvasPadding, screenWidth - canvasPadding),
-                          top: item.position.dy.clamp(
-                              canvasPadding, screenHeight - canvasPadding),
-                          child: GestureDetector(
-                            behavior: HitTestBehavior.opaque,
-                            onTap: () {
+                    ...selectedTrajectories.map((item) {
+                      return Positioned(
+                        left: item.position.dx.clamp(
+                            canvasPadding, screenWidth - canvasPadding),
+                        top: item.position.dy.clamp(
+                            canvasPadding, screenHeight - canvasPadding),
+                        child: GestureDetector(
+                          behavior: HitTestBehavior.opaque, // 軌跡のタップを検出
+                          onTap: () {
+                            // 軌跡をタップした場合、選択状態を設定
+                            setState(() {
+                              selectedItem = item;
+                            });
+                          },
+                          onScaleStart: (_) {
+                            if (selectedItem == item) {
                               setState(() {
-                                selectedItem = item;
+                                isScaling = true;
+                                isRotating = false;
                               });
-                            },
-                            onScaleStart: (_) {
-                              if (selectedItem == item) {
-                                setState(() {
-                                  isScaling = true;
-                                  isRotating = false;
-                                });
-                              }
-                            },
-                            onScaleUpdate: (details) {
-                              if (selectedItem == item) {
-                                setState(() {
-                                  if (rotateMode) {
-                                    if (details.rotation.abs() > 0.01) {
-                                      item.rotation +=
-                                          details.rotation * rotationFactor;
-                                    }
-                                  } else {
-                                    if (details.scale != 1.0) {
-                                      item.scale = (item.scale +
-                                              (details.scale - 1) * scaleFactor)
-                                          .clamp(minScale, maxScale);
-                                    }
+                            }
+                          },
+                          onScaleUpdate: (details) {
+                            if (selectedItem == item) {
+                              setState(() {
+                                if (rotateMode) {
+                                  if (details.rotation.abs() > 0.01) {
+                                    item.rotation +=
+                                        details.rotation * rotationFactor;
                                   }
-                                  item.position += details.focalPointDelta;
-                                });
-                              }
-                            },
-                            onScaleEnd: (_) {
-                              if (selectedItem == item) {
-                                setState(() {
-                                  isScaling = false;
-                                  isRotating = false;
-                                });
-                              }
-                            },
-                            child: Stack(
-                              children: [
-                                Transform(
-                                  transform: Matrix4.identity()
-                                    ..translate(item.position.dx,
-                                        item.position.dy)
-                                    ..translate(75 * item.scale,
-                                        75 * item.scale)
-                                    ..rotateZ(item.rotation)
-                                    ..translate(-75 * item.scale,
-                                        -75 * item.scale)
-                                    ..scale(item.scale),
-                                  origin: Offset(75, 75),
-                                  child: Container(
-                                    decoration: BoxDecoration(
-                                      border: selectedItem == item
-                                          ? Border.all(
-                                              color: Colors.red, width: 2.0)
-                                          : null,
-                                    ),
-                                    child: Padding(
-                                      padding: const EdgeInsets.all(40.0),
-                                      child: CustomPaint(
-                                        size: Size(150, 150),
-                                        painter: PolylinePainter(
-                                          positions: item.polyline,
-                                          minLat: item.minLat,
-                                          maxLat: item.maxLat,
-                                          minLon: item.minLon,
-                                          maxLon: item.maxLon,
-                                        ),
+                                } else {
+                                  if (details.scale != 1.0) {
+                                    item.scale = (item.scale +
+                                            (details.scale - 1) * scaleFactor)
+                                        .clamp(minScale, maxScale);
+                                  }
+                                }
+                                item.position += details.focalPointDelta;
+                              });
+                            }
+                          },
+                          onScaleEnd: (_) {
+                            if (selectedItem == item) {
+                              setState(() {
+                                isScaling = false;
+                                isRotating = false;
+                              });
+                            }
+                          },
+                          child: Stack(
+                            children: [
+                              Transform(
+                                transform: Matrix4.identity()
+                                  ..translate(item.position.dx, item.position.dy)
+                                  ..translate(75 * item.scale, 75 * item.scale)
+                                  ..rotateZ(item.rotation)
+                                  ..translate(-75 * item.scale, -75 * item.scale)
+                                  ..scale(item.scale),
+                                origin: Offset(75, 75),
+                                child: Container(
+                                  decoration: BoxDecoration(
+                                    border: selectedItem == item
+                                        ? Border.all(
+                                            color: Colors.red, width: 2.0)
+                                        : null,
+                                  ),
+                                  child: Padding(
+                                    padding: const EdgeInsets.all(40.0),
+                                    child: CustomPaint(
+                                      size: Size(150, 150),
+                                      painter: PolylinePainter(
+                                        positions: item.polyline,
+                                        minLat: item.minLat,
+                                        maxLat: item.maxLat,
+                                        minLon: item.minLon,
+                                        maxLon: item.maxLon,
                                       ),
                                     ),
                                   ),
                                 ),
-                                if (selectedItem == item)
-                                  Positioned(
-                                    top: (item.scale * 75) - 25,
-                                    right: (item.scale * 75) - 25,
-                                    child: IconButton(
-                                      icon: Icon(rotateMode
-                                          ? Icons.rotate_right
-                                          : Icons.open_with),
-                                      color: Colors.blue,
-                                      onPressed: () {
-                                        setState(() {
-                                          rotateMode = !rotateMode;
-                                        });
-                                      },
-                                    ),
+                              ),
+                              if (selectedItem == item)
+                                Positioned(
+                                  top: (item.scale * 75) - 25,
+                                  right: (item.scale * 75) - 25,
+                                  child: IconButton(
+                                    icon: Icon(rotateMode
+                                        ? Icons.rotate_right
+                                        : Icons.open_with),
+                                    color: Colors.blue,
+                                    onPressed: () {
+                                      setState(() {
+                                        rotateMode = !rotateMode;
+                                      });
+                                    },
                                   ),
-                              ],
-                            ),
+                                ),
+                            ],
                           ),
-                        );
-                      }).toList(),
-                    ),
+                        ),
+                      );
+                    }).toList(),
                   ],
                 ),
               ),
