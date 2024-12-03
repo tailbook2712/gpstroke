@@ -67,6 +67,19 @@ class DatabaseHelper {
     required List<Map<String, dynamic>> positions,
   }) async {
     Database db = await database;
+
+    // groupIdが既に存在するか確認
+    List<Map<String, dynamic>> existingData = await db.query(
+      tableWalkingData,
+      where: '$columnGroupId = ?',
+      whereArgs: [groupId],
+    );
+
+    if (existingData.isNotEmpty) {
+      print("データ重複のため挿入をスキップ: groupId = $groupId");
+      return 0; // 既存データがある場合は挿入をスキップ
+    }
+
     return await db.insert(
       tableWalkingData,
       {
@@ -74,7 +87,7 @@ class DatabaseHelper {
         columnDate: date,
         columnSteps: steps,
         columnDistance: distance,
-        columnPositions: jsonEncode(positions), // JSON文字列として保存
+        columnPositions: jsonEncode(positions),
       },
     );
   }
