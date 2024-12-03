@@ -177,7 +177,6 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
   }
 
   // 使用可能な軌跡を表示するモーダルを表示する
-  // 使用可能な軌跡を表示するモーダルを表示する
   void _showTrajectoryModal(BuildContext context) {
     showModalBottomSheet(
       context: context,

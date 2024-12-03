@@ -71,6 +71,9 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen> {
       // 一貫性のある groupId を生成
       String groupId = generateGroupId(trajectory.polyline);
 
+      // デバッグログ
+      print("取得する groupId: $groupId");
+
       // データベースから記録を取得
       Map<String, dynamic>? record = await _dbHelper.getWalkingDataByGroupId(groupId);
 

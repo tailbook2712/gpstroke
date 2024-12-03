@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 class FirestoreService {
@@ -13,12 +12,9 @@ class FirestoreService {
     required double distance,
   }) async {
     try {
-      // 現在のドキュメント数を取得して次の ID を計算
-      final querySnapshot = await _db.collection('walking_data').get();
-      final newDocumentId = (querySnapshot.docs.length).toString();
-
       // Firestoreにデータを保存
-      await _db.collection('walking_data').doc(newDocumentId).set({
+      await _db.collection('walking_data').doc(groupId).set({
+        'groupId': groupId,
         'positions': positions, // リストとして保存
         'date': date,
         'steps': steps,
@@ -31,7 +27,7 @@ class FirestoreService {
   }
 
   // GroupIDごとの歩行データと位置情報を取得するメソッド
-  Future<Map<String, dynamic>?> getWalkingDataByGroupId(int groupId) async {
+  Future<Map<String, dynamic>?> getWalkingDataByGroupId(String groupId) async {
     try {
       // groupIdに対応するドキュメントからデータを取得
       QuerySnapshot querySnapshot = await _db
@@ -55,7 +51,7 @@ class FirestoreService {
       QuerySnapshot snapshot = await _db.collection('walking_data').get();
       return snapshot.docs.map((doc) {
         Map<String, dynamic> data = doc.data() as Map<String, dynamic>;
-        data['groupId'] = int.tryParse(doc.id) ?? 0; // ドキュメントIDをGroupIDとして設定
+        data['groupId'] = doc.id; // ドキュメント ID を groupId として追加
         return data;
       }).toList();
     } catch (e) {
@@ -65,11 +61,11 @@ class FirestoreService {
   }
 
   // 特定のGroupIDの歩行データをFirestoreから削除するメソッド
-  Future<void> deleteWalkingDataByGroupId(int groupId) async {
+  Future<void> deleteWalkingDataByGroupId(String groupId) async {
     try {
       QuerySnapshot querySnapshot = await _db
           .collection('walking_data')
-          .where('groupId', isEqualTo: groupId)
+          .where('groupId', isEqualTo: groupId.toString())
           .get();
 
       for (var doc in querySnapshot.docs) {

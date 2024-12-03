@@ -40,7 +40,6 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
   late FirestoreService _firestoreService;
   StreamSubscription<Position>? _positionStream;
   StreamSubscription<StepCount>? _stepStream;
-  int _currentGroupId = 0;
   List<Map<String, dynamic>> savedArtworks = []; // スクリーンショットとキャンバス状態のリスト
 
   GoogleMapController? _mapController;
@@ -203,6 +202,8 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
       distance: _totalDistance,
       positions: positionData,
     );
+
+    print("保存した groupId: $groupId");
 
     _positions.clear();
   }
@@ -376,13 +377,12 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
   // ローカルデータベースから軌跡を読み込む
   Future<void> _loadTrajectories() async {
     try {
-      // ローカルデータベースからすべての歩行データを取得
       List<Map<String, dynamic>> walkingData = await _dbHelper.getAllWalkingData();
       List<List<Position>> loadedTrajectories = [];
 
       for (var data in walkingData) {
-        // positions フィールドを取得
-        List<dynamic> positionsData = data['positions']; // Firestoreからリスト形式で保存されるため直接取得
+        // positions フィールドを JSON デコード
+        List<dynamic> positionsData = jsonDecode(data['positions']);
 
         // Position オブジェクトに変換
         List<Position> positions = positionsData.map((pos) {
@@ -403,7 +403,6 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
         loadedTrajectories.add(positions);
       }
 
-      // 状態を更新
       setState(() {
         trajectories = loadedTrajectories;
       });
@@ -414,7 +413,7 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
 
   // アートワーク作成画面に遷移
   void _navigateToArtworkCreationScreen() async {
-    await _restoreDataFromFirestore();
+    // await _restoreDataFromFirestore();
     Navigator.push(
       context,
       MaterialPageRoute(

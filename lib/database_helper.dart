@@ -117,18 +117,18 @@ class DatabaseHelper {
   }
 
   // データ削除 (指定したグループIDのデータを削除)
-  Future<void> deleteWalkingDataByGroupId(int groupId) async {
+  Future<void> deleteWalkingDataByGroupId(String groupId) async {
     Database db = await database;
     await db.delete(tableWalkingData, where: '$columnGroupId = ?', whereArgs: [groupId]);
   }
 
   // 指定したグループIDに対応する記録を取得
-  Future<Map<String, dynamic>?> getRecordByGroupId(int groupId) async {
+  Future<Map<String, dynamic>?> getRecordByGroupId(String groupId) async {
     Database db = await database;
     List<Map<String, dynamic>> result = await db.query(
       tableWalkingData, // 正しいテーブル名を指定
       where: '$columnGroupId = ?', // 条件
-      whereArgs: [groupId], // 条件の引数
+      whereArgs: [groupId.toString()], // 条件の引数
     );
 
     // デバッグログ
@@ -140,19 +140,25 @@ class DatabaseHelper {
 
   Future<List<Map<String, dynamic>>> getPositionsByGroupId(String groupId) async {
     Database db = await database;
+
+    // groupId に対応するデータを取得
     List<Map<String, dynamic>> result = await db.query(
       tableWalkingData,
-      columns: [columnPositions], // 必要なカラムのみ取得
-      where: '$columnGroupId = ?', // 条件
-      whereArgs: [groupId],
+      columns: [columnPositions],
+      where: '$columnGroupId = ?',
+      whereArgs: [groupId.toString()],
     );
 
-    if (result.isNotEmpty) {
-      // positions フィールドを JSON デコードしてリストとして返す
-      return (jsonDecode(result.first[columnPositions]) as List)
-          .cast<Map<String, dynamic>>();
+    // データが空の場合は空のリストを返す
+    if (result.isEmpty) {
+      return [];
     }
-    return [];
+
+    // positions を JSON デコードしてリストに変換
+    String positionsJson = result.first[columnPositions] as String;
+
+    return (jsonDecode(positionsJson) as List)
+        .cast<Map<String, dynamic>>(); // Map<String, dynamic> のリストにキャスト
   }
 
   Future<void> debugPrintAllWalkingData() async {
