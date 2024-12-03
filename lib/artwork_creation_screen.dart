@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:typed_data';
 import 'dart:ui';
 import 'package:flutter/rendering.dart';
@@ -26,6 +27,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
   List<List<Position>> recordedTrajectories = [];
   Set<int> usedTrajectoryIndices = {}; // 保存済みの軌跡インデックスを保持
   Set<int> temporarilyUsedIndices = {}; // 一時的に使用された軌跡インデックス
+  final DatabaseHelper _dbHelper = DatabaseHelper();
 
   final double minScale = 0.5; // 縮小の下限
   final double maxScale = 1.3; // 拡大の上限
@@ -43,53 +45,119 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
 
   // データベースから保存済みの軌跡を読み込む
   Future<void> _loadRecordTrajectories() async {
-    setState(() {
-      recordedTrajectories = widget.trajectories;
-      _loadUsedTrajectories();
-    });
+    try {
+      // データの重複を避けるため、recordedTrajectoriesをリセット
+      recordedTrajectories.clear();
+
+      // ローカルデータベースからデータを取得
+      List<Map<String, dynamic>> allWalkingData = await _dbHelper.getAllWalkingData();
+
+      // データを一意にするためSetを使用
+      Set<String> uniqueTrajectories = {}; // JSON文字列で一意性を判断
+      List<List<Position>> uniqueTrajectoryList = [];
+
+      for (var data in allWalkingData) {
+        // データベースからpositionsをデコード
+        List<dynamic> positionsJson = jsonDecode(data['positions']);
+        List<Position> trajectory = positionsJson.map((pos) {
+          return Position(
+            latitude: pos['latitude'],
+            longitude: pos['longitude'],
+            timestamp: DateTime.tryParse(pos['timestamp']) ?? DateTime.now(),
+            accuracy: 0.0,
+            altitude: 0.0,
+            heading: 0.0,
+            speed: 0.0,
+            speedAccuracy: 0.0,
+            altitudeAccuracy: 0.0,
+            headingAccuracy: 0.0,
+          );
+        }).toList();
+
+        // 軌跡をJSON形式に変換して一意性を確認
+        String trajectoryJson = jsonEncode(positionsJson);
+        if (!uniqueTrajectories.contains(trajectoryJson)) {
+          uniqueTrajectories.add(trajectoryJson);
+          uniqueTrajectoryList.add(trajectory);
+        }
+      }
+
+      // 一意な軌跡をセット
+      setState(() {
+        recordedTrajectories = uniqueTrajectoryList;
+      });
+
+      // 使用済みの軌跡インデックスを取得
+      await _loadUsedTrajectories();
+    } catch (e) {
+      print("軌跡の読み込みエラー: $e");
+    }
   }
 
   // データベースから保存済みの軌跡インデックスを読み込む
   Future<void> _loadUsedTrajectories() async {
-    final dbHelper = DatabaseHelper();
-    final loadedUsedIndices = await dbHelper.getUsedTrajectories();
-    setState(() {
-      usedTrajectoryIndices = loadedUsedIndices.toSet();
-    });
+    try {
+      final loadedUsedIndices = await _dbHelper.getUsedTrajectories();
+      setState(() {
+        usedTrajectoryIndices = loadedUsedIndices.toSet();
+      });
+    } catch (e) {
+      print("使用済み軌跡の読み込みエラー: $e");
+    }
   }
+
   // アートワークを保存する
   Future<void> _saveArtwork() async {
     try {
-      RenderRepaintBoundary boundary = _boundaryKey.currentContext!
-          .findRenderObject() as RenderRepaintBoundary;
+      RenderRepaintBoundary boundary =
+          _boundaryKey.currentContext!.findRenderObject() as RenderRepaintBoundary;
       var image = await boundary.toImage();
       ByteData? byteData = await image.toByteData(format: ImageByteFormat.png);
       Uint8List pngBytes = byteData!.buffer.asUint8List();
 
       final directory = await getApplicationDocumentsDirectory();
       final artworksDirectory = Directory('${directory.path}/artworks');
+      final canvasDirectory = Directory('${directory.path}/canvas_states');
+
       if (!(await artworksDirectory.exists())) {
         await artworksDirectory.create(recursive: true);
+      }
+      if (!(await canvasDirectory.exists())) {
+        await canvasDirectory.create(recursive: true);
       }
 
       String timestamp = DateTime.now().millisecondsSinceEpoch.toString();
       File imgFile = File('${artworksDirectory.path}/artwork_$timestamp.png');
+      File canvasFile = File('${canvasDirectory.path}/canvas_$timestamp.json');
+
+      final canvasState = selectedTrajectories.map((item) => {
+            'positions': item.polyline.map((p) => {
+                  'latitude': p.latitude,
+                  'longitude': p.longitude,
+                  'timestamp': p.timestamp?.toIso8601String() ?? "",
+                }).toList(),
+            'position': {'dx': item.position.dx, 'dy': item.position.dy},
+            'scale': item.scale,
+            'rotation': item.rotation,
+          }).toList();
+      await canvasFile.writeAsString(jsonEncode(canvasState));
+
       await imgFile.writeAsBytes(pngBytes);
 
-      final dbHelper = DatabaseHelper();
+      // 使用済みの軌跡を保存
       for (final index in temporarilyUsedIndices) {
         usedTrajectoryIndices.add(index);
-        dbHelper.insertUsedTrajectory(index);
+        await _dbHelper.insertUsedTrajectory(index);
       }
       temporarilyUsedIndices.clear();
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('アートワークが保存されました!')),
       );
-      Navigator.pop(context, imgFile);
+      Navigator.pop(context, {'imageFile': imgFile, 'canvasFile': canvasFile});
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('アートワークの保存に失敗しました。')),
+        SnackBar(content: Text('アートワークの保存に失敗しました: $e')),
       );
     }
   }
@@ -134,16 +202,17 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
             ),
             itemCount: availableTrajectories.length,
             itemBuilder: (context, index) {
+              final trajectory = availableTrajectories[index];
               return GestureDetector(
                 onTap: () {
                   Navigator.pop(context); // モーダルを閉じる
                   setState(() {
                     final trajectoryIndex =
-                        recordedTrajectories.indexOf(availableTrajectories[index]!);
+                        recordedTrajectories.indexOf(trajectory!);
                     temporarilyUsedIndices.add(trajectoryIndex);
                     selectedTrajectories.add(
                       TransformablePolyline(
-                        availableTrajectories[index]!,
+                        trajectory,
                         Offset(
                           MediaQuery.of(context).size.width / 2 - 120,
                           MediaQuery.of(context).size.height / 2 - 280,
@@ -155,19 +224,11 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                 child: CustomPaint(
                   size: Size(60, 60),
                   painter: PolylinePainter(
-                    positions: availableTrajectories[index]!,
-                    minLat: availableTrajectories[index]!
-                        .map((p) => p.latitude)
-                        .reduce((a, b) => a < b ? a : b),
-                    maxLat: availableTrajectories[index]!
-                        .map((p) => p.latitude)
-                        .reduce((a, b) => a > b ? a : b),
-                    minLon: availableTrajectories[index]!
-                        .map((p) => p.longitude)
-                        .reduce((a, b) => a < b ? a : b),
-                    maxLon: availableTrajectories[index]!
-                        .map((p) => p.longitude)
-                        .reduce((a, b) => a > b ? a : b),
+                    positions: trajectory!,
+                    minLat: trajectory.map((p) => p.latitude).reduce((a, b) => a < b ? a : b),
+                    maxLat: trajectory.map((p) => p.latitude).reduce((a, b) => a > b ? a : b),
+                    minLon: trajectory.map((p) => p.longitude).reduce((a, b) => a < b ? a : b),
+                    maxLon: trajectory.map((p) => p.longitude).reduce((a, b) => a > b ? a : b),
                   ),
                 ),
               );
@@ -211,10 +272,6 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                 key: _boundaryKey,
                 child: Stack(
                   children: [
-                    CustomPaint(
-                      size: Size.infinite,
-                      painter: GridPainter(gridSize: 50),
-                    ),
                     Stack(
                       children: selectedTrajectories.map((item) {
                         return Positioned(
@@ -338,31 +395,6 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
       ),
     );
   }
-}
-
-class GridPainter extends CustomPainter {
-  final double gridSize;
-  final Color gridColor;
-
-  GridPainter({this.gridSize = 50, this.gridColor = Colors.grey});
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..color = gridColor.withOpacity(0.5)
-      ..strokeWidth = 0.5;
-
-    for (double x = 0; x <= size.width; x += gridSize) {
-      canvas.drawLine(Offset(x, 0), Offset(x, size.height), paint);
-    }
-
-    for (double y = 0; y <= size.height; y += gridSize) {
-      canvas.drawLine(Offset(0, y), Offset(size.width, y), paint);
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
 
 class TransformablePolyline {

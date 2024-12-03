@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
@@ -11,6 +12,8 @@ import 'package:walk_tracker_app/artwork_creation_screen.dart';
 import 'database_helper.dart';
 import 'firestore_service.dart';
 import 'package:pedometer/pedometer.dart';
+
+import 'utils/utils.dart';
 
 class WalkingTrackerScreen extends StatefulWidget {
   @override
@@ -37,8 +40,7 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
   late FirestoreService _firestoreService;
   StreamSubscription<Position>? _positionStream;
   StreamSubscription<StepCount>? _stepStream;
-  int _currentGroupId = 0;
-  List<File> savedArtworks = [];
+  List<Map<String, dynamic>> savedArtworks = []; // スクリーンショットとキャンバス状態のリスト
 
   GoogleMapController? _mapController;
   Set<Polyline> _polylines = {};
@@ -48,11 +50,11 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
     super.initState();
     _dbHelper = DatabaseHelper();
     _firestoreService = FirestoreService();
+
+    _initializeScreen(); // 非同期初期化処理をまとめたメソッド
+    _loadSavedArtworks();
     _checkPermissionAndStartTracking();
     _initializeBackgroundGeolocation();
-    _restoreDataFromFirestore();
-    _loadTrajectories();
-    _loadSavedArtworks();
     _setInitialCameraPosition();
 
     // ポリラインを初期化
@@ -64,28 +66,44 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
     ));
   }
 
-  // 保存されたアートワークを読み込む
+  // 非同期初期化処理をまとめたメソッド
+  Future<void> _initializeScreen() async {
+    await _restoreDataFromFirestore(); // FirestoreからローカルDBにデータを復元
+    await _loadTrajectories(); // 復元後にローカルDBから軌跡をロード
+  }
+
+  // 保存された作品をロード
   Future<void> _loadSavedArtworks() async {
-    try {
-      final directory = await getApplicationDocumentsDirectory();
-      final artworksDirectory = Directory('${directory.path}/artworks');
+    final directory = await getApplicationDocumentsDirectory();
+    final artworksDirectory = Directory('${directory.path}/artworks');
+    final canvasDirectory = Directory('${directory.path}/canvas_states');
 
-      if (await artworksDirectory.exists()) {
-        List<FileSystemEntity> files = artworksDirectory.listSync();
-        List<File> artworkFiles = files
-            .whereType<File>()
-            .where((file) => file.path.endsWith('.png'))
-            .toList();
-
-        setState(() {
-          savedArtworks = artworkFiles;
-        });
-      } else {
-        print("アートワークディレクトリが存在しません");
-      }
-    } catch (e) {
-      print("アートワークのロード中にエラーが発生しました: $e");
+    // 両ディレクトリが存在しない場合は空リストのまま返す
+    if (!await artworksDirectory.exists() || !await canvasDirectory.exists()) {
+      savedArtworks = [];
+      return;
     }
+
+    // スクリーンショットとキャンバス状態を対応付けてロード
+    final artworkFiles = artworksDirectory.listSync().whereType<File>();
+    final canvasFiles = canvasDirectory.listSync().whereType<File>();
+
+    savedArtworks = artworkFiles.map((artworkFile) {
+      // 対応するキャンバス状態ファイルを取得
+      final timestamp = artworkFile.path.split('_').last.split('.').first;
+      final canvasFile = canvasFiles.firstWhere(
+        (file) => file.path.contains(timestamp),
+        orElse: () => File(''), // 見つからなければ空ファイル（スキップ）
+      );
+
+      if (canvasFile.existsSync()) {
+        return {
+          'imageFile': artworkFile,
+          'canvasFile': canvasFile,
+        };
+      }
+      return null; // キャンバスファイルがない場合スキップ
+    }).whereType<Map<String, dynamic>>().toList();
   }
 
   // 位置情報の許可を確認してトラッキングを開始
@@ -142,42 +160,21 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
         _updateDistance(position);
       }
     });
-    _currentGroupId = await _dbHelper.getNewGroupId();
   }
 
   // 位置情報の記録を停止
   Future<void> _stopRecording() async {
     setState(() {
       _isRecording = false;
-      _initialStepCount = 0; // 次の記録のために初期化
+      _initialStepCount = 0;
     });
 
-    // streamをキャンセル
     _positionStream?.cancel();
     _stepStream?.cancel();
 
     if (_positions.isEmpty) return;
 
-    // 記録された位置情報を保存
-    List<Position> recordedPositions = List<Position>.from(_positions);
-
-    // 最初と最後の座標を繋がないようにリセット
-    _polylines = {
-      Polyline(
-        polylineId: PolylineId("current_route"),
-        points: _positions
-            .map((pos) => LatLng(pos.latitude, pos.longitude))
-            .toList(),
-        color: Colors.blue,
-        width: 5,
-      ),
-    };
-    setState(() {});
-
-    _positions.clear(); // 次の記録のためにリセット
-
-    // Firestoreとローカルデータベースに保存
-    List<Map<String, dynamic>> positionData = _positions.map((position) {
+    final positionData = _positions.map((position) {
       return {
         'latitude': position.latitude,
         'longitude': position.longitude,
@@ -185,33 +182,30 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
       };
     }).toList();
 
-    // ローカルデータベースに保存
-    for (var position in recordedPositions) {
-      await _dbHelper.insertPosition(
-        _currentGroupId,
-        position.latitude,
-        position.longitude,
-        position.timestamp!.toIso8601String(),
-      );
-    }
-
-    // 歩行記録を保存
-    await _dbHelper.insertRecord({
-      'group_id': _currentGroupId,
-      'date': DateTime.now().toString(),
-      'steps': _stepCount,
-      'distance': _totalDistance,
-    });
-
-    // Firestoreに保存
-    await _firestoreService.saveWalkingData(
-      date: DateTime.now().toString(),
+    final currentDate = DateTime.now().toIso8601String();
+    // generateGroupId を使って groupId を生成
+    String groupId = generateGroupId(_positions);
+  
+    await _dbHelper.insertWalkingData(
+      groupId: groupId,
+      date: currentDate,
       steps: _stepCount,
       distance: _totalDistance,
+      positions: positionData,
     );
 
-    // Firestoreに位置情報を保存
-    await _firestoreService.savePositionGroup(_currentGroupId, positionData);
+    // Firestore に保存
+    await _firestoreService.saveWalkingData(
+      groupId: groupId,
+      date: currentDate,
+      steps: _stepCount,
+      distance: _totalDistance,
+      positions: positionData,
+    );
+
+    print("保存した groupId: $groupId");
+
+    _positions.clear();
   }
 
   // BackgroundGeolocationの初期化
@@ -350,20 +344,31 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
   // Firestoreからデータを復元
   Future<void> _restoreDataFromFirestore() async {
     try {
-      List<Map<String, dynamic>> allPositions =
-          await _firestoreService.getAllPositions();
-      for (var position in allPositions) {
-        await _dbHelper.insertPosition(
-          position['groupId'],
-          position['latitude'],
-          position['longitude'],
-          position['timestamp'],
-        );
+      List<Map<String, dynamic>> allWalkingData = await _firestoreService.getAllWalkingData();
+      for (var data in allWalkingData) {
+        // 各フィールドを取得
+        String groupId = data['groupId'] ?? 0;
+        String date = data['timestamp'] ?? DateTime.now().toIso8601String();
+        int steps = data['steps'] ?? 0;
+        double distance = data['distance'] ?? 0.0;
+
+        // positionsがリスト型かを確認
+        if (data['positions'] is List) {
+          List<Map<String, dynamic>> positions = List<Map<String, dynamic>>.from(data['positions']);
+
+          // データをローカルデータベースに保存
+          await _dbHelper.insertWalkingData(
+            groupId: groupId,
+            date: date,
+            steps: steps,
+            distance: distance,
+            positions: positions,
+          );
+        } else {
+          print("予期しないpositionsの形式: ${data['positions']}");
+        }
       }
       print("Firestoreからローカルデータベースにデータを復元しました");
-
-      await _loadTrajectories();
-      setState(() {});
     } catch (e) {
       print("データの復元に失敗しました: $e");
     }
@@ -371,23 +376,44 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
 
   // ローカルデータベースから軌跡を読み込む
   Future<void> _loadTrajectories() async {
-    List<int> groupIds = await _dbHelper.getAllGroupIds();
-    List<List<Position>> loadedTrajectories = [];
+    try {
+      List<Map<String, dynamic>> walkingData = await _dbHelper.getAllWalkingData();
+      List<List<Position>> loadedTrajectories = [];
 
-    for (int groupId in groupIds) {
-      List<Position> positions =
-          await _dbHelper.getPositionsAsPositionsByGroupId(groupId);
-      loadedTrajectories.add(positions);
+      for (var data in walkingData) {
+        // positions フィールドを JSON デコード
+        List<dynamic> positionsData = jsonDecode(data['positions']);
+
+        // Position オブジェクトに変換
+        List<Position> positions = positionsData.map((pos) {
+          return Position(
+            latitude: pos['latitude'],
+            longitude: pos['longitude'],
+            timestamp: DateTime.tryParse(pos['timestamp']) ?? DateTime.now(),
+            accuracy: 0.0,
+            altitude: 0.0,
+            altitudeAccuracy: 0.0,
+            heading: 0.0,
+            headingAccuracy: 0.0,
+            speed: 0.0,
+            speedAccuracy: 0.0,
+          );
+        }).toList();
+
+        loadedTrajectories.add(positions);
+      }
+
+      setState(() {
+        trajectories = loadedTrajectories;
+      });
+    } catch (e) {
+      print("軌跡の読み込みエラー: $e");
     }
-
-    setState(() {
-      trajectories = loadedTrajectories;
-    });
   }
 
   // アートワーク作成画面に遷移
   void _navigateToArtworkCreationScreen() async {
-    await _restoreDataFromFirestore();
+    // await _restoreDataFromFirestore();
     Navigator.push(
       context,
       MaterialPageRoute(
