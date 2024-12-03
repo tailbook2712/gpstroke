@@ -413,7 +413,7 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
 
   // アートワーク作成画面に遷移
   void _navigateToArtworkCreationScreen() async {
-    // await _restoreDataFromFirestore();
+    await _loadTrajectories();
     Navigator.push(
       context,
       MaterialPageRoute(

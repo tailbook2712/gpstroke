@@ -46,48 +46,46 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
   // データベースから保存済みの軌跡を読み込む
   Future<void> _loadRecordTrajectories() async {
     try {
-      // データの重複を避けるため、recordedTrajectoriesをリセット
       recordedTrajectories.clear();
 
       // ローカルデータベースからデータを取得
       List<Map<String, dynamic>> allWalkingData = await _dbHelper.getAllWalkingData();
 
-      // データを一意にするためSetを使用
-      Set<String> uniqueTrajectories = {}; // JSON文字列で一意性を判断
+      // データを一意にするためSetを使用（groupIdベース）
+      Set<String> uniqueGroupIds = {};
       List<List<Position>> uniqueTrajectoryList = [];
 
       for (var data in allWalkingData) {
-        // データベースからpositionsをデコード
-        List<dynamic> positionsJson = jsonDecode(data['positions']);
-        List<Position> trajectory = positionsJson.map((pos) {
-          return Position(
-            latitude: pos['latitude'],
-            longitude: pos['longitude'],
-            timestamp: DateTime.tryParse(pos['timestamp']) ?? DateTime.now(),
-            accuracy: 0.0,
-            altitude: 0.0,
-            heading: 0.0,
-            speed: 0.0,
-            speedAccuracy: 0.0,
-            altitudeAccuracy: 0.0,
-            headingAccuracy: 0.0,
-          );
-        }).toList();
+        String groupId = data['group_id'];
 
-        // 軌跡をJSON形式に変換して一意性を確認
-        String trajectoryJson = jsonEncode(positionsJson);
-        if (!uniqueTrajectories.contains(trajectoryJson)) {
-          uniqueTrajectories.add(trajectoryJson);
+        if (!uniqueGroupIds.contains(groupId)) {
+          uniqueGroupIds.add(groupId);
+
+          // positionsをデコード
+          List<dynamic> positionsJson = jsonDecode(data['positions']);
+          List<Position> trajectory = positionsJson.map((pos) {
+            return Position(
+              latitude: pos['latitude'],
+              longitude: pos['longitude'],
+              timestamp: DateTime.tryParse(pos['timestamp']) ?? DateTime.now(),
+              accuracy: 0.0,
+              altitude: 0.0,
+              heading: 0.0,
+              speed: 0.0,
+              speedAccuracy: 0.0,
+              altitudeAccuracy: 0.0,
+              headingAccuracy: 0.0,
+            );
+          }).toList();
+
           uniqueTrajectoryList.add(trajectory);
         }
       }
 
-      // 一意な軌跡をセット
       setState(() {
         recordedTrajectories = uniqueTrajectoryList;
       });
 
-      // 使用済みの軌跡インデックスを取得
       await _loadUsedTrajectories();
     } catch (e) {
       print("軌跡の読み込みエラー: $e");
