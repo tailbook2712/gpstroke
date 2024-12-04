@@ -31,10 +31,22 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen> {
   Future<void> _loadCanvasState() async {
     try {
       String jsonString = await widget.canvasFile.readAsString();
-      List<dynamic> data = jsonDecode(jsonString);
+      Map<String, dynamic> data = jsonDecode(jsonString);
+
+      // 保存されたキャンバスのサイズを取得
+      double savedCanvasWidth = data['canvasWidth'];
+      double savedCanvasHeight = data['canvasHeight'];
+
+      // 現在のキャンバスのサイズを取得
+      double currentCanvasWidth = MediaQuery.of(context).size.width;
+      double currentCanvasHeight = MediaQuery.of(context).size.height;
+
+      // キャンバスサイズの比率を計算
+      double widthRatio = currentCanvasWidth / savedCanvasWidth;
+      double heightRatio = currentCanvasHeight / savedCanvasHeight;
 
       setState(() {
-        _trajectories = data.map((item) {
+        _trajectories = (data['trajectories'] as List<dynamic>).map((item) {
           List<Position> positions = (item['positions'] as List).map((pos) {
             return Position(
               latitude: pos['latitude'],
@@ -50,15 +62,18 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen> {
             );
           }).toList();
 
+          // 位置をキャンバスサイズの比率に応じて調節
+          double adjustedDx = item['position']['dx'] * widthRatio;
+          double adjustedDy = item['position']['dy'] * heightRatio;
+
           return TransformablePolyline(
             positions,
-            Offset(item['position']['dx'], item['position']['dy']),
+            Offset(adjustedDx, adjustedDy),
           )
             ..scale = item['scale']
             ..rotation = item['rotation'];
         }).toList();
       });
-
       // デバッグ用
       await _dbHelper.debugPrintAllWalkingData();
     } catch (e) {
@@ -124,7 +139,7 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen> {
                   onTap: () => _showTrajectoryDetails(item),
                   child: Transform(
                     transform: Matrix4.identity()
-                      ..translate(item.position.dx, item.position.dy)
+                      // ..translate(item.position.dx, item.position.dy)
                       ..translate(75 * item.scale, 75 * item.scale)
                       ..rotateZ(item.rotation)
                       ..translate(-75 * item.scale, -75 * item.scale)

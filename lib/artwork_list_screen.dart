@@ -37,7 +37,7 @@ class ArtworkListScreen extends StatelessWidget {
               },
               child: Container(
                 decoration: BoxDecoration(
-                  color: Colors.grey[300],
+                  border: Border.all(color: Colors.black),
                   borderRadius: BorderRadius.circular(16),
                 ),
                 child: ClipRRect(

@@ -129,20 +129,25 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
       File imgFile = File('${artworksDirectory.path}/artwork_$timestamp.png');
       File canvasFile = File('${canvasDirectory.path}/canvas_$timestamp.json');
 
-      final canvasState = selectedTrajectories
-          .map((item) => {
-                'positions': item.polyline
-                    .map((p) => {
-                          'latitude': p.latitude,
-                          'longitude': p.longitude,
-                          'timestamp': p.timestamp?.toIso8601String() ?? "",
-                        })
-                    .toList(),
-                'position': {'dx': item.position.dx, 'dy': item.position.dy},
-                'scale': item.scale,
-                'rotation': item.rotation,
-              })
-          .toList();
+      final canvasSize = _boundaryKey.currentContext!.size!; // キャンバスのサイズを取得
+      // 保存データにキャンバスサイズを含める
+      final canvasState = {
+        'canvasWidth': canvasSize.width,
+        'canvasHeight': canvasSize.height,
+        'trajectories': selectedTrajectories.map((item) => {
+          'positions': item.polyline.map((p) => {
+            'latitude': p.latitude,
+            'longitude': p.longitude,
+            'timestamp': p.timestamp?.toIso8601String() ?? "",
+          }).toList(),
+          'position': {
+            'dx': item.position.dx,
+            'dy': item.position.dy,
+          },
+          'scale': item.scale,
+          'rotation': item.rotation,
+        }).toList(),
+      };
       await canvasFile.writeAsString(jsonEncode(canvasState));
 
       await imgFile.writeAsBytes(pngBytes);
