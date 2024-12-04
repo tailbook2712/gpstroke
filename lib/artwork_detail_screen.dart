@@ -75,7 +75,8 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen> {
       print("取得する groupId: $groupId");
 
       // データベースから記録を取得
-      Map<String, dynamic>? record = await _dbHelper.getWalkingDataByGroupId(groupId);
+      Map<String, dynamic>? record =
+          await _dbHelper.getWalkingDataByGroupId(groupId);
 
       if (record != null) {
         Navigator.push(
@@ -103,24 +104,32 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final screenWidth = MediaQuery.of(context).size.width;
+    final screenHeight = MediaQuery.of(context).size.height;
+
     return Scaffold(
       appBar: AppBar(
         title: Text('Artwork Detail'),
       ),
-      body: Stack(
-        children: [
-          Stack(
-            children: _trajectories.map((item) {
+      body: Container(
+        width: screenWidth,
+        height: screenHeight,
+        child: Stack(
+          children: [
+            ..._trajectories.map((item) {
               return Positioned(
-                left: item.position.dx,
-                top: item.position.dy,
+                left: item.position.dx.clamp(0, screenWidth),
+                top: item.position.dy.clamp(0, screenHeight),
                 child: GestureDetector(
                   onTap: () => _showTrajectoryDetails(item),
                   child: Transform(
                     transform: Matrix4.identity()
                       ..translate(item.position.dx, item.position.dy)
-                      ..scale(item.scale)
-                      ..rotateZ(item.rotation),
+                      ..translate(75 * item.scale, 75 * item.scale)
+                      ..rotateZ(item.rotation)
+                      ..translate(-75 * item.scale, -75 * item.scale)
+                      ..scale(item.scale),
+                    origin: Offset(75, 75),
                     child: CustomPaint(
                       size: Size(150, 150),
                       painter: PolylinePainter(
@@ -135,8 +144,8 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen> {
                 ),
               );
             }).toList(),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }

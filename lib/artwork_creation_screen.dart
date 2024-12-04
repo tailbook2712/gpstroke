@@ -49,7 +49,8 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
       recordedTrajectories.clear();
 
       // ローカルデータベースからデータを取得
-      List<Map<String, dynamic>> allWalkingData = await _dbHelper.getAllWalkingData();
+      List<Map<String, dynamic>> allWalkingData =
+          await _dbHelper.getAllWalkingData();
 
       // データを一意にするためSetを使用（groupIdベース）
       Set<String> uniqueGroupIds = {};
@@ -107,8 +108,8 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
   // アートワークを保存する
   Future<void> _saveArtwork() async {
     try {
-      RenderRepaintBoundary boundary =
-          _boundaryKey.currentContext!.findRenderObject() as RenderRepaintBoundary;
+      RenderRepaintBoundary boundary = _boundaryKey.currentContext!
+          .findRenderObject() as RenderRepaintBoundary;
       var image = await boundary.toImage();
       ByteData? byteData = await image.toByteData(format: ImageByteFormat.png);
       Uint8List pngBytes = byteData!.buffer.asUint8List();
@@ -128,16 +129,20 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
       File imgFile = File('${artworksDirectory.path}/artwork_$timestamp.png');
       File canvasFile = File('${canvasDirectory.path}/canvas_$timestamp.json');
 
-      final canvasState = selectedTrajectories.map((item) => {
-            'positions': item.polyline.map((p) => {
-                  'latitude': p.latitude,
-                  'longitude': p.longitude,
-                  'timestamp': p.timestamp?.toIso8601String() ?? "",
-                }).toList(),
-            'position': {'dx': item.position.dx, 'dy': item.position.dy},
-            'scale': item.scale,
-            'rotation': item.rotation,
-          }).toList();
+      final canvasState = selectedTrajectories
+          .map((item) => {
+                'positions': item.polyline
+                    .map((p) => {
+                          'latitude': p.latitude,
+                          'longitude': p.longitude,
+                          'timestamp': p.timestamp?.toIso8601String() ?? "",
+                        })
+                    .toList(),
+                'position': {'dx': item.position.dx, 'dy': item.position.dy},
+                'scale': item.scale,
+                'rotation': item.rotation,
+              })
+          .toList();
       await canvasFile.writeAsString(jsonEncode(canvasState));
 
       await imgFile.writeAsBytes(pngBytes);
@@ -223,10 +228,18 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                   size: Size(60, 60),
                   painter: PolylinePainter(
                     positions: trajectory!,
-                    minLat: trajectory.map((p) => p.latitude).reduce((a, b) => a < b ? a : b),
-                    maxLat: trajectory.map((p) => p.latitude).reduce((a, b) => a > b ? a : b),
-                    minLon: trajectory.map((p) => p.longitude).reduce((a, b) => a < b ? a : b),
-                    maxLon: trajectory.map((p) => p.longitude).reduce((a, b) => a > b ? a : b),
+                    minLat: trajectory
+                        .map((p) => p.latitude)
+                        .reduce((a, b) => a < b ? a : b),
+                    maxLat: trajectory
+                        .map((p) => p.latitude)
+                        .reduce((a, b) => a > b ? a : b),
+                    minLon: trajectory
+                        .map((p) => p.longitude)
+                        .reduce((a, b) => a < b ? a : b),
+                    maxLon: trajectory
+                        .map((p) => p.longitude)
+                        .reduce((a, b) => a > b ? a : b),
                   ),
                 ),
               );
@@ -256,12 +269,13 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
         onPressed: () => _showTrajectoryModal(context),
         child: Icon(Icons.add),
       ),
-      body: Column(
+      body: Stack(
         children: [
-          Flexible(
-            flex: 8,
+          Container(
+            width: screenWidth,
+            height: screenHeight,
             child: GestureDetector(
-              behavior: HitTestBehavior.translucent, // 透明部分のタップも検出
+              behavior: HitTestBehavior.translucent,
               onTap: () {
                 // キャンバスの白い部分をタップした場合、選択状態を解除
                 setState(() {
@@ -274,12 +288,12 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                   children: [
                     ...selectedTrajectories.map((item) {
                       return Positioned(
-                        left: item.position.dx.clamp(
-                            canvasPadding, screenWidth - canvasPadding),
-                        top: item.position.dy.clamp(
-                            canvasPadding, screenHeight - canvasPadding),
+                        left: item.position.dx
+                            .clamp(canvasPadding, screenWidth - canvasPadding),
+                        top: item.position.dy
+                            .clamp(canvasPadding, screenHeight - canvasPadding),
                         child: GestureDetector(
-                          behavior: HitTestBehavior.opaque, // 軌跡のタップを検出
+                          behavior: HitTestBehavior.opaque,
                           onTap: () {
                             // 軌跡をタップした場合、選択状態を設定
                             setState(() {
@@ -325,10 +339,10 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                             children: [
                               Transform(
                                 transform: Matrix4.identity()
-                                  ..translate(item.position.dx, item.position.dy)
                                   ..translate(75 * item.scale, 75 * item.scale)
                                   ..rotateZ(item.rotation)
-                                  ..translate(-75 * item.scale, -75 * item.scale)
+                                  ..translate(
+                                      -75 * item.scale, -75 * item.scale)
                                   ..scale(item.scale),
                                 origin: Offset(75, 75),
                                 child: Container(
@@ -358,9 +372,11 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                                   top: (item.scale * 75) - 25,
                                   right: (item.scale * 75) - 25,
                                   child: IconButton(
-                                    icon: Icon(rotateMode
-                                        ? Icons.rotate_right
-                                        : Icons.open_with),
+                                    icon: Icon(
+                                      rotateMode
+                                          ? Icons.rotate_right
+                                          : Icons.open_with,
+                                    ),
                                     color: Colors.blue,
                                     onPressed: () {
                                       setState(() {
@@ -379,12 +395,16 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
               ),
             ),
           ),
+          // 削除ボタンの表示
           if (selectedItem != null)
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 8.0),
-              child: IconButton(
-                icon: Icon(Icons.delete, size: 30, color: Colors.red),
-                onPressed: _removeSelectedTrajectory,
+            Align(
+              alignment: Alignment.bottomCenter,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 8.0),
+                child: IconButton(
+                  icon: Icon(Icons.delete, size: 30, color: Colors.red),
+                  onPressed: _removeSelectedTrajectory,
+                ),
               ),
             ),
         ],
@@ -407,8 +427,12 @@ class TransformablePolyline {
   TransformablePolyline(this.polyline, this.position)
       : scale = 0.6,
         rotation = 0.0,
-        minLat = polyline.map((p) => p.latitude).reduce((a, b) => a < b ? a : b),
-        maxLat = polyline.map((p) => p.latitude).reduce((a, b) => a > b ? a : b),
-        minLon = polyline.map((p) => p.longitude).reduce((a, b) => a < b ? a : b),
-        maxLon = polyline.map((p) => p.longitude).reduce((a, b) => a > b ? a : b);
+        minLat =
+            polyline.map((p) => p.latitude).reduce((a, b) => a < b ? a : b),
+        maxLat =
+            polyline.map((p) => p.latitude).reduce((a, b) => a > b ? a : b),
+        minLon =
+            polyline.map((p) => p.longitude).reduce((a, b) => a < b ? a : b),
+        maxLon =
+            polyline.map((p) => p.longitude).reduce((a, b) => a > b ? a : b);
 }
