@@ -23,19 +23,19 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
   TransformablePolyline? selectedItem;
   final GlobalKey _canvasKey = GlobalKey();
   final GlobalKey _boundaryKey = GlobalKey();
-  final double canvasPadding = 20.0;
   List<List<Position>> recordedTrajectories = [];
   Set<int> usedTrajectoryIndices = {}; // 保存済みの軌跡インデックスを保持
   Set<int> temporarilyUsedIndices = {}; // 一時的に使用された軌跡インデックス
   final DatabaseHelper _dbHelper = DatabaseHelper();
 
-  final double minScale = 0.5; // 縮小の下限
+  final double minScale = 0.7; // 縮小の下限
   final double maxScale = 1.3; // 拡大の上限
   bool isScaling = false;
   bool isRotating = false;
-  final double scaleFactor = 0.05;
-  final double rotationFactor = 0.1;
+  final double scaleFactor = 0.05; // 拡大縮小の係数
+  final double rotationFactor = 0.3; // 回転の係数
   bool rotateMode = false;
+  final double canvasPadding = 20.0;
 
   @override
   void initState() {
@@ -49,7 +49,8 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
       recordedTrajectories.clear();
 
       // ローカルデータベースからデータを取得
-      List<Map<String, dynamic>> allWalkingData = await _dbHelper.getAllWalkingData();
+      List<Map<String, dynamic>> allWalkingData =
+          await _dbHelper.getAllWalkingData();
 
       // データを一意にするためSetを使用（groupIdベース）
       Set<String> uniqueGroupIds = {};
@@ -107,8 +108,8 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
   // アートワークを保存する
   Future<void> _saveArtwork() async {
     try {
-      RenderRepaintBoundary boundary =
-          _boundaryKey.currentContext!.findRenderObject() as RenderRepaintBoundary;
+      RenderRepaintBoundary boundary = _boundaryKey.currentContext!
+          .findRenderObject() as RenderRepaintBoundary;
       var image = await boundary.toImage();
       ByteData? byteData = await image.toByteData(format: ImageByteFormat.png);
       Uint8List pngBytes = byteData!.buffer.asUint8List();
@@ -128,16 +129,29 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
       File imgFile = File('${artworksDirectory.path}/artwork_$timestamp.png');
       File canvasFile = File('${canvasDirectory.path}/canvas_$timestamp.json');
 
-      final canvasState = selectedTrajectories.map((item) => {
+      final canvasSize = _boundaryKey.currentContext!.size!; // キャンバスのサイズを取得
+      // 保存時の軌跡を記録する部分
+      final canvasState = {
+        'canvasWidth': canvasSize.width, // キャンバスの幅
+        'canvasHeight': canvasSize.height, // キャンバスの高さ
+        'trajectories': selectedTrajectories.map((item) {
+          // 保存時のデバッグ出力
+          print('保存時 - dx: ${item.position.dx}, dy: ${item.position.dy}, scale: ${item.scale}, rotation: ${item.rotation}');
+          return {
             'positions': item.polyline.map((p) => {
                   'latitude': p.latitude,
                   'longitude': p.longitude,
                   'timestamp': p.timestamp?.toIso8601String() ?? "",
                 }).toList(),
-            'position': {'dx': item.position.dx, 'dy': item.position.dy},
+            'position': {
+              'dx': item.position.dx / canvasSize.width, // 相対位置として保存
+              'dy': item.position.dy / canvasSize.height,
+            },
             'scale': item.scale,
             'rotation': item.rotation,
-          }).toList();
+          };
+        }).toList(),
+      };
       await canvasFile.writeAsString(jsonEncode(canvasState));
 
       await imgFile.writeAsBytes(pngBytes);
@@ -223,10 +237,18 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                   size: Size(60, 60),
                   painter: PolylinePainter(
                     positions: trajectory!,
-                    minLat: trajectory.map((p) => p.latitude).reduce((a, b) => a < b ? a : b),
-                    maxLat: trajectory.map((p) => p.latitude).reduce((a, b) => a > b ? a : b),
-                    minLon: trajectory.map((p) => p.longitude).reduce((a, b) => a < b ? a : b),
-                    maxLon: trajectory.map((p) => p.longitude).reduce((a, b) => a > b ? a : b),
+                    minLat: trajectory
+                        .map((p) => p.latitude)
+                        .reduce((a, b) => a < b ? a : b),
+                    maxLat: trajectory
+                        .map((p) => p.latitude)
+                        .reduce((a, b) => a > b ? a : b),
+                    minLon: trajectory
+                        .map((p) => p.longitude)
+                        .reduce((a, b) => a < b ? a : b),
+                    maxLon: trajectory
+                        .map((p) => p.longitude)
+                        .reduce((a, b) => a > b ? a : b),
                   ),
                 ),
               );
@@ -256,12 +278,14 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
         onPressed: () => _showTrajectoryModal(context),
         child: Icon(Icons.add),
       ),
-      body: Column(
+      body: Stack(
         children: [
-          Flexible(
-            flex: 8,
+          Container(
+            width: screenWidth,
+            height: screenHeight,
+            color: Colors.grey[200],
             child: GestureDetector(
-              behavior: HitTestBehavior.translucent, // 透明部分のタップも検出
+              behavior: HitTestBehavior.translucent,
               onTap: () {
                 // キャンバスの白い部分をタップした場合、選択状態を解除
                 setState(() {
@@ -274,12 +298,11 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                   children: [
                     ...selectedTrajectories.map((item) {
                       return Positioned(
-                        left: item.position.dx.clamp(
-                            canvasPadding, screenWidth - canvasPadding),
-                        top: item.position.dy.clamp(
-                            canvasPadding, screenHeight - canvasPadding),
+                        // 修正箇所: Positionedウィジェット内でキャンバスの余白を考慮して計算
+                        left: item.position.dx.clamp(canvasPadding, screenWidth - canvasPadding - item.scale * 150), // 150はPolylinePainterのサイズ
+                        top: item.position.dy.clamp(canvasPadding, screenHeight - canvasPadding - item.scale * 150),
                         child: GestureDetector(
-                          behavior: HitTestBehavior.opaque, // 軌跡のタップを検出
+                          behavior: HitTestBehavior.opaque,
                           onTap: () {
                             // 軌跡をタップした場合、選択状態を設定
                             setState(() {
@@ -325,10 +348,10 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                             children: [
                               Transform(
                                 transform: Matrix4.identity()
-                                  ..translate(item.position.dx, item.position.dy)
                                   ..translate(75 * item.scale, 75 * item.scale)
                                   ..rotateZ(item.rotation)
-                                  ..translate(-75 * item.scale, -75 * item.scale)
+                                  ..translate(
+                                      -75 * item.scale, -75 * item.scale)
                                   ..scale(item.scale),
                                 origin: Offset(75, 75),
                                 child: Container(
@@ -339,7 +362,8 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                                         : null,
                                   ),
                                   child: Padding(
-                                    padding: const EdgeInsets.all(40.0),
+                                    padding:
+                                        const EdgeInsets.all(20.0), // 余白を20に変更
                                     child: CustomPaint(
                                       size: Size(150, 150),
                                       painter: PolylinePainter(
@@ -358,9 +382,11 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                                   top: (item.scale * 75) - 25,
                                   right: (item.scale * 75) - 25,
                                   child: IconButton(
-                                    icon: Icon(rotateMode
-                                        ? Icons.rotate_right
-                                        : Icons.open_with),
+                                    icon: Icon(
+                                      rotateMode
+                                          ? Icons.rotate_right
+                                          : Icons.open_with,
+                                    ),
                                     color: Colors.blue,
                                     onPressed: () {
                                       setState(() {
@@ -379,12 +405,16 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
               ),
             ),
           ),
+          // 削除ボタンの表示
           if (selectedItem != null)
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 8.0),
-              child: IconButton(
-                icon: Icon(Icons.delete, size: 30, color: Colors.red),
-                onPressed: _removeSelectedTrajectory,
+            Align(
+              alignment: Alignment.bottomCenter,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 8.0),
+                child: IconButton(
+                  icon: Icon(Icons.delete, size: 30, color: Colors.red),
+                  onPressed: _removeSelectedTrajectory,
+                ),
               ),
             ),
         ],
@@ -407,8 +437,12 @@ class TransformablePolyline {
   TransformablePolyline(this.polyline, this.position)
       : scale = 0.6,
         rotation = 0.0,
-        minLat = polyline.map((p) => p.latitude).reduce((a, b) => a < b ? a : b),
-        maxLat = polyline.map((p) => p.latitude).reduce((a, b) => a > b ? a : b),
-        minLon = polyline.map((p) => p.longitude).reduce((a, b) => a < b ? a : b),
-        maxLon = polyline.map((p) => p.longitude).reduce((a, b) => a > b ? a : b);
+        minLat =
+            polyline.map((p) => p.latitude).reduce((a, b) => a < b ? a : b),
+        maxLat =
+            polyline.map((p) => p.latitude).reduce((a, b) => a > b ? a : b),
+        minLon =
+            polyline.map((p) => p.longitude).reduce((a, b) => a < b ? a : b),
+        maxLon =
+            polyline.map((p) => p.longitude).reduce((a, b) => a > b ? a : b);
 }

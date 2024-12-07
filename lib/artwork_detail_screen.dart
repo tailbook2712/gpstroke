@@ -21,6 +21,8 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen> {
   List<TransformablePolyline> _trajectories = [];
   late DatabaseHelper _dbHelper;
 
+  final double canvasPadding = 20.0; // キャンバスの余白を定義
+
   @override
   void initState() {
     super.initState();
@@ -31,10 +33,24 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen> {
   Future<void> _loadCanvasState() async {
     try {
       String jsonString = await widget.canvasFile.readAsString();
-      List<dynamic> data = jsonDecode(jsonString);
+      Map<String, dynamic> data = jsonDecode(jsonString);
+
+      // 現在のキャンバスのサイズを取得
+      double currentCanvasWidth = MediaQuery.of(context).size.width;
+      double currentCanvasHeight = MediaQuery.of(context).size.height;
+
+      double savedCanvasWidth = data['canvasWidth']; // 保存時のキャンバス幅
+      double savedCanvasHeight = data['canvasHeight']; // 保存時のキャンバス高さ
+
+      // 比率計算
+      double widthRatio = currentCanvasWidth / savedCanvasWidth; // 幅の比率
+      double heightRatio = currentCanvasHeight / savedCanvasHeight; // 高さの比率
+
+      // デバッグ用
+      print('復元時の比率 - widthRatio: $widthRatio, heightRatio: $heightRatio');
 
       setState(() {
-        _trajectories = data.map((item) {
+        _trajectories = (data['trajectories'] as List<dynamic>).map((item) {
           List<Position> positions = (item['positions'] as List).map((pos) {
             return Position(
               latitude: pos['latitude'],
@@ -50,17 +66,26 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen> {
             );
           }).toList();
 
+          // 相対位置をピクセル単位に変換
+          double adjustedDx = item['position']['dx'] * savedCanvasWidth;
+          double adjustedDy = item['position']['dy'] * savedCanvasHeight;
+
+          // デバッグ用出力
+          print(
+              '復元時 - dx: $adjustedDx, dy: $adjustedDy (元の dy: ${item['position']['dy']})'
+              'adjustedDx: $adjustedDx, adjustedDy: $adjustedDy');
+
+          // スケールは保存時の値をそのまま使用
+          double adjustedScale = item['scale'];
+
           return TransformablePolyline(
             positions,
-            Offset(item['position']['dx'], item['position']['dy']),
+            Offset(adjustedDx, adjustedDy),
           )
-            ..scale = item['scale']
+            ..scale = adjustedScale
             ..rotation = item['rotation'];
         }).toList();
       });
-
-      // デバッグ用
-      await _dbHelper.debugPrintAllWalkingData();
     } catch (e) {
       print("キャンバス状態の読み込みエラー: $e");
     }
@@ -75,7 +100,8 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen> {
       print("取得する groupId: $groupId");
 
       // データベースから記録を取得
-      Map<String, dynamic>? record = await _dbHelper.getWalkingDataByGroupId(groupId);
+      Map<String, dynamic>? record =
+          await _dbHelper.getWalkingDataByGroupId(groupId);
 
       if (record != null) {
         Navigator.push(
@@ -103,24 +129,33 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final screenWidth = MediaQuery.of(context).size.width;
+    final screenHeight = MediaQuery.of(context).size.height;
+
     return Scaffold(
       appBar: AppBar(
-        title: Text('Artwork Detail'),
+        title: Text('作品の詳細'),
       ),
-      body: Stack(
-        children: [
-          Stack(
-            children: _trajectories.map((item) {
+      body: Container(
+        width: screenWidth,
+        height: screenHeight,
+        child: Stack(
+          children: [
+            ..._trajectories.map((item) {
               return Positioned(
-                left: item.position.dx,
-                top: item.position.dy,
+                left: item.position.dx.clamp(canvasPadding,
+                    screenWidth - canvasPadding - item.scale * 150),
+                top: item.position.dy.clamp(canvasPadding,
+                    screenHeight - canvasPadding - item.scale * 150),
                 child: GestureDetector(
                   onTap: () => _showTrajectoryDetails(item),
                   child: Transform(
                     transform: Matrix4.identity()
-                      ..translate(item.position.dx, item.position.dy)
-                      ..scale(item.scale)
-                      ..rotateZ(item.rotation),
+                      ..translate(75 * item.scale, 75 * item.scale)
+                      ..rotateZ(item.rotation)
+                      ..translate(-75 * item.scale, -75 * item.scale)
+                      ..scale(item.scale),
+                    origin: Offset(75, 75),
                     child: CustomPaint(
                       size: Size(150, 150),
                       painter: PolylinePainter(
@@ -135,8 +170,8 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen> {
                 ),
               );
             }).toList(),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
