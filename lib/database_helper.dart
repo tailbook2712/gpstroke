@@ -177,6 +177,6 @@ class DatabaseHelper {
   Future<void> debugPrintAllWalkingData() async {
     Database db = await database;
     List<Map<String, dynamic>> allData = await db.query(tableWalkingData);
-    print("All walking data: $allData");
+    // print("All walking data: $allData");
   }
 }

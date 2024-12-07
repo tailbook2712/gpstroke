@@ -23,19 +23,19 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
   TransformablePolyline? selectedItem;
   final GlobalKey _canvasKey = GlobalKey();
   final GlobalKey _boundaryKey = GlobalKey();
-  final double canvasPadding = 20.0;
   List<List<Position>> recordedTrajectories = [];
   Set<int> usedTrajectoryIndices = {}; // 保存済みの軌跡インデックスを保持
   Set<int> temporarilyUsedIndices = {}; // 一時的に使用された軌跡インデックス
   final DatabaseHelper _dbHelper = DatabaseHelper();
 
-  final double minScale = 0.5; // 縮小の下限
+  final double minScale = 0.7; // 縮小の下限
   final double maxScale = 1.3; // 拡大の上限
   bool isScaling = false;
   bool isRotating = false;
-  final double scaleFactor = 0.05;
-  final double rotationFactor = 0.1;
+  final double scaleFactor = 0.05; // 拡大縮小の係数
+  final double rotationFactor = 0.3; // 回転の係数
   bool rotateMode = false;
+  final double canvasPadding = 20.0;
 
   @override
   void initState() {
@@ -130,22 +130,26 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
       File canvasFile = File('${canvasDirectory.path}/canvas_$timestamp.json');
 
       final canvasSize = _boundaryKey.currentContext!.size!; // キャンバスのサイズを取得
-      // 保存データにキャンバスサイズを含める
+      // 保存時の軌跡を記録する部分
       final canvasState = {
-        'canvasWidth': canvasSize.width,
-        'canvasHeight': canvasSize.height,
-        'trajectories': selectedTrajectories.map((item) => {
-          'positions': item.polyline.map((p) => {
-            'latitude': p.latitude,
-            'longitude': p.longitude,
-            'timestamp': p.timestamp?.toIso8601String() ?? "",
-          }).toList(),
-          'position': {
-            'dx': item.position.dx,
-            'dy': item.position.dy,
-          },
-          'scale': item.scale,
-          'rotation': item.rotation,
+        'canvasWidth': canvasSize.width, // キャンバスの幅
+        'canvasHeight': canvasSize.height, // キャンバスの高さ
+        'trajectories': selectedTrajectories.map((item) {
+          // 保存時のデバッグ出力
+          print('保存時 - dx: ${item.position.dx}, dy: ${item.position.dy}, scale: ${item.scale}, rotation: ${item.rotation}');
+          return {
+            'positions': item.polyline.map((p) => {
+                  'latitude': p.latitude,
+                  'longitude': p.longitude,
+                  'timestamp': p.timestamp?.toIso8601String() ?? "",
+                }).toList(),
+            'position': {
+              'dx': item.position.dx / canvasSize.width, // 相対位置として保存
+              'dy': item.position.dy / canvasSize.height,
+            },
+            'scale': item.scale,
+            'rotation': item.rotation,
+          };
         }).toList(),
       };
       await canvasFile.writeAsString(jsonEncode(canvasState));
@@ -279,6 +283,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
           Container(
             width: screenWidth,
             height: screenHeight,
+            color: Colors.grey[200],
             child: GestureDetector(
               behavior: HitTestBehavior.translucent,
               onTap: () {
@@ -293,10 +298,9 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                   children: [
                     ...selectedTrajectories.map((item) {
                       return Positioned(
-                        left: item.position.dx
-                            .clamp(canvasPadding, screenWidth - canvasPadding),
-                        top: item.position.dy
-                            .clamp(canvasPadding, screenHeight - canvasPadding),
+                        // 修正箇所: Positionedウィジェット内でキャンバスの余白を考慮して計算
+                        left: item.position.dx.clamp(canvasPadding, screenWidth - canvasPadding - item.scale * 150), // 150はPolylinePainterのサイズ
+                        top: item.position.dy.clamp(canvasPadding, screenHeight - canvasPadding - item.scale * 150),
                         child: GestureDetector(
                           behavior: HitTestBehavior.opaque,
                           onTap: () {
@@ -358,7 +362,8 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                                         : null,
                                   ),
                                   child: Padding(
-                                    padding: const EdgeInsets.all(40.0),
+                                    padding:
+                                        const EdgeInsets.all(20.0), // 余白を20に変更
                                     child: CustomPaint(
                                       size: Size(150, 150),
                                       painter: PolylinePainter(
