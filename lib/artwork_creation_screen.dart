@@ -131,6 +131,23 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
       File canvasFile = File('${canvasDirectory.path}/canvas_$timestamp.json');
 
       final canvasSize = _boundaryKey.currentContext!.size!; // キャンバスのサイズを取得
+
+      // 軌跡の数、総距離、総歩数を計算
+      int trajectoryCount = selectedTrajectories.length;
+      double totalDistance = 0;
+      int totalSteps = 0;
+
+      for (var item in selectedTrajectories) {
+        for (int i = 1; i < item.polyline.length; i++) {
+          totalDistance += Geolocator.distanceBetween(
+            item.polyline[i - 1].latitude,
+            item.polyline[i - 1].longitude,
+            item.polyline[i].latitude,
+            item.polyline[i].longitude,
+          );
+        }
+        totalSteps += item.polyline.length; // 仮に各Positionを1歩と見なす
+      }
       // 保存時の軌跡を記録する部分
       final canvasState = {
         'canvasWidth': canvasSize.width, // キャンバスの幅
@@ -155,9 +172,13 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
             'rotation': item.rotation,
           };
         }).toList(),
+        'meta': {
+          'trajectoryCount': trajectoryCount,
+          'totalDistance': totalDistance,
+          'totalSteps': totalSteps,
+        },
       };
       await canvasFile.writeAsString(jsonEncode(canvasState));
-
       await imgFile.writeAsBytes(pngBytes);
 
       // 使用済みの軌跡を保存
