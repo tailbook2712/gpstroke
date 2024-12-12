@@ -29,8 +29,8 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
   Set<int> temporarilyUsedIndices = {}; // 一時的に使用された軌跡インデックス
   final DatabaseHelper _dbHelper = DatabaseHelper();
 
-  final double minScale = 0.7; // 縮小の下限
-  final double maxScale = 1.3; // 拡大の上限
+  final double minScale = 0.3; // 縮小の下限
+  final double maxScale = 1.0; // 拡大の上限
   bool isScaling = false;
   bool isRotating = false;
   final double scaleFactor = 0.05; // 拡大縮小の係数
@@ -324,7 +324,6 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                   children: [
                     ...selectedTrajectories.map((item) {
                       return Positioned(
-                        // 修正箇所: Positionedウィジェット内でキャンバスの余白を考慮して計算
                         left: item.position.dx.clamp(
                             canvasPadding,
                             screenWidth -
@@ -333,7 +332,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                         top: item.position.dy.clamp(canvasPadding,
                             screenHeight - canvasPadding - item.scale * 150),
                         child: GestureDetector(
-                          behavior: HitTestBehavior.opaque,
+                          behavior: HitTestBehavior.translucent, // タップイベントを透明な領域でも発生するようにtranslucentに変更
                           onTap: () {
                             // 軌跡をタップした場合、選択状態を設定
                             setState(() {
@@ -376,7 +375,13 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                             }
                           },
                           child: Stack(
+                            alignment:Alignment.center,
                             children: [
+                              Container(
+                                width: 150 * item.scale + 80, // タップ範囲を拡張 (80は余白)
+                                height: 150 * item.scale + 80,
+                                color: Colors.transparent, // 透明な領域を追加                      
+                              ),
                               Transform(
                                 transform: Matrix4.identity()
                                   ..translate(75 * item.scale, 75 * item.scale)
@@ -466,7 +471,7 @@ class TransformablePolyline {
   double maxLon;
 
   TransformablePolyline(this.polyline, this.position)
-      : scale = 1.0,
+      : scale = 0.6,
         rotation = 0.0,
         minLat =
             polyline.map((p) => p.latitude).reduce((a, b) => a < b ? a : b),
