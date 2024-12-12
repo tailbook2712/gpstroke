@@ -207,6 +207,13 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
               : null,
         ).where((trajectory) => trajectory != null).toList();
 
+        // 軌跡を最新の順にソート
+        availableTrajectories.sort((a, b) {
+          final DateTime latestA = a!.map((p) => p.timestamp).reduce((value, element) => value.isAfter(element) ? value : element);
+          final DateTime latestB = b!.map((p) => p.timestamp).reduce((value, element) => value.isAfter(element) ? value : element);
+          return latestB.compareTo(latestA); // 新しい順
+        });
+
         return Container(
           height: MediaQuery.of(context).size.height * 0.5,
           padding: EdgeInsets.all(10),
