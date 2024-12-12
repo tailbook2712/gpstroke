@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'database_helper.dart';
 import 'polyline_painter.dart';
+import 'package:intl/intl.dart';
 
 class ArtworkCreationScreen extends StatefulWidget {
   final List<List<Position>> trajectories;
@@ -28,8 +29,8 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
   Set<int> temporarilyUsedIndices = {}; // 一時的に使用された軌跡インデックス
   final DatabaseHelper _dbHelper = DatabaseHelper();
 
-  final double minScale = 0.7; // 縮小の下限
-  final double maxScale = 1.3; // 拡大の上限
+  final double minScale = 0.3; // 縮小の下限
+  final double maxScale = 1.0; // 拡大の上限
   bool isScaling = false;
   bool isRotating = false;
   final double scaleFactor = 0.05; // 拡大縮小の係数
@@ -136,13 +137,16 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
         'canvasHeight': canvasSize.height, // キャンバスの高さ
         'trajectories': selectedTrajectories.map((item) {
           // 保存時のデバッグ出力
-          print('保存時 - dx: ${item.position.dx}, dy: ${item.position.dy}, scale: ${item.scale}, rotation: ${item.rotation}');
+          print(
+              '保存時 - dx: ${item.position.dx}, dy: ${item.position.dy}, scale: ${item.scale}, rotation: ${item.rotation}');
           return {
-            'positions': item.polyline.map((p) => {
-                  'latitude': p.latitude,
-                  'longitude': p.longitude,
-                  'timestamp': p.timestamp?.toIso8601String() ?? "",
-                }).toList(),
+            'positions': item.polyline
+                .map((p) => {
+                      'latitude': p.latitude,
+                      'longitude': p.longitude,
+                      'timestamp': p.timestamp?.toIso8601String() ?? "",
+                    })
+                .toList(),
             'position': {
               'dx': item.position.dx / canvasSize.width, // 相対位置として保存
               'dy': item.position.dy / canvasSize.height,
@@ -203,6 +207,13 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
               : null,
         ).where((trajectory) => trajectory != null).toList();
 
+        // 軌跡を最新の順にソート
+        availableTrajectories.sort((a, b) {
+          final DateTime latestA = a!.map((p) => p.timestamp).reduce((value, element) => value.isAfter(element) ? value : element);
+          final DateTime latestB = b!.map((p) => p.timestamp).reduce((value, element) => value.isAfter(element) ? value : element);
+          return latestB.compareTo(latestA); // 新しい順
+        });
+
         return Container(
           height: MediaQuery.of(context).size.height * 0.5,
           padding: EdgeInsets.all(10),
@@ -215,6 +226,8 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
             itemCount: availableTrajectories.length,
             itemBuilder: (context, index) {
               final trajectory = availableTrajectories[index];
+              DateTime date = trajectory!.first.timestamp;
+              String formattedDate = DateFormat('MM/dd').format(date);
               return GestureDetector(
                 onTap: () {
                   Navigator.pop(context); // モーダルを閉じる
@@ -233,23 +246,36 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                     );
                   });
                 },
-                child: CustomPaint(
-                  size: Size(60, 60),
-                  painter: PolylinePainter(
-                    positions: trajectory!,
-                    minLat: trajectory
-                        .map((p) => p.latitude)
-                        .reduce((a, b) => a < b ? a : b),
-                    maxLat: trajectory
-                        .map((p) => p.latitude)
-                        .reduce((a, b) => a > b ? a : b),
-                    minLon: trajectory
-                        .map((p) => p.longitude)
-                        .reduce((a, b) => a < b ? a : b),
-                    maxLon: trajectory
-                        .map((p) => p.longitude)
-                        .reduce((a, b) => a > b ? a : b),
-                  ),
+                child: Stack(
+                  children: [
+                    CustomPaint(
+                      size: Size(60, 60),
+                      painter: PolylinePainter(
+                        positions: trajectory!,
+                        minLat: trajectory
+                            .map((p) => p.latitude)
+                            .reduce((a, b) => a < b ? a : b),
+                        maxLat: trajectory
+                            .map((p) => p.latitude)
+                            .reduce((a, b) => a > b ? a : b),
+                        minLon: trajectory
+                            .map((p) => p.longitude)
+                            .reduce((a, b) => a < b ? a : b),
+                        maxLon: trajectory
+                            .map((p) => p.longitude)
+                            .reduce((a, b) => a > b ? a : b),
+                      ),
+                    ),
+                    Positioned(
+                      top: 0,
+                      right: 0,
+                      child: Container(
+                        padding: EdgeInsets.all(4),
+                        color: Colors.white.withOpacity(0.8),
+                        child: Text(formattedDate, style: TextStyle(fontSize: 12)),
+                      ),
+                    ),
+                  ],
                 ),
               );
             },
@@ -298,11 +324,15 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                   children: [
                     ...selectedTrajectories.map((item) {
                       return Positioned(
-                        // 修正箇所: Positionedウィジェット内でキャンバスの余白を考慮して計算
-                        left: item.position.dx.clamp(canvasPadding, screenWidth - canvasPadding - item.scale * 150), // 150はPolylinePainterのサイズ
-                        top: item.position.dy.clamp(canvasPadding, screenHeight - canvasPadding - item.scale * 150),
+                        left: item.position.dx.clamp(
+                            canvasPadding,
+                            screenWidth -
+                                canvasPadding -
+                                item.scale * 150), // 150はPolylinePainterのサイズ
+                        top: item.position.dy.clamp(canvasPadding,
+                            screenHeight - canvasPadding - item.scale * 150),
                         child: GestureDetector(
-                          behavior: HitTestBehavior.opaque,
+                          behavior: HitTestBehavior.translucent, // タップイベントを透明な領域でも発生するようにtranslucentに変更
                           onTap: () {
                             // 軌跡をタップした場合、選択状態を設定
                             setState(() {
@@ -345,7 +375,13 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                             }
                           },
                           child: Stack(
+                            alignment:Alignment.center,
                             children: [
+                              Container(
+                                width: 150 * item.scale + 80, // タップ範囲を拡張 (80は余白)
+                                height: 150 * item.scale + 80,
+                                color: Colors.transparent, // 透明な領域を追加                      
+                              ),
                               Transform(
                                 transform: Matrix4.identity()
                                   ..translate(75 * item.scale, 75 * item.scale)
