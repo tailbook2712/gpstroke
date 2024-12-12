@@ -466,7 +466,7 @@ class TransformablePolyline {
   double maxLon;
 
   TransformablePolyline(this.polyline, this.position)
-      : scale = 0.6,
+      : scale = 1.0,
         rotation = 0.0,
         minLat =
             polyline.map((p) => p.latitude).reduce((a, b) => a < b ? a : b),
