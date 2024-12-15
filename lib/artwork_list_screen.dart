@@ -1,8 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
-
 import 'package:flutter/material.dart';
-
 import 'artwork_detail_screen.dart';
 
 class ArtworkListScreen extends StatelessWidget {
@@ -10,6 +8,7 @@ class ArtworkListScreen extends StatelessWidget {
 
   ArtworkListScreen({required this.savedArtworks});
 
+  // キャンバスのメタ情報を読み込む
   Future<Map<String, dynamic>> _loadCanvasMeta(File canvasFile) async {
     String jsonString = await canvasFile.readAsString();
     Map<String, dynamic> data = jsonDecode(jsonString);
@@ -26,10 +25,10 @@ class ArtworkListScreen extends StatelessWidget {
         padding: const EdgeInsets.all(16.0),
         child: GridView.builder(
           gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-            crossAxisCount: 2,
+            crossAxisCount: 2, // 2列表示
             crossAxisSpacing: 16,
             mainAxisSpacing: 16,
-            childAspectRatio: 1,
+            childAspectRatio: 0.7, // カードの高さを調整
           ),
           itemCount: savedArtworks.length,
           itemBuilder: (context, index) {
@@ -42,7 +41,7 @@ class ArtworkListScreen extends StatelessWidget {
 
                 final meta = snapshot.data!;
                 final trajectoryCount = meta['trajectoryCount'] ?? 0;
-                final totalDistance = (meta['totalDistance'] ?? 0.0) / 1000.0;
+                final totalDistance = (meta['totalDistance'] ?? 0.0) / 1000.0; // km単位に変換
                 final totalSteps = meta['totalSteps'] ?? 0;
 
                 return GestureDetector(
@@ -57,7 +56,9 @@ class ArtworkListScreen extends StatelessWidget {
                     );
                   },
                   child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.center,
                     children: [
+                      // 画像部分
                       Container(
                         decoration: BoxDecoration(
                           border: Border.all(color: Colors.black),
@@ -67,23 +68,36 @@ class ArtworkListScreen extends StatelessWidget {
                           borderRadius: BorderRadius.circular(16),
                           child: Image.file(
                             savedArtworks[index]['imageFile'],
-                            fit: BoxFit.cover,
+                            fit: BoxFit.contain,
+                            width: double.infinity,
+                            height: 150, // 高さを固定
                           ),
                         ),
                       ),
+                      // テキスト部分: 画像の下に表示
                       Padding(
-                        padding: const EdgeInsets.all(8.0),
+                        padding: const EdgeInsets.only(top: 8.0),
                         child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.center,
                           children: [
-                            Text('軌跡数: $trajectoryCount'),
-                            Text('総距離: ${totalDistance.toStringAsFixed(2)} km'),
-                            Text('総歩数: $totalSteps'),
+                            Text(
+                              '軌跡数: $trajectoryCount',
+                              style: TextStyle(fontSize: 12),
+                            ),
+                            Text(
+                              '総距離: ${totalDistance.toStringAsFixed(2)} km',
+                              style: TextStyle(fontSize: 12),
+                            ),
+                            Text(
+                              '総歩数: $totalSteps',
+                              style: TextStyle(fontSize: 12),
+                            ),
                           ],
-                          ),
                         ),
-                      ],
-                    ),
-                  );
+                      ),
+                    ],
+                  ),
+                );
               },
             );
           },
