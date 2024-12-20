@@ -363,25 +363,15 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                           onScaleStart: (_) {
                             if (selectedItem == item) {
                               setState(() {
-                                isScaling = true;
-                                isRotating = false;
+                                isRotating = true;
                               });
                             }
                           },
                           onScaleUpdate: (details) {
                             if (selectedItem == item) {
                               setState(() {
-                                if (rotateMode) {
-                                  if (details.rotation.abs() > 0.01) {
-                                    item.rotation +=
-                                        details.rotation * rotationFactor;
-                                  }
-                                } else {
-                                  if (details.scale != 1.0) {
-                                    item.scale = (item.scale +
-                                            (details.scale - 1) * scaleFactor)
-                                        .clamp(minScale, maxScale);
-                                  }
+                                if (details.rotation.abs() > 0.01) {
+                                    item.rotation += details.rotation * rotationFactor;
                                 }
                                 item.position += details.focalPointDelta;
                               });
@@ -390,7 +380,6 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                           onScaleEnd: (_) {
                             if (selectedItem == item) {
                               setState(() {
-                                isScaling = false;
                                 isRotating = false;
                               });
                             }
@@ -434,24 +423,6 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                                   ),
                                 ),
                               ),
-                              if (selectedItem == item)
-                                Positioned(
-                                  top: (item.scale * 75) - 25,
-                                  right: (item.scale * 75) - 25,
-                                  child: IconButton(
-                                    icon: Icon(
-                                      rotateMode
-                                          ? Icons.rotate_right
-                                          : Icons.open_with,
-                                    ),
-                                    color: Colors.blue,
-                                    onPressed: () {
-                                      setState(() {
-                                        rotateMode = !rotateMode;
-                                      });
-                                    },
-                                  ),
-                                ),
                             ],
                           ),
                         ),
