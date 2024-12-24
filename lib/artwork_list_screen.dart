@@ -12,7 +12,13 @@ class ArtworkListScreen extends StatelessWidget {
   Future<Map<String, dynamic>> _loadCanvasMeta(File canvasFile) async {
     String jsonString = await canvasFile.readAsString();
     Map<String, dynamic> data = jsonDecode(jsonString);
-    return data['meta'] ?? {};
+
+    // メタデータを正確に取得
+    return {
+      'trajectoryCount': data['meta']['trajectoryCount'] ?? 0,
+      'totalDistance': (data['meta']['totalDistance'] ?? 0.0),
+      'totalSteps': data['meta']['totalSteps'] ?? 0,
+    };
   }
 
   @override

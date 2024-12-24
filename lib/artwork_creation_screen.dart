@@ -10,6 +10,8 @@ import 'database_helper.dart';
 import 'polyline_painter.dart';
 import 'package:intl/intl.dart';
 
+import 'utils/utils.dart';
+
 class ArtworkCreationScreen extends StatefulWidget {
   final List<List<Position>> trajectories;
 
@@ -134,19 +136,15 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
 
       // 軌跡の数、総距離、総歩数を計算
       int trajectoryCount = selectedTrajectories.length;
-      double totalDistance = 0;
+      double totalDistance = 0.0;
       int totalSteps = 0;
 
       for (var item in selectedTrajectories) {
-        for (int i = 1; i < item.polyline.length; i++) {
-          totalDistance += Geolocator.distanceBetween(
-            item.polyline[i - 1].latitude,
-            item.polyline[i - 1].longitude,
-            item.polyline[i].latitude,
-            item.polyline[i].longitude,
-          );
-        }
-        totalSteps += item.polyline.length; // 仮に各Positionを1歩と見なす
+        final groupId = generateGroupId(item.polyline);
+        final trajectoryDetails =
+            await _dbHelper.getWalkingDataByGroupId(groupId);
+        totalDistance += (trajectoryDetails?['distance'] as double? ?? 0.0);
+        totalSteps += (trajectoryDetails?['steps'] as int? ?? 0);
       }
       // 保存時の軌跡を記録する部分
       final canvasState = {
@@ -230,8 +228,10 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
 
         // 軌跡を最新の順にソート
         availableTrajectories.sort((a, b) {
-          final DateTime latestA = a!.map((p) => p.timestamp).reduce((value, element) => value.isAfter(element) ? value : element);
-          final DateTime latestB = b!.map((p) => p.timestamp).reduce((value, element) => value.isAfter(element) ? value : element);
+          final DateTime latestA = a!.map((p) => p.timestamp).reduce(
+              (value, element) => value.isAfter(element) ? value : element);
+          final DateTime latestB = b!.map((p) => p.timestamp).reduce(
+              (value, element) => value.isAfter(element) ? value : element);
           return latestB.compareTo(latestA); // 新しい順
         });
 
@@ -293,7 +293,8 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                       child: Container(
                         padding: EdgeInsets.all(4),
                         color: Colors.white.withOpacity(0.8),
-                        child: Text(formattedDate, style: TextStyle(fontSize: 12)),
+                        child:
+                            Text(formattedDate, style: TextStyle(fontSize: 12)),
                       ),
                     ),
                   ],
@@ -353,7 +354,8 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                         top: item.position.dy.clamp(canvasPadding,
                             screenHeight - canvasPadding - item.scale * 150),
                         child: GestureDetector(
-                          behavior: HitTestBehavior.translucent, // タップイベントを透明な領域でも発生するようにtranslucentに変更
+                          behavior: HitTestBehavior
+                              .translucent, // タップイベントを透明な領域でも発生するようにtranslucentに変更
                           onTap: () {
                             // 軌跡をタップした場合、選択状態を設定
                             setState(() {
@@ -371,7 +373,8 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                             if (selectedItem == item) {
                               setState(() {
                                 if (details.rotation.abs() > 0.01) {
-                                    item.rotation += details.rotation * rotationFactor;
+                                  item.rotation +=
+                                      details.rotation * rotationFactor;
                                 }
                                 item.position += details.focalPointDelta;
                               });
@@ -385,12 +388,13 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                             }
                           },
                           child: Stack(
-                            alignment:Alignment.center,
+                            alignment: Alignment.center,
                             children: [
                               Container(
-                                width: 150 * item.scale + 80, // タップ範囲を拡張 (80は余白)
+                                width:
+                                    150 * item.scale + 80, // タップ範囲を拡張 (80は余白)
                                 height: 150 * item.scale + 80,
-                                color: Colors.transparent, // 透明な領域を追加                      
+                                color: Colors.transparent, // 透明な領域を追加
                               ),
                               Transform(
                                 transform: Matrix4.identity()
@@ -463,7 +467,7 @@ class TransformablePolyline {
   double maxLon;
 
   TransformablePolyline(this.polyline, this.position)
-      : scale = 0.6,
+      : scale = 0.5,
         rotation = 0.0,
         minLat =
             polyline.map((p) => p.latitude).reduce((a, b) => a < b ? a : b),
