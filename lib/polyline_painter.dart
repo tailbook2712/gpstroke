@@ -4,6 +4,7 @@ import 'package:geolocator/geolocator.dart';
 class PolylinePainter extends CustomPainter {
   final List<Position> positions;
   final double minLat, maxLat, minLon, maxLon;
+  final Color color;
 
   PolylinePainter({
     required this.positions,
@@ -11,6 +12,7 @@ class PolylinePainter extends CustomPainter {
     required this.maxLat,
     required this.minLon,
     required this.maxLon,
+    this.color = Colors.blue,
   });
 
   @override
@@ -18,7 +20,7 @@ class PolylinePainter extends CustomPainter {
     if (positions.isEmpty) return;
 
     final paint = Paint()
-      ..color = Colors.blue
+      ..color = color
       ..strokeWidth = 4.0
       ..style = PaintingStyle.stroke;
 
