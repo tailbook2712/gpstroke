@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'artwork_creation_screen.dart';
@@ -21,7 +22,9 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen> {
   List<TransformablePolyline> _trajectories = [];
   late DatabaseHelper _dbHelper;
 
-  final double canvasPadding = 20.0; // キャンバスの余白を定義
+  final double canvasPadding = 10.0; // キャンバスの余白を定義
+  bool _isColorful = false; // カラフル表示を切り替えるためのフラグ
+  List<Color> _trajectoryColors = []; // 軌跡ごとの色を保持するリスト
 
   @override
   void initState() {
@@ -30,6 +33,7 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen> {
     _loadCanvasState();
   }
 
+  // キャンバスの状態の復元
   Future<void> _loadCanvasState() async {
     try {
       String jsonString = await widget.canvasFile.readAsString();
@@ -85,10 +89,42 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen> {
             ..scale = adjustedScale
             ..rotation = item['rotation'];
         }).toList();
+
+        // 初期状態の色リストを生成
+        _trajectoryColors = List.generate(
+          _trajectories.length,
+          (_) => Colors.blue, // デフォルトカラーは青に設定
+        );
       });
     } catch (e) {
       print("キャンバス状態の読み込みエラー: $e");
     }
+  }
+
+  // カラフルな色を生成する
+  Color _generateRandomColor() {
+    Random random = Random();
+    return Color.fromARGB(
+      255,
+      random.nextInt(256),
+      random.nextInt(256),
+      random.nextInt(256),
+    );
+  }
+
+  void _setColorfulMode(bool isColorful) {
+    setState(() {
+      _isColorful = isColorful;
+      _trajectoryColors = isColorful
+          ? List.generate(
+              _trajectories.length,
+              (_) => _generateRandomColor(), // ランダムな色を生成
+            )
+          : List.generate(
+              _trajectories.length,
+              (_) => Colors.blue, // 青色に戻す
+            );
+    });
   }
 
   Future<void> _showTrajectoryDetails(TransformablePolyline trajectory) async {
@@ -133,15 +169,26 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen> {
     final screenHeight = MediaQuery.of(context).size.height;
 
     return Scaffold(
-      appBar: AppBar(
-        title: Text('作品の詳細'),
+      appBar: AppBar(title: Text('作品の詳細'), actions: [
+        IconButton(
+            icon: Icon(
+              _isColorful ? Icons.color_lens : Icons.color_lens_outlined,
+            ),
+            onPressed: () {
+              _setColorfulMode(!_isColorful); // カラフルモードを切り替え
+            },
+          ),
+        ],
       ),
       body: Container(
         width: screenWidth,
         height: screenHeight,
         child: Stack(
           children: [
-            ..._trajectories.map((item) {
+            ..._trajectories.asMap().entries.map((entry) {
+              int index = entry.key;
+              TransformablePolyline item = entry.value;
+
               return Positioned(
                 left: item.position.dx.clamp(canvasPadding,
                     screenWidth - canvasPadding - item.scale * 150),
@@ -164,6 +211,7 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen> {
                         maxLat: item.maxLat,
                         minLon: item.minLon,
                         maxLon: item.maxLon,
+                        color: _trajectoryColors[index], //軌跡ごとの色を使用
                       ),
                     ),
                   ),
