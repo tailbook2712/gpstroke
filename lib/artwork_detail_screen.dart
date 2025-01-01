@@ -22,7 +22,7 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen> {
   List<TransformablePolyline> _trajectories = [];
   late DatabaseHelper _dbHelper;
 
-  final double canvasPadding = 20.0; // キャンバスの余白を定義
+  final double canvasPadding = 10.0; // キャンバスの余白を定義
   bool _isColorful = false; // カラフル表示を切り替えるためのフラグ
   List<Color> _trajectoryColors = []; // 軌跡ごとの色を保持するリスト
 
@@ -188,7 +188,7 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen> {
             ..._trajectories.asMap().entries.map((entry) {
               int index = entry.key;
               TransformablePolyline item = entry.value;
-              
+
               return Positioned(
                 left: item.position.dx.clamp(canvasPadding,
                     screenWidth - canvasPadding - item.scale * 150),

@@ -31,14 +31,12 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
   Set<int> temporarilyUsedIndices = {}; // 一時的に使用された軌跡インデックス
   final DatabaseHelper _dbHelper = DatabaseHelper();
 
-  final double minScale = 0.3; // 縮小の下限
-  final double maxScale = 1.0; // 拡大の上限
   bool isScaling = false;
   bool isRotating = false;
   final double scaleFactor = 0.05; // 拡大縮小の係数
   final double rotationFactor = 0.3; // 回転の係数
   bool rotateMode = false;
-  final double canvasPadding = 20.0;
+  final double canvasPadding = 10.0;
 
   @override
   void initState() {
@@ -467,7 +465,7 @@ class TransformablePolyline {
   double maxLon;
 
   TransformablePolyline(this.polyline, this.position)
-      : scale = 0.5,
+      : scale = 0.6,
         rotation = 0.0,
         minLat =
             polyline.map((p) => p.latitude).reduce((a, b) => a < b ? a : b),
