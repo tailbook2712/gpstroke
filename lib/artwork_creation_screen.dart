@@ -312,7 +312,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text('アート作成'),
+        title: Text('作品の制作'),
         actions: [
           IconButton(
             icon: Icon(Icons.save),
