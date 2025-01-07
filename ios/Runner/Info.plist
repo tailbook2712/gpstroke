@@ -30,17 +30,17 @@
     <!-- 位置情報に関する設定 -->
     <key>NSLocationWhenInUseUsageDescription</key>
     <string>アプリが位置情報を使用します．</string>
-    <key>NSLocationAlwaysUsageDescription</key>
-    <string>アプリがバックグラウンドで位置情報を使用します．移動軌跡を記録します．</string>
-    <key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
-    <string>アプリがフォアグラウンドとバックグラウンドの両方で位置情報を使用し，移動軌跡を記録します．</string>
 
     <!-- バックグラウンドモード -->
     <key>UIBackgroundModes</key>
     <array>
         <string>location</string>
     </array>
-
+    <key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+    <string>アプリがバックグラウンドでも位置情報を記録します。</string>
+    <key>NSLocationWhenInUseUsageDescription</key>
+    <string>アプリがフォアグラウンドで位置情報を使用します。</string>
+    
     <!-- 加速度センサーの使用 -->
     <key>NSMotionUsageDescription</key>
     <string>アプリがモーションデータを使用して歩行軌跡を記録します。</string>
