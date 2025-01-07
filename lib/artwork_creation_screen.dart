@@ -108,6 +108,14 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
 
   // アートワークを保存する
   Future<void> _saveArtwork() async {
+    String artworkName = await _promptForArtworkName(); // 作品名を入力
+    if (artworkName.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('作品名を入力してください。')),
+      );
+      return;
+    }
+
     try {
       RenderRepaintBoundary boundary = _boundaryKey.currentContext!
           .findRenderObject() as RenderRepaintBoundary;
@@ -172,6 +180,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
           'trajectoryCount': trajectoryCount,
           'totalDistance': totalDistance,
           'totalSteps': totalSteps,
+          'artworkName': artworkName, // 作品名を保存
         },
       };
       await canvasFile.writeAsString(jsonEncode(canvasState));
@@ -193,6 +202,39 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
         SnackBar(content: Text('アートワークの保存に失敗しました: $e')),
       );
     }
+  }
+
+  Future<String> _promptForArtworkName() async {
+    String artworkName = '';
+    await showDialog(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: Text('作品名を入力'),
+          content: TextField(
+            onChanged: (value) {
+              artworkName = value;
+            },
+            decoration: InputDecoration(hintText: '作品名'),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.pop(context);
+              },
+              child: Text('キャンセル'),
+            ),
+            TextButton(
+              onPressed: () {
+                Navigator.pop(context);
+              },
+              child: Text('保存'),
+            ),
+          ],
+        );
+      },
+    );
+    return artworkName;
   }
 
   // 選択された軌跡を削除する
