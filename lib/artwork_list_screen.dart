@@ -18,6 +18,7 @@ class ArtworkListScreen extends StatelessWidget {
       'trajectoryCount': data['meta']['trajectoryCount'] ?? 0,
       'totalDistance': (data['meta']['totalDistance'] ?? 0.0),
       'totalSteps': data['meta']['totalSteps'] ?? 0,
+      'artworkName': data['meta']['artworkName'] ?? 'No Name',
     };
   }
 
@@ -86,6 +87,10 @@ class ArtworkListScreen extends StatelessWidget {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.center,
                           children: [
+                            Text(
+                              '作品名: ${meta['artworkName']}',
+                              style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                            ),
                             Text(
                               '軌跡数: $trajectoryCount',
                               style: TextStyle(fontSize: 12),
