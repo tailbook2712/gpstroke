@@ -438,10 +438,12 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                               ),
                               Transform(
                                 transform: Matrix4.identity()
-                                  ..translate(item.centerOffset.dx, item.centerOffset.dy) // 中心座標を基準に
+                                  ..translate(75 * item.scale, 75 * item.scale)
                                   ..rotateZ(item.rotation)
-                                  ..translate(-item.centerOffset.dx, -item.centerOffset.dy) // 中心を基準に戻す
+                                  ..translate(
+                                      -75 * item.scale, -75 * item.scale)
                                   ..scale(item.scale),
+                                origin: Offset(75, 75),
                                 child: Container(
                                   decoration: BoxDecoration(
                                     border: selectedItem == item
@@ -503,7 +505,6 @@ class TransformablePolyline {
   double maxLat;
   double minLon;
   double maxLon;
-  Offset centerOffset; // 中心を保持
 
   TransformablePolyline(this.polyline, this.position)
       : scale = 0.6,
@@ -515,11 +516,5 @@ class TransformablePolyline {
         minLon =
             polyline.map((p) => p.longitude).reduce((a, b) => a < b ? a : b),
         maxLon =
-            polyline.map((p) => p.longitude).reduce((a, b) => a > b ? a : b),
-        centerOffset = Offset(
-          polyline.map((p) => p.longitude).reduce((a, b) => a + b) /
-              polyline.length,
-          polyline.map((p) => p.latitude).reduce((a, b) => a + b) /
-              polyline.length,
-        );
+            polyline.map((p) => p.longitude).reduce((a, b) => a > b ? a : b);
 }
