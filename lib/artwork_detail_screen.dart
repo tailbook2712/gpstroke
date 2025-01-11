@@ -22,6 +22,7 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen> {
   List<TransformablePolyline> _trajectories = [];
   late DatabaseHelper _dbHelper;
 
+  String _artworkName = "作品の詳細"; // 初期状態のタイトル
   final double canvasPadding = 10.0; // キャンバスの余白を定義
   bool _isColorful = false; // カラフル表示を切り替えるためのフラグ
   List<Color> _trajectoryColors = []; // 軌跡ごとの色を保持するリスト
@@ -39,6 +40,9 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen> {
       String jsonString = await widget.canvasFile.readAsString();
       Map<String, dynamic> data = jsonDecode(jsonString);
 
+      // 作品名を取得
+      String artworkName = data['meta']['artworkName'] ?? '作品の詳細';
+
       // 現在のキャンバスのサイズを取得
       double currentCanvasWidth = MediaQuery.of(context).size.width;
       double currentCanvasHeight = MediaQuery.of(context).size.height;
@@ -54,6 +58,7 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen> {
       print('復元時の比率 - widthRatio: $widthRatio, heightRatio: $heightRatio');
 
       setState(() {
+        _artworkName = artworkName;
         _trajectories = (data['trajectories'] as List<dynamic>).map((item) {
           List<Position> positions = (item['positions'] as List).map((pos) {
             return Position(
@@ -169,8 +174,10 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen> {
     final screenHeight = MediaQuery.of(context).size.height;
 
     return Scaffold(
-      appBar: AppBar(title: Text('作品の詳細'), actions: [
-        IconButton(
+      appBar: AppBar(
+        title: Text(_artworkName),
+        actions: [
+          IconButton(
             icon: Icon(
               _isColorful ? Icons.color_lens : Icons.color_lens_outlined,
             ),

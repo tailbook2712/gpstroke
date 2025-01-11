@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'database_helper.dart';
+import 'package:intl/intl.dart';
 
 class WalkingDetailScreen extends StatefulWidget {
   final String groupId;
@@ -88,11 +89,22 @@ class _WalkingDetailScreenState extends State<WalkingDetailScreen> {
     }
   }
 
+  // 日付フォーマットする
+  String _formatDate(String date) {
+    try {
+      final parsedDate = DateTime.parse(date); // 日付文字列をDateTimeに変換
+      return DateFormat('yyyy年MM月dd日 HH:mm').format(parsedDate); // フォーマット
+    } catch (e) {
+      print("日付フォーマットエラー: $e");
+      return date; // フォーマットに失敗した場合はそのまま返す
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text(widget.date), // 日付を表示
+        title: Text(_formatDate(widget.date)), // 日付を表示
       ),
       body: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
