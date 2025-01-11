@@ -24,40 +24,33 @@ class PolylinePainter extends CustomPainter {
       ..strokeWidth = 4.0
       ..style = PaintingStyle.stroke;
 
-    // 緯度・経度をスケール変換するための範囲
-    double latRange = maxLat - minLat == 0 ? 1 : maxLat - minLat; // 0除算を避ける
-    double lonRange = maxLon - minLon == 0 ? 1 : maxLon - minLon;
+    // 緯度・経度の範囲を計算
+    final latRange = (maxLat - minLat).abs() > 0 ? maxLat - minLat : 1.0;
+    final lonRange = (maxLon - minLon).abs() > 0 ? maxLon - minLon : 1.0;
 
-    // 座標リストを画面上に描画できる座標に変換
-    List<Offset> scaledPoints = [];
-    Position? previousPosition;
+    // 中心座標を基準とした変換
+    final centerLat = (maxLat + minLat) / 2;
+    final centerLon = (maxLon + minLon) / 2;
 
-    for (var position in positions) {
-      // 直前の位置と現在位置が異なる場合のみ追加（重複除外）
-      if (previousPosition == null ||
-          previousPosition.latitude != position.latitude ||
-          previousPosition.longitude != position.longitude) {
-        double x = (position.longitude - minLon) / lonRange * size.width;
-        double y = (position.latitude - minLat) / latRange * size.height;
-        scaledPoints.add(Offset(x, size.height - y)); // Y座標の逆転
-      }
-      previousPosition = position;
-    }
+    // 座標を中心基準で画面上にスケーリング
+    final List<Offset> scaledPoints = positions.map((position) {
+      final dx = (position.longitude - centerLon) / lonRange * size.width;
+      final dy = (position.latitude - centerLat) / latRange * size.height;
+      return Offset(dx + size.width / 2, size.height / 2 - dy); // 中心補正
+    }).toList();
 
-    // ポリラインを描画（閉じない）
+    // ポリラインを描画
     if (scaledPoints.length > 1) {
-      Path path = Path();
-      path.moveTo(scaledPoints.first.dx, scaledPoints.first.dy);
-      for (var i = 1; i < scaledPoints.length; i++) {
-        path.lineTo(scaledPoints[i].dx, scaledPoints[i].dy);
+      final path = Path()..moveTo(scaledPoints.first.dx, scaledPoints.first.dy);
+      for (final point in scaledPoints.skip(1)) {
+        path.lineTo(point.dx, point.dy);
       }
-      // 終点と始点を結ばないようにする（path.close()は使用しない）
       canvas.drawPath(path, paint);
     }
   }
 
   @override
   bool shouldRepaint(covariant CustomPainter oldDelegate) {
-    return true; // データが変更された場合に再描画
+    return true; // データ変更時に再描画
   }
 }

@@ -438,12 +438,11 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                               ),
                               Transform(
                                 transform: Matrix4.identity()
-                                  ..translate(75 * item.scale, 75 * item.scale)
+                                  ..translate(item.center.dx * item.scale, item.center.dy * item.scale)
                                   ..rotateZ(item.rotation)
-                                  ..translate(
-                                      -75 * item.scale, -75 * item.scale)
+                                  ..translate(-item.center.dx * item.scale, -item.center.dy * item.scale)
                                   ..scale(item.scale),
-                                origin: Offset(75, 75),
+                                origin: item.center, // 中心を基準に変換
                                 child: Container(
                                   decoration: BoxDecoration(
                                     border: selectedItem == item
@@ -506,6 +505,9 @@ class TransformablePolyline {
   double minLon;
   double maxLon;
 
+  // 軌跡の中心
+  late final Offset center;
+
   TransformablePolyline(this.polyline, this.position)
       : scale = 0.6,
         rotation = 0.0,
@@ -516,5 +518,15 @@ class TransformablePolyline {
         minLon =
             polyline.map((p) => p.longitude).reduce((a, b) => a < b ? a : b),
         maxLon =
-            polyline.map((p) => p.longitude).reduce((a, b) => a > b ? a : b);
+            polyline.map((p) => p.longitude).reduce((a, b) => a > b ? a : b) {
+    // 軌跡の中心を計算
+    final double avgLat = polyline.map((p) => p.latitude).reduce((a, b) => a + b) / polyline.length;
+    final double avgLon = polyline.map((p) => p.longitude).reduce((a, b) => a + b) / polyline.length;
+
+    // 中心座標を画面座標に変換
+    center = Offset(
+      (avgLon - minLon) / (maxLon - minLon) * 150, // 横幅150の基準座標
+      150 - (avgLat - minLat) / (maxLat - minLat) * 150, // 縦幅150の基準座標
+    );
+  }
 }
