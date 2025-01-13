@@ -13,7 +13,7 @@ class DraftListScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text('途中保存一覧'),
+        title: Text('下書き一覧'),
       ),
       body: FutureBuilder<List<Map<String, dynamic>>>(
         future: _loadDrafts(),

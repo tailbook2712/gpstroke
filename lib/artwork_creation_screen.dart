@@ -516,11 +516,11 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
               ),
               PopupMenuItem(
                 value: 'save_draft',
-                child: Text('途中保存'),
+                child: Text('下書き'),
               ),
               PopupMenuItem(
                 value: 'load_draft',
-                child: Text('途中保存一覧'),
+                child: Text('下書き一覧'),
               ),
             ],
           ),
