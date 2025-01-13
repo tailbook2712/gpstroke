@@ -7,6 +7,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'database_helper.dart';
+import 'draft_list_screen.dart';
 import 'polyline_painter.dart';
 import 'package:intl/intl.dart';
 
@@ -30,6 +31,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
   Set<int> usedTrajectoryIndices = {}; // 保存済みの軌跡インデックスを保持
   Set<int> temporarilyUsedIndices = {}; // 一時的に使用された軌跡インデックス
   final DatabaseHelper _dbHelper = DatabaseHelper();
+  String? _currentDraftFilePath; // 現在の下書きファイルパスを保持
 
   bool isScaling = false;
   bool isRotating = false;
@@ -152,24 +154,22 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
         totalDistance += (trajectoryDetails?['distance'] as double? ?? 0.0);
         totalSteps += (trajectoryDetails?['steps'] as int? ?? 0);
       }
-      // 保存時の軌跡を記録する部分
+
+      // 保存時のキャンバス状態
       final canvasState = {
         'canvasWidth': canvasSize.width, // キャンバスの幅
         'canvasHeight': canvasSize.height, // キャンバスの高さ
         'trajectories': selectedTrajectories.map((item) {
-          // 保存時のデバッグ出力
-          print(
-              '保存時 - dx: ${item.position.dx}, dy: ${item.position.dy}, scale: ${item.scale}, rotation: ${item.rotation}');
           return {
-            'positions': item.polyline
-                .map((p) => {
-                      'latitude': p.latitude,
-                      'longitude': p.longitude,
-                      'timestamp': p.timestamp?.toIso8601String() ?? "",
-                    })
-                .toList(),
+            'positions': item.polyline.map((p) {
+              return {
+                'latitude': p.latitude,
+                'longitude': p.longitude,
+                'timestamp': p.timestamp?.toIso8601String() ?? "",
+              };
+            }).toList(),
             'position': {
-              'dx': item.position.dx / canvasSize.width, // 相対位置として保存
+              'dx': item.position.dx / canvasSize.width,
               'dy': item.position.dy / canvasSize.height,
             },
             'scale': item.scale,
@@ -180,9 +180,10 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
           'trajectoryCount': trajectoryCount,
           'totalDistance': totalDistance,
           'totalSteps': totalSteps,
-          'artworkName': artworkName, // 作品名を保存
+          'artworkName': artworkName, // 作品名
         },
       };
+
       await canvasFile.writeAsString(jsonEncode(canvasState));
       await imgFile.writeAsBytes(pngBytes);
 
@@ -192,6 +193,16 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
         await _dbHelper.insertUsedTrajectory(index);
       }
       temporarilyUsedIndices.clear();
+
+      // **途中保存ファイルの削除**
+      if (_currentDraftFilePath != null) {
+        final draftFile = File(_currentDraftFilePath!);
+        if (await draftFile.exists()) {
+          await draftFile.delete();
+          print("途中保存ファイルを削除しました: $_currentDraftFilePath");
+        }
+        _currentDraftFilePath = null; // 現在の途中保存ファイルパスをクリア
+      }
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('アートワークが保存されました!')),
@@ -347,6 +358,138 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
     );
   }
 
+  // 作品の途中保存
+  void _saveDraft({String? draftFilePath}) async {
+    try {
+      final directory = await getApplicationDocumentsDirectory();
+      final draftsDirectory = Directory('${directory.path}/drafts');
+
+      if (!(await draftsDirectory.exists())) {
+        await draftsDirectory.create(recursive: true);
+      }
+
+      // 既存のファイルパスが指定されている場合はそれを使用し、新規の場合は新しいファイルを作成
+      String filePath = draftFilePath ??
+          '${draftsDirectory.path}/draft_${DateTime.now().toIso8601String()}.json';
+      File draftFile = File(filePath);
+
+      final canvasSize = _boundaryKey.currentContext!.size!;
+      final draftState = {
+        'canvasWidth': canvasSize.width,
+        'canvasHeight': canvasSize.height,
+        'trajectories': selectedTrajectories.map((item) {
+          return {
+            'positions': item.polyline.map((p) {
+              return {
+                'latitude': p.latitude,
+                'longitude': p.longitude,
+                'timestamp': p.timestamp?.toIso8601String() ?? "",
+              };
+            }).toList(),
+            'position': {
+              'dx': item.position.dx / canvasSize.width,
+              'dy': item.position.dy / canvasSize.height,
+            },
+            'scale': item.scale,
+            'rotation': item.rotation,
+          };
+        }).toList(),
+        'timestamp': DateTime.now().toIso8601String(),
+      };
+
+      await draftFile.writeAsString(jsonEncode(draftState));
+
+      // 現在使用中の軌跡を「使用済み」に設定
+      for (final trajectory in selectedTrajectories) {
+        int index = recordedTrajectories.indexOf(trajectory.polyline);
+        if (index != -1) {
+          usedTrajectoryIndices.add(index);
+          await _dbHelper.insertUsedTrajectory(index); // 使用済みとして登録
+        }
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('途中保存しました。')),
+      );
+
+      // キャンバスの状態をリセット
+      setState(() {
+        selectedTrajectories.clear();
+        temporarilyUsedIndices.clear();
+        selectedItem = null;
+      });
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('途中保存に失敗しました: $e')),
+      );
+    }
+  }
+
+  // 途中保存した作品を読み込む
+  void _loadDraft(Map<String, dynamic> draftData) {
+    final canvasWidth = draftData['canvasWidth'];
+    final canvasHeight = draftData['canvasHeight'];
+
+    setState(() {
+      selectedTrajectories = (draftData['trajectories'] as List<dynamic>).map((item) {
+        final positions = (item['positions'] as List).map((p) {
+          return Position(
+            latitude: p['latitude'],
+            longitude: p['longitude'],
+            timestamp: DateTime.tryParse(p['timestamp']) ?? DateTime.now(),
+            accuracy: 0.0,
+            altitude: 0.0,
+            heading: 0.0,
+            speed: 0.0,
+            speedAccuracy: 0.0,
+            altitudeAccuracy: 0.0,
+            headingAccuracy: 0.0,
+          );
+        }).toList();
+
+        return TransformablePolyline(
+          positions,
+          Offset(
+            (item['position']['dx'] ?? 0) * canvasWidth,
+            (item['position']['dy'] ?? 0) * canvasHeight,
+          ),
+        )
+          ..scale = item['scale'] ?? 1.0
+          ..rotation = item['rotation'] ?? 0.0;
+      }).toList();
+
+      // 現在の下書きファイルパスを保存
+      _currentDraftFilePath = draftData['filePath'];
+
+      // リストに表示されないように一時的に使用中としてマーク
+      temporarilyUsedIndices.clear();
+      for (final trajectory in selectedTrajectories) {
+        final index = recordedTrajectories.indexOf(trajectory.polyline);
+        if (index != -1) {
+          temporarilyUsedIndices.add(index);
+        }
+      }
+    });
+  }
+
+  // 途中保存した作品を一覧表示する
+  void _showDraftListScreen() async {
+    final selectedDraft = await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => DraftListScreen(
+          onDraftSelected: (draft) {
+            Navigator.pop(context, draft);
+          },
+        ),
+      ),
+    );
+
+    if (selectedDraft != null) {
+      _loadDraft(selectedDraft); // 選択された下書きを復元
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     double screenWidth = MediaQuery.of(context).size.width;
@@ -356,9 +499,30 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
       appBar: AppBar(
         title: Text('作品の制作'),
         actions: [
-          IconButton(
-            icon: Icon(Icons.save),
-            onPressed: _saveArtwork,
+          PopupMenuButton<String>(
+            onSelected: (value) {
+              if (value == 'save') {
+                _saveArtwork(); // 作品の保存
+              } else if (value == 'save_draft') {
+                _saveDraft(draftFilePath: _currentDraftFilePath); // 上書き保存
+              } else if (value == 'load_draft') {
+                _showDraftListScreen(); // 途中保存一覧
+              }
+            },
+            itemBuilder: (context) => [
+              PopupMenuItem(
+                value: 'save',
+                child: Text('保存'),
+              ),
+              PopupMenuItem(
+                value: 'save_draft',
+                child: Text('途中保存'),
+              ),
+              PopupMenuItem(
+                value: 'load_draft',
+                child: Text('途中保存一覧'),
+              ),
+            ],
           ),
         ],
       ),
