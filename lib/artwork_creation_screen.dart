@@ -35,10 +35,10 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
 
   bool isScaling = false;
   bool isRotating = false;
-  final double scaleFactor = 0.05; // 拡大縮小の係数
+  // final double scaleFactor = 0.05; // 拡大縮小の係数
   final double rotationFactor = 0.3; // 回転の係数
   bool rotateMode = false;
-  final double canvasPadding = 10.0;
+  final double canvasPadding = 20.0;
 
   @override
   void initState() {
@@ -215,6 +215,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
     }
   }
 
+  // 作品名を入力するダイアログを表示
   Future<String> _promptForArtworkName() async {
     String artworkName = '';
     await showDialog(
@@ -592,7 +593,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                             }
                           },
                           child: Stack(
-                            alignment: Alignment.center,
+                            // alignment: Alignment.center,
                             children: [
                               Container(
                                 width:
@@ -602,11 +603,11 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                               ),
                               Transform(
                                 transform: Matrix4.identity()
-                                  ..translate(item.center.dx * item.scale, item.center.dy * item.scale)
+                                  ..translate(75 * item.scale, 75 * item.scale)
                                   ..rotateZ(item.rotation)
-                                  ..translate(-item.center.dx * item.scale, -item.center.dy * item.scale)
+                                  ..translate(-75 * item.scale, -75 * item.scale)
                                   ..scale(item.scale),
-                                origin: item.center, // 中心を基準に変換
+                                origin: Offset(75, 75), // 中心を基準に変換
                                 child: Container(
                                   decoration: BoxDecoration(
                                     border: selectedItem == item
@@ -669,8 +670,6 @@ class TransformablePolyline {
   double minLon;
   double maxLon;
 
-  // 軌跡の中心
-  late final Offset center;
 
   TransformablePolyline(this.polyline, this.position)
       : scale = 0.6,
@@ -683,14 +682,5 @@ class TransformablePolyline {
             polyline.map((p) => p.longitude).reduce((a, b) => a < b ? a : b),
         maxLon =
             polyline.map((p) => p.longitude).reduce((a, b) => a > b ? a : b) {
-    // 軌跡の中心を計算
-    final double avgLat = polyline.map((p) => p.latitude).reduce((a, b) => a + b) / polyline.length;
-    final double avgLon = polyline.map((p) => p.longitude).reduce((a, b) => a + b) / polyline.length;
-
-    // 中心座標を画面座標に変換
-    center = Offset(
-      (avgLon - minLon) / (maxLon - minLon) * 150, // 横幅150の基準座標
-      150 - (avgLat - minLat) / (maxLat - minLat) * 150, // 縦幅150の基準座標
-    );
   }
 }

@@ -23,7 +23,7 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen> {
   late DatabaseHelper _dbHelper;
 
   String _artworkName = "作品の詳細"; // 初期状態のタイトル
-  final double canvasPadding = 10.0; // キャンバスの余白を定義
+  final double canvasPadding = 20.0; // キャンバスの余白を定義
   bool _isColorful = false; // カラフル表示を切り替えるためのフラグ
   List<Color> _trajectoryColors = []; // 軌跡ごとの色を保持するリスト
 
