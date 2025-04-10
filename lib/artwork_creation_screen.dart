@@ -33,11 +33,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
   final DatabaseHelper _dbHelper = DatabaseHelper();
   String? _currentDraftFilePath; // 現在の下書きファイルパスを保持
 
-  bool isScaling = false;
   bool isRotating = false;
-  // final double scaleFactor = 0.05; // 拡大縮小の係数
-  final double rotationFactor = 0.3; // 回転の係数
-  bool rotateMode = false;
   final double canvasPadding = 20.0;
 
   @override
@@ -54,6 +50,9 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
       // ローカルデータベースからデータを取得
       List<Map<String, dynamic>> allWalkingData =
           await _dbHelper.getAllWalkingData();
+
+      // デバッグ出力
+      print("読み込まれた歩行データ: ${allWalkingData.length}件");
 
       // データを一意にするためSetを使用（groupIdベース）
       Set<String> uniqueGroupIds = {};
@@ -82,7 +81,9 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
             );
           }).toList();
 
-          uniqueTrajectoryList.add(trajectory);
+          if (trajectory.isNotEmpty) {
+            uniqueTrajectoryList.add(trajectory);
+          }
         }
       }
 
@@ -90,6 +91,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
         recordedTrajectories = uniqueTrajectoryList;
       });
 
+      print("一意な軌跡数: ${recordedTrajectories.length}件");
       await _loadUsedTrajectories();
     } catch (e) {
       print("軌跡の読み込みエラー: $e");
@@ -160,6 +162,10 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
         'canvasWidth': canvasSize.width, // キャンバスの幅
         'canvasHeight': canvasSize.height, // キャンバスの高さ
         'trajectories': selectedTrajectories.map((item) {
+          // 画面の境界外にはみ出ないように位置を調整
+          double adjustedDx = item.position.dx;
+          double adjustedDy = item.position.dy;
+
           return {
             'positions': item.polyline.map((p) {
               return {
@@ -169,8 +175,8 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
               };
             }).toList(),
             'position': {
-              'dx': item.position.dx / canvasSize.width,
-              'dy': item.position.dy / canvasSize.height,
+              'dx': adjustedDx / canvasSize.width,
+              'dy': adjustedDy / canvasSize.height,
             },
             'scale': item.scale,
             'rotation': item.rotation,
@@ -308,21 +314,22 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                     final trajectoryIndex =
                         recordedTrajectories.indexOf(trajectory!);
                     temporarilyUsedIndices.add(trajectoryIndex);
-                    selectedTrajectories.add(
-                      TransformablePolyline(
-                        trajectory,
-                        Offset(
-                          MediaQuery.of(context).size.width / 2 - 120,
-                          MediaQuery.of(context).size.height / 2 - 280,
-                        ),
+                    // 新しい軌跡を追加するとき、scaleを0.6に設定（元の動作と同じ）
+                    final newTrajectory = TransformablePolyline(
+                      trajectory,
+                      Offset(
+                        MediaQuery.of(context).size.width / 2 - 80, // 位置を調整（小さくなった分）
+                        MediaQuery.of(context).size.height / 2 - 180, // 位置を調整（小さくなった分）
                       ),
                     );
+                    newTrajectory.scale = 0.6;  // デフォルトスケール設定
+                    selectedTrajectories.add(newTrajectory);
                   });
                 },
                 child: Stack(
                   children: [
                     CustomPaint(
-                      size: Size(60, 60),
+                      size: Size(60, 60), // モーダル内のプレビューサイズはそのまま
                       painter: PolylinePainter(
                         positions: trajectory!,
                         minLat: trajectory
@@ -379,6 +386,10 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
         'canvasWidth': canvasSize.width,
         'canvasHeight': canvasSize.height,
         'trajectories': selectedTrajectories.map((item) {
+          // 画面の境界外にはみ出ないように位置を調整
+          double adjustedDx = item.position.dx;
+          double adjustedDy = item.position.dy;
+
           return {
             'positions': item.polyline.map((p) {
               return {
@@ -388,8 +399,8 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
               };
             }).toList(),
             'position': {
-              'dx': item.position.dx / canvasSize.width,
-              'dy': item.position.dy / canvasSize.height,
+              'dx': adjustedDx / canvasSize.width,
+              'dy': adjustedDy / canvasSize.height,
             },
             'scale': item.scale,
             'rotation': item.rotation,
@@ -455,7 +466,6 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
             (item['position']['dy'] ?? 0) * canvasHeight,
           ),
         )
-          ..scale = item['scale'] ?? 1.0
           ..rotation = item['rotation'] ?? 0.0;
       }).toList();
 
@@ -551,23 +561,18 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                   children: [
                     ...selectedTrajectories.map((item) {
                       return Positioned(
-                        left: item.position.dx.clamp(
-                            canvasPadding,
-                            screenWidth -
-                                canvasPadding -
-                                item.scale * 150), // 150はPolylinePainterのサイズ
-                        top: item.position.dy.clamp(canvasPadding,
-                            screenHeight - canvasPadding - item.scale * 150),
+                        left: item.position.dx,
+                        top: item.position.dy,
                         child: GestureDetector(
-                          behavior: HitTestBehavior
-                              .translucent, // タップイベントを透明な領域でも発生するようにtranslucentに変更
+                          behavior: HitTestBehavior.translucent,
                           onTap: () {
                             // 軌跡をタップした場合、選択状態を設定
                             setState(() {
                               selectedItem = item;
                             });
                           },
-                          onScaleStart: (_) {
+                          // ScaleGestureRecognizerのみを使用
+                          onScaleStart: (details) {
                             if (selectedItem == item) {
                               setState(() {
                                 isRotating = true;
@@ -577,11 +582,13 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                           onScaleUpdate: (details) {
                             if (selectedItem == item) {
                               setState(() {
-                                if (details.rotation.abs() > 0.01) {
-                                  item.rotation +=
-                                      details.rotation * rotationFactor;
-                                }
+                                // 移動処理（focalPointDeltaを使用）
                                 item.position += details.focalPointDelta;
+                                
+                                // 回転処理
+                                if (details.rotation != 0.0) {
+                                  item.rotation += details.rotation;
+                                }
                               });
                             }
                           },
@@ -592,46 +599,32 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                               });
                             }
                           },
-                          child: Stack(
-                            // alignment: Alignment.center,
-                            children: [
-                              Container(
-                                width:
-                                    150 * item.scale + 80, // タップ範囲を拡張 (80は余白)
-                                height: 150 * item.scale + 80,
-                                color: Colors.transparent, // 透明な領域を追加
+                          child: Transform(
+                            // 軌跡の中心を回転の中心点として使用
+                            transform: Matrix4.identity()
+                              ..translate(50.0, 50.0)  // コンテナサイズを小さくしたので中心点も変更
+                              ..rotateZ(item.rotation) // 中心点を軸に回転
+                              ..translate(-50.0, -50.0), // 元の位置に戻す
+                            alignment: Alignment.center,
+                            child: Container(
+                              width: 100, // サイズを小さく変更
+                              height: 100, // サイズを小さく変更
+                              decoration: BoxDecoration(
+                                border: selectedItem == item
+                                    ? Border.all(color: Colors.red, width: 2.0)
+                                    : null,
                               ),
-                              Transform(
-                                transform: Matrix4.identity()
-                                  ..translate(75 * item.scale, 75 * item.scale)
-                                  ..rotateZ(item.rotation)
-                                  ..translate(-75 * item.scale, -75 * item.scale)
-                                  ..scale(item.scale),
-                                origin: Offset(75, 75), // 中心を基準に変換
-                                child: Container(
-                                  decoration: BoxDecoration(
-                                    border: selectedItem == item
-                                        ? Border.all(
-                                            color: Colors.red, width: 2.0)
-                                        : null,
-                                  ),
-                                  child: Padding(
-                                    padding:
-                                        const EdgeInsets.all(20.0), // 余白を20に変更
-                                    child: CustomPaint(
-                                      size: Size(150, 150),
-                                      painter: PolylinePainter(
-                                        positions: item.polyline,
-                                        minLat: item.minLat,
-                                        maxLat: item.maxLat,
-                                        minLon: item.minLon,
-                                        maxLon: item.maxLon,
-                                      ),
-                                    ),
-                                  ),
+                              child: CustomPaint(
+                                size: Size(100, 100), // サイズを小さく変更
+                                painter: PolylinePainter(
+                                  positions: item.polyline,
+                                  minLat: item.minLat,
+                                  maxLat: item.maxLat,
+                                  minLon: item.minLon,
+                                  maxLon: item.maxLon,
                                 ),
                               ),
-                            ],
+                            ),
                           ),
                         ),
                       );
@@ -662,25 +655,19 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
 class TransformablePolyline {
   List<Position> polyline;
   Offset position;
-  double scale;
   double rotation;
+  double scale;  // scaleプロパティを保持（他のファイルとの互換性のため）
 
   double minLat;
   double maxLat;
   double minLon;
   double maxLon;
 
-
   TransformablePolyline(this.polyline, this.position)
-      : scale = 0.6,
-        rotation = 0.0,
-        minLat =
-            polyline.map((p) => p.latitude).reduce((a, b) => a < b ? a : b),
-        maxLat =
-            polyline.map((p) => p.latitude).reduce((a, b) => a > b ? a : b),
-        minLon =
-            polyline.map((p) => p.longitude).reduce((a, b) => a < b ? a : b),
-        maxLon =
-            polyline.map((p) => p.longitude).reduce((a, b) => a > b ? a : b) {
-  }
+      : rotation = 0.0,
+        scale = 1.0,  // デフォルト値を設定
+        minLat = polyline.map((p) => p.latitude).reduce((a, b) => a < b ? a : b),
+        maxLat = polyline.map((p) => p.latitude).reduce((a, b) => a > b ? a : b),
+        minLon = polyline.map((p) => p.longitude).reduce((a, b) => a < b ? a : b),
+        maxLon = polyline.map((p) => p.longitude).reduce((a, b) => a > b ? a : b);
 }
