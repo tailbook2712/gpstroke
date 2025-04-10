@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:typed_data';
 import 'dart:ui';
+import 'dart:math' as math;
 import 'package:flutter/rendering.dart';
 import 'package:path_provider/path_provider.dart';
 import 'dart:io';
@@ -35,6 +36,9 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
 
   bool isRotating = false;
   final double canvasPadding = 20.0;
+
+  // 軌跡のサイズ定義
+  final double trajectorySize = 100.0;
 
   @override
   void initState() {
@@ -162,10 +166,6 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
         'canvasWidth': canvasSize.width, // キャンバスの幅
         'canvasHeight': canvasSize.height, // キャンバスの高さ
         'trajectories': selectedTrajectories.map((item) {
-          // 画面の境界外にはみ出ないように位置を調整
-          double adjustedDx = item.position.dx;
-          double adjustedDy = item.position.dy;
-
           return {
             'positions': item.polyline.map((p) {
               return {
@@ -175,8 +175,8 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
               };
             }).toList(),
             'position': {
-              'dx': adjustedDx / canvasSize.width,
-              'dy': adjustedDy / canvasSize.height,
+              'dx': item.position.dx / canvasSize.width,
+              'dy': item.position.dy / canvasSize.height,
             },
             'scale': item.scale,
             'rotation': item.rotation,
@@ -318,8 +318,8 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                     final newTrajectory = TransformablePolyline(
                       trajectory,
                       Offset(
-                        MediaQuery.of(context).size.width / 2 - 80, // 位置を調整（小さくなった分）
-                        MediaQuery.of(context).size.height / 2 - 180, // 位置を調整（小さくなった分）
+                        MediaQuery.of(context).size.width / 2 - 50, // 位置を調整
+                        MediaQuery.of(context).size.height / 2 - 50, // 位置を調整
                       ),
                     );
                     newTrajectory.scale = 0.6;  // デフォルトスケール設定
@@ -386,10 +386,6 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
         'canvasWidth': canvasSize.width,
         'canvasHeight': canvasSize.height,
         'trajectories': selectedTrajectories.map((item) {
-          // 画面の境界外にはみ出ないように位置を調整
-          double adjustedDx = item.position.dx;
-          double adjustedDy = item.position.dy;
-
           return {
             'positions': item.polyline.map((p) {
               return {
@@ -399,8 +395,8 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
               };
             }).toList(),
             'position': {
-              'dx': adjustedDx / canvasSize.width,
-              'dy': adjustedDy / canvasSize.height,
+              'dx': item.position.dx / canvasSize.width,
+              'dy': item.position.dy / canvasSize.height,
             },
             'scale': item.scale,
             'rotation': item.rotation,
@@ -466,7 +462,8 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
             (item['position']['dy'] ?? 0) * canvasHeight,
           ),
         )
-          ..rotation = item['rotation'] ?? 0.0;
+          ..rotation = item['rotation'] ?? 0.0
+          ..scale = item['scale'] ?? 1.0;
       }).toList();
 
       // 現在の下書きファイルパスを保存
@@ -564,14 +561,12 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                         left: item.position.dx,
                         top: item.position.dy,
                         child: GestureDetector(
-                          behavior: HitTestBehavior.translucent,
+                          behavior: HitTestBehavior.opaque,
                           onTap: () {
-                            // 軌跡をタップした場合、選択状態を設定
                             setState(() {
                               selectedItem = item;
                             });
                           },
-                          // ScaleGestureRecognizerのみを使用
                           onScaleStart: (details) {
                             if (selectedItem == item) {
                               setState(() {
@@ -582,12 +577,14 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                           onScaleUpdate: (details) {
                             if (selectedItem == item) {
                               setState(() {
-                                // 移動処理（focalPointDeltaを使用）
-                                item.position += details.focalPointDelta;
-                                
                                 // 回転処理
                                 if (details.rotation != 0.0) {
                                   item.rotation += details.rotation;
+                                }
+                                
+                                // 移動処理 - どの向きでも自然に動くように
+                                if (details.focalPointDelta != Offset.zero) {
+                                  item.position += details.focalPointDelta;
                                 }
                               });
                             }
@@ -599,23 +596,21 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                               });
                             }
                           },
-                          child: Transform(
-                            // 軌跡の中心を回転の中心点として使用
-                            transform: Matrix4.identity()
-                              ..translate(50.0, 50.0)  // コンテナサイズを小さくしたので中心点も変更
-                              ..rotateZ(item.rotation) // 中心点を軸に回転
-                              ..translate(-50.0, -50.0), // 元の位置に戻す
+                          child: Transform.rotate(
+                            angle: item.rotation,
                             alignment: Alignment.center,
                             child: Container(
-                              width: 100, // サイズを小さく変更
-                              height: 100, // サイズを小さく変更
+                              width: trajectorySize,
+                              height: trajectorySize,
+                              // タッチ領域を可視化するための半透明の色
                               decoration: BoxDecoration(
+                                color: Colors.blue.withOpacity(0.2), // タッチ領域を青色半透明で表示
                                 border: selectedItem == item
                                     ? Border.all(color: Colors.red, width: 2.0)
                                     : null,
                               ),
                               child: CustomPaint(
-                                size: Size(100, 100), // サイズを小さく変更
+                                size: Size(trajectorySize, trajectorySize),
                                 painter: PolylinePainter(
                                   positions: item.polyline,
                                   minLat: item.minLat,
