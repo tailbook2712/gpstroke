@@ -604,7 +604,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                               height: trajectorySize,
                               // タッチ領域を可視化するための半透明の色
                               decoration: BoxDecoration(
-                                color: Colors.blue.withOpacity(0.2), // タッチ領域を青色半透明で表示
+                                // color: Colors.blue.withOpacity(0.2), // タッチ領域を青色半透明で表示
                                 border: selectedItem == item
                                     ? Border.all(color: Colors.red, width: 2.0)
                                     : null,
