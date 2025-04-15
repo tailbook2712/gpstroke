@@ -322,7 +322,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                         MediaQuery.of(context).size.height / 2 - 50, // 位置を調整
                       ),
                     );
-                    newTrajectory.scale = 0.6;  // デフォルトスケール設定
+                    newTrajectory.scale = 0.6; // デフォルトスケール設定
                     selectedTrajectories.add(newTrajectory);
                   });
                 },
@@ -439,7 +439,8 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
     final canvasHeight = draftData['canvasHeight'];
 
     setState(() {
-      selectedTrajectories = (draftData['trajectories'] as List<dynamic>).map((item) {
+      selectedTrajectories =
+          (draftData['trajectories'] as List<dynamic>).map((item) {
         final positions = (item['positions'] as List).map((p) {
           return Position(
             latitude: p['latitude'],
@@ -557,6 +558,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                 child: Stack(
                   children: [
                     ...selectedTrajectories.map((item) {
+                      final isSelected = selectedItem == item;
                       return Positioned(
                         left: item.position.dx,
                         top: item.position.dy,
@@ -564,24 +566,39 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                           behavior: HitTestBehavior.opaque,
                           onTap: () {
                             setState(() {
+                              // タップした軌跡を選択状態にする
                               selectedItem = item;
                             });
                           },
                           onScaleStart: (details) {
-                            if (selectedItem == item) {
+                            // 選択された軌跡のみ回転操作を受け入れる
+                            if (isSelected) {
                               setState(() {
+                                item.lastRotation = item.rotation;
+                                item.lastScale = item.scale;
                                 isRotating = true;
                               });
                             }
                           },
                           onScaleUpdate: (details) {
-                            if (selectedItem == item) {
+                            // 選択された軌跡のみ更新する
+                            if (isSelected) {
                               setState(() {
                                 // 回転処理
                                 if (details.rotation != 0.0) {
-                                  item.rotation += details.rotation;
+                                  item.rotation =
+                                      item.lastRotation + details.rotation;
                                 }
-                                
+
+                                // スケール処理
+                                if (details.scale != 1.0) {
+                                  // 最小・最大のスケール制限を設定
+                                  final newScale =
+                                      item.lastScale * details.scale;
+                                  item.scale = newScale.clamp(
+                                      0.3, 3.0); // 最小0.3倍、最大3倍に制限
+                                }
+
                                 // 移動処理 - どの向きでも自然に動くように
                                 if (details.focalPointDelta != Offset.zero) {
                                   item.position += details.focalPointDelta;
@@ -590,7 +607,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                             }
                           },
                           onScaleEnd: (_) {
-                            if (selectedItem == item) {
+                            if (isSelected) {
                               setState(() {
                                 isRotating = false;
                               });
@@ -604,7 +621,8 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                               height: trajectorySize,
                               // タッチ領域を可視化するための半透明の色
                               decoration: BoxDecoration(
-                                // color: Colors.blue.withOpacity(0.2), // タッチ領域を青色半透明で表示
+                                color: Colors.blue
+                                    .withOpacity(0.2), // タッチ領域を青色半透明で表示
                                 border: selectedItem == item
                                     ? Border.all(color: Colors.red, width: 2.0)
                                     : null,
@@ -651,7 +669,9 @@ class TransformablePolyline {
   List<Position> polyline;
   Offset position;
   double rotation;
-  double scale;  // scaleプロパティを保持（他のファイルとの互換性のため）
+  double lastRotation;
+  double scale;
+  double lastScale;
 
   double minLat;
   double maxLat;
@@ -660,9 +680,15 @@ class TransformablePolyline {
 
   TransformablePolyline(this.polyline, this.position)
       : rotation = 0.0,
-        scale = 1.0,  // デフォルト値を設定
-        minLat = polyline.map((p) => p.latitude).reduce((a, b) => a < b ? a : b),
-        maxLat = polyline.map((p) => p.latitude).reduce((a, b) => a > b ? a : b),
-        minLon = polyline.map((p) => p.longitude).reduce((a, b) => a < b ? a : b),
-        maxLon = polyline.map((p) => p.longitude).reduce((a, b) => a > b ? a : b);
+        lastRotation = 0.0,
+        scale = 1.0, // デフォルト値を設定
+        lastScale = 1.0,
+        minLat =
+            polyline.map((p) => p.latitude).reduce((a, b) => a < b ? a : b),
+        maxLat =
+            polyline.map((p) => p.latitude).reduce((a, b) => a > b ? a : b),
+        minLon =
+            polyline.map((p) => p.longitude).reduce((a, b) => a < b ? a : b),
+        maxLon =
+            polyline.map((p) => p.longitude).reduce((a, b) => a > b ? a : b);
 }
