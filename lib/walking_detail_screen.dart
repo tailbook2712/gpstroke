@@ -75,6 +75,11 @@ class _WalkingDetailScreenState extends State<WalkingDetailScreen> {
               width: 4,
             ),
           );
+
+          // 記録日時を設定
+          if(positions.isNotEmpty) {
+            _date = positions.first['timestamp'];
+          }
         });
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -93,7 +98,7 @@ class _WalkingDetailScreenState extends State<WalkingDetailScreen> {
   String _formatDate(String date) {
     try {
       final parsedDate = DateTime.parse(date); // 日付文字列をDateTimeに変換
-      return DateFormat('yyyy年MM月dd日 HH:mm').format(parsedDate); // フォーマット
+      return DateFormat('yyyy年MM月dd日 hh:mm').format(parsedDate); // フォーマット
     } catch (e) {
       print("日付フォーマットエラー: $e");
       return date; // フォーマットに失敗した場合はそのまま返す
@@ -104,7 +109,7 @@ class _WalkingDetailScreenState extends State<WalkingDetailScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text(_formatDate(widget.date)), // 日付を表示
+        title: Text(_formatDate(_date)), // 日付を表示
       ),
       body: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
