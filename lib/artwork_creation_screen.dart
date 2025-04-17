@@ -504,6 +504,9 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
     double screenWidth = MediaQuery.of(context).size.width;
     double screenHeight = MediaQuery.of(context).size.height;
 
+    final double expandedTouchArea = trajectorySize * 2.0; // タッチ領域の拡大
+    final double touchAreaOffset = (expandedTouchArea - trajectorySize) / 2;
+
     return Scaffold(
       appBar: AppBar(
         title: Text('作品の制作'),
@@ -559,9 +562,10 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                   children: [
                     ...selectedTrajectories.map((item) {
                       final isSelected = selectedItem == item;
+
                       return Positioned(
-                        left: item.position.dx,
-                        top: item.position.dy,
+                        left: item.position.dx - touchAreaOffset,
+                        top: item.position.dy - touchAreaOffset,
                         child: GestureDetector(
                           behavior: HitTestBehavior.opaque,
                           onTap: () {
@@ -583,60 +587,88 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                           onScaleUpdate: (details) {
                             // 選択された軌跡のみ更新する
                             if (isSelected) {
-                              setState(() {
-                                // 回転処理
-                                if (details.rotation != 0.0) {
-                                  item.rotation =
-                                      item.lastRotation + details.rotation;
-                                }
+                              // 前回のフレームから変化があった場合のみ更新
+                              final bool hasRotationChange =
+                                  details.rotation.abs() > 0.001;
+                              final bool hasScaleChange =
+                                  (details.scale - 1.0).abs() > 0.001;
+                              final bool hasPositionChange =
+                                  details.focalPointDelta.distance > 0.5;
 
-                                // スケール処理
-                                if (details.scale != 1.0) {
-                                  // 最小・最大のスケール制限を設定
-                                  final newScale =
-                                      item.lastScale * details.scale;
-                                  item.scale = newScale.clamp(
-                                      0.3, 3.0); // 最小0.3倍、最大3倍に制限
-                                }
+                              if (hasRotationChange ||
+                                  hasScaleChange ||
+                                  hasPositionChange) {
+                                // タッチ領域の拡大を考慮して、位置を調整
+                                setState(() {
+                                  // 回転処理
+                                  if (hasRotationChange) {
+                                    item.rotation =
+                                        item.lastRotation + details.rotation;
+                                  }
 
-                                // 移動処理 - どの向きでも自然に動くように
-                                if (details.focalPointDelta != Offset.zero) {
-                                  item.position += details.focalPointDelta;
-                                }
-                              });
+                                  // スケール処理
+                                  if (hasScaleChange) {
+                                    // 最小・最大のスケール制限を設定
+                                    final newScale =
+                                        item.lastScale * details.scale;
+                                    item.scale = newScale.clamp(
+                                        0.3, 3.0); // 最小0.3倍、最大3倍に制限
+                                  }
+
+                                  // 移動処理 - どの向きでも自然に動くように
+                                  if (hasPositionChange) {
+                                    item.position += details.focalPointDelta;
+                                  }
+                                });
+                              }
                             }
                           },
                           onScaleEnd: (_) {
                             if (isSelected) {
                               setState(() {
                                 isRotating = false;
+                                item.lastRotation = item.rotation;
+                                item.lastScale = item.scale;
                               });
                             }
                           },
-                          child: Transform.rotate(
-                            angle: item.rotation,
-                            alignment: Alignment.center,
-                            child: Container(
-                              width: trajectorySize,
-                              height: trajectorySize,
-                              // タッチ領域を可視化するための半透明の色
-                              decoration: BoxDecoration(
-                                // color: Colors.blue.withOpacity(0.2), // タッチ領域を青色半透明で表示
-                                border: selectedItem == item
-                                    ? Border.all(color: Colors.red, width: 2.0)
-                                    : null,
+                          child: Stack(
+                            children: [
+                              Container(
+                                width: expandedTouchArea,
+                                height: expandedTouchArea,
+                                color: Colors.transparent,
                               ),
-                              child: CustomPaint(
-                                size: Size(trajectorySize, trajectorySize),
-                                painter: PolylinePainter(
-                                  positions: item.polyline,
-                                  minLat: item.minLat,
-                                  maxLat: item.maxLat,
-                                  minLon: item.minLon,
-                                  maxLon: item.maxLon,
+                              Positioned(
+                                left: touchAreaOffset,
+                                top: touchAreaOffset,
+                                child: Transform.rotate(
+                                  angle: item.rotation,
+                                  alignment: Alignment.center,
+                                  child: Container(
+                                    width: trajectorySize,
+                                    height: trajectorySize,
+                                    decoration: BoxDecoration(
+                                      border: selectedItem == item ? Border.all(
+                                        color: isRotating ? Colors.orange : Colors.red,
+                                        width: 2.0,
+                                      )
+                                      : null,
+                                    ),
+                                    child: CustomPaint(
+                                      size: Size(trajectorySize, trajectorySize),
+                                      painter: PolylinePainter(
+                                        positions: item.polyline,
+                                        minLat: item.minLat,
+                                        maxLat: item.maxLat,
+                                        minLon: item.minLon,
+                                        maxLon: item.maxLon,
+                                      ),
+                                    ),
+                                  ),
                                 ),
                               ),
-                            ),
+                            ],
                           ),
                         ),
                       );
