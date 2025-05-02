@@ -35,6 +35,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
   String? _currentDraftFilePath; // 現在の下書きファイルパスを保持
 
   bool isRotating = false;
+  bool isScaling = false;
   final double canvasPadding = 20.0;
 
   // 軌跡のサイズ定義
@@ -146,7 +147,19 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
       File imgFile = File('${artworksDirectory.path}/artwork_$timestamp.png');
       File canvasFile = File('${canvasDirectory.path}/canvas_$timestamp.json');
 
-      final canvasSize = _boundaryKey.currentContext!.size!; // キャンバスのサイズを取得
+      // キャンバスのサイズを取得
+      final canvasSize = _boundaryKey.currentContext!.size!;
+      
+      // 実際のスクリーンサイズ（AppBarを除く）を取得
+      final mediaQuery = MediaQuery.of(context);
+      final screenHeight = mediaQuery.size.height - 
+          mediaQuery.padding.top - 
+          mediaQuery.padding.bottom - 
+          AppBar().preferredSize.height;
+      final screenWidth = mediaQuery.size.width;
+      
+      print('保存時のキャンバスサイズ: ${canvasSize.width} x ${canvasSize.height}');
+      print('保存時の実際の画面サイズ: $screenWidth x $screenHeight');
 
       // 軌跡の数、総距離、総歩数を計算
       int trajectoryCount = selectedTrajectories.length;
@@ -163,9 +176,18 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
 
       // 保存時のキャンバス状態
       final canvasState = {
-        'canvasWidth': canvasSize.width, // キャンバスの幅
-        'canvasHeight': canvasSize.height, // キャンバスの高さ
+        'canvasWidth': screenWidth, // 実際の画面幅を保存
+        'canvasHeight': screenHeight, // 実際の画面高さを保存（AppBarを除く）
         'trajectories': selectedTrajectories.map((item) {
+          // 軌跡の相対位置を計算（0〜1の範囲に正規化）
+          double relativeX = item.position.dx / screenWidth;
+          double relativeY = item.position.dy / screenHeight;
+          
+          print('軌跡の絶対位置: (${item.position.dx}, ${item.position.dy})');
+          print('軌跡の相対位置: ($relativeX, $relativeY)');
+          print('軌跡の回転角度: ${item.rotation}');
+          print('軌跡のスケール: ${item.scale}');
+          
           return {
             'positions': item.polyline.map((p) {
               return {
@@ -175,8 +197,8 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
               };
             }).toList(),
             'position': {
-              'dx': item.position.dx / canvasSize.width,
-              'dy': item.position.dy / canvasSize.height,
+              'dx': relativeX,
+              'dy': relativeY,
             },
             'scale': item.scale,
             'rotation': item.rotation,
@@ -322,7 +344,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                         MediaQuery.of(context).size.height / 2 - 50, // 位置を調整
                       ),
                     );
-                    newTrajectory.scale = 0.6; // デフォルトスケール設定
+                    newTrajectory.scale = 0.8; // デフォルトスケール設定
                     selectedTrajectories.add(newTrajectory);
                   });
                 },
@@ -580,7 +602,8 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                               setState(() {
                                 item.lastRotation = item.rotation;
                                 item.lastScale = item.scale;
-                                isRotating = true;
+                                isRotating = false;
+                                isScaling = false;
                               });
                             }
                           },
@@ -598,16 +621,18 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                               if (hasRotationChange ||
                                   hasScaleChange ||
                                   hasPositionChange) {
-                                // タッチ領域の拡大を考慮して、位置を調整
                                 setState(() {
-                                  // 回転処理
-                                  if (hasRotationChange) {
+                                  // 回転操作中かどうかを状態として保持
+                                  isRotating = hasRotationChange;
+                                  isScaling = hasScaleChange;
+
+                                  // 回転処理 - 回転中はスケールを変更しない
+                                  if (isRotating) {
                                     item.rotation =
                                         item.lastRotation + details.rotation;
                                   }
-
-                                  // スケール処理
-                                  if (hasScaleChange) {
+                                  // スケール処理 - 回転中でない場合のみ
+                                  else if (isScaling) {
                                     // 最小・最大のスケール制限を設定
                                     final newScale =
                                         item.lastScale * details.scale;
@@ -627,6 +652,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                             if (isSelected) {
                               setState(() {
                                 isRotating = false;
+                                isScaling = false;
                                 item.lastRotation = item.rotation;
                                 item.lastScale = item.scale;
                               });
@@ -655,14 +681,18 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                                       )
                                       : null,
                                     ),
-                                    child: CustomPaint(
-                                      size: Size(trajectorySize, trajectorySize),
-                                      painter: PolylinePainter(
-                                        positions: item.polyline,
-                                        minLat: item.minLat,
-                                        maxLat: item.maxLat,
-                                        minLon: item.minLon,
-                                        maxLon: item.maxLon,
+                                    child: Transform.scale(
+                                      scale: item.scale,
+                                      alignment: Alignment.center,
+                                      child: CustomPaint(
+                                        size: Size(trajectorySize, trajectorySize),
+                                        painter: PolylinePainter(
+                                          positions: item.polyline,
+                                          minLat: item.minLat,
+                                          maxLat: item.maxLat,
+                                          minLon: item.minLon,
+                                          maxLon: item.maxLon,
+                                        ),
                                       ),
                                     ),
                                   ),
