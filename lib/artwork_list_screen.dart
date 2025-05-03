@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'dart:ui' as ui;
 import 'artwork_detail_screen.dart';
 
 class ArtworkListScreen extends StatelessWidget {
@@ -20,6 +21,15 @@ class ArtworkListScreen extends StatelessWidget {
       'totalSteps': data['meta']['totalSteps'] ?? 0,
       'artworkName': data['meta']['artworkName'] ?? 'No Name',
     };
+  }
+
+  // 画像の実際のサイズを取得する
+  Future<Size> _getImageSize(File imageFile) async {
+    final bytes = await imageFile.readAsBytes();
+    final ui.Image image = await decodeImageFromList(bytes);
+    final size = Size(image.width.toDouble(), image.height.toDouble());
+    image.dispose(); // メモリ解放
+    return size;
   }
 
   @override
@@ -62,51 +72,76 @@ class ArtworkListScreen extends StatelessWidget {
                       ),
                     );
                   },
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.center,
-                    children: [
-                      // 画像部分
-                      Container(
-                        decoration: BoxDecoration(
-                          border: Border.all(color: Colors.black),
-                          borderRadius: BorderRadius.circular(16),
-                        ),
-                        child: ClipRRect(
-                          borderRadius: BorderRadius.circular(16),
-                          child: Image.file(
-                            savedArtworks[index]['imageFile'],
-                            fit: BoxFit.contain,
-                            width: double.infinity,
-                            height: 150, // 高さを固定
+                  child: Card(
+                    elevation: 4,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        // 画像部分 - アスペクト比を維持して表示
+                        Expanded(
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.vertical(top: Radius.circular(12)),
+                            child: FutureBuilder<Size>(
+                              future: _getImageSize(savedArtworks[index]['imageFile']),
+                              builder: (context, imageSnapshot) {
+                                // 画像サイズが取得できた場合はそのアスペクト比を使用
+                                final aspectRatio = imageSnapshot.hasData
+                                    ? imageSnapshot.data!.width / imageSnapshot.data!.height
+                                    : 16 / 9; // デフォルトのアスペクト比
+
+                                final containerWidth = (MediaQuery.of(context).size.width - 48) / 2; // 2列表示を考慮
+                                final containerHeight = containerWidth / aspectRatio;
+
+                                return Container(
+                                  height: containerHeight,
+                                  width: containerWidth,
+                                  child: Image.file(
+                                    savedArtworks[index]['imageFile'],
+                                    fit: BoxFit.contain,
+                                    width: double.infinity,
+                                    height: double.infinity,
+                                  ),
+                                );
+                              },
+                            ),
                           ),
                         ),
-                      ),
-                      // テキスト部分: 画像の下に表示
-                      Padding(
-                        padding: const EdgeInsets.only(top: 8.0),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.center,
-                          children: [
-                            Text(
-                              '作品名: ${meta['artworkName']}',
-                              style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
-                            ),
-                            Text(
-                              '軌跡数: $trajectoryCount',
-                              style: TextStyle(fontSize: 12),
-                            ),
-                            Text(
-                              '総距離: ${totalDistance.toStringAsFixed(2)} km',
-                              style: TextStyle(fontSize: 12),
-                            ),
-                            Text(
-                              '総歩数: $totalSteps',
-                              style: TextStyle(fontSize: 12),
-                            ),
-                          ],
+                        // テキスト部分: 画像の下に表示
+                        Padding(
+                          padding: const EdgeInsets.all(8.0),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                meta['artworkName'],
+                                style: TextStyle(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                              SizedBox(height: 4),
+                              Text(
+                                '軌跡数: $trajectoryCount',
+                                style: TextStyle(fontSize: 12),
+                              ),
+                              Text(
+                                '距離: ${totalDistance.toStringAsFixed(2)} km',
+                                style: TextStyle(fontSize: 12),
+                              ),
+                              Text(
+                                '歩数: $totalSteps',
+                                style: TextStyle(fontSize: 12),
+                              ),
+                            ],
+                          ),
                         ),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
                 );
               },
