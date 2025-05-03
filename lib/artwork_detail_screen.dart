@@ -26,12 +26,22 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen> {
   final double canvasPadding = 20.0; // キャンバスの余白を定義
   bool _isColorful = false; // カラフル表示を切り替えるためのフラグ
   List<Color> _trajectoryColors = []; // 軌跡ごとの色を保持するリスト
+  
+  // 軌跡のサイズ定義 - ArtworkCreationScreenと同じサイズを使用
+  final double trajectorySize = 100.0;
+  
+  // キャンバスの設定情報
+  double? savedCanvasWidth;
+  double? savedCanvasHeight;
 
   @override
   void initState() {
     super.initState();
     _dbHelper = DatabaseHelper();
-    _loadCanvasState();
+    // ウィジェットが描画された後にキャンバス状態を読み込む
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _loadCanvasState();
+    });
   }
 
   // キャンバスの状態の復元
@@ -44,18 +54,18 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen> {
       String artworkName = data['meta']['artworkName'] ?? '作品の詳細';
 
       // 現在のキャンバスのサイズを取得
-      double currentCanvasWidth = MediaQuery.of(context).size.width;
-      double currentCanvasHeight = MediaQuery.of(context).size.height;
+      final mediaQuery = MediaQuery.of(context);
+      double currentCanvasWidth = mediaQuery.size.width;
+      double currentCanvasHeight = mediaQuery.size.height - 
+          mediaQuery.padding.top - 
+          mediaQuery.padding.bottom - 
+          AppBar().preferredSize.height;
 
-      double savedCanvasWidth = data['canvasWidth']; // 保存時のキャンバス幅
-      double savedCanvasHeight = data['canvasHeight']; // 保存時のキャンバス高さ
+      savedCanvasWidth = data['canvasWidth'] ?? currentCanvasWidth; // 保存時のキャンバス幅
+      savedCanvasHeight = data['canvasHeight'] ?? currentCanvasHeight; // 保存時のキャンバス高さ
 
-      // 比率計算
-      double widthRatio = currentCanvasWidth / savedCanvasWidth; // 幅の比率
-      double heightRatio = currentCanvasHeight / savedCanvasHeight; // 高さの比率
-
-      // デバッグ用
-      print('復元時の比率 - widthRatio: $widthRatio, heightRatio: $heightRatio');
+      print('保存時のキャンバスサイズ: $savedCanvasWidth x $savedCanvasHeight');
+      print('現在のキャンバスサイズ: $currentCanvasWidth x $currentCanvasHeight');
 
       setState(() {
         _artworkName = artworkName;
@@ -75,24 +85,25 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen> {
             );
           }).toList();
 
-          // 相対位置をピクセル単位に変換
-          double adjustedDx = item['position']['dx'] * savedCanvasWidth;
-          double adjustedDy = item['position']['dy'] * savedCanvasHeight;
+          // 相対位置を絶対位置に変換
+          double relativeX = item['position']['dx'];
+          double relativeY = item['position']['dy'];
+          
+          // 現在のキャンバスサイズに合わせて絶対位置を計算
+          double absoluteX = relativeX * currentCanvasWidth;
+          double absoluteY = relativeY * currentCanvasHeight;
 
-          // デバッグ用出力
-          print(
-              '復元時 - dx: $adjustedDx, dy: $adjustedDy (元の dy: ${item['position']['dy']})'
-              'adjustedDx: $adjustedDx, adjustedDy: $adjustedDy');
-
-          // スケールは保存時の値をそのまま使用
-          double adjustedScale = item['scale'];
+          print('軌跡の相対位置: ($relativeX, $relativeY)');
+          print('軌跡の絶対位置: ($absoluteX, $absoluteY)');
+          print('軌跡の回転角度: ${item['rotation']}');
+          print('軌跡のスケール: ${item['scale']}');
 
           return TransformablePolyline(
             positions,
-            Offset(adjustedDx, adjustedDy),
+            Offset(absoluteX, absoluteY),
           )
-            ..scale = adjustedScale
-            ..rotation = item['rotation'];
+            ..scale = item['scale'] ?? 1.0
+            ..rotation = item['rotation'] ?? 0.0;
         }).toList();
 
         // 初期状態の色リストを生成
@@ -103,6 +114,9 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen> {
       });
     } catch (e) {
       print("キャンバス状態の読み込みエラー: $e");
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("キャンバス状態の読み込みに失敗しました: $e")),
+      );
     }
   }
 
@@ -170,9 +184,6 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final screenWidth = MediaQuery.of(context).size.width;
-    final screenHeight = MediaQuery.of(context).size.height;
-
     return Scaffold(
       appBar: AppBar(
         title: Text(_artworkName),
@@ -188,38 +199,52 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen> {
         ],
       ),
       body: Container(
-        width: screenWidth,
-        height: screenHeight,
+        width: double.infinity,
+        height: double.infinity,
+        color: Colors.grey[200], // ArtworkCreationScreenと同じ背景色
         child: Stack(
           children: [
             ..._trajectories.asMap().entries.map((entry) {
               int index = entry.key;
               TransformablePolyline item = entry.value;
-
+              
               return Positioned(
-                left: item.position.dx.clamp(canvasPadding,
-                    screenWidth - canvasPadding - item.scale * 150),
-                top: item.position.dy.clamp(canvasPadding,
-                    screenHeight - canvasPadding - item.scale * 150),
+                left: item.position.dx,
+                top: item.position.dy,
                 child: GestureDetector(
                   onTap: () => _showTrajectoryDetails(item),
-                  child: Transform(
-                    transform: Matrix4.identity()
-                      ..translate(75 * item.scale, 75 * item.scale)
-                      ..rotateZ(item.rotation)
-                      ..translate(-75 * item.scale, -75 * item.scale)
-                      ..scale(item.scale),
-                    origin: Offset(75, 75),
-                    child: CustomPaint(
-                      size: Size(150, 150),
-                      painter: PolylinePainter(
-                        positions: item.polyline,
-                        minLat: item.minLat,
-                        maxLat: item.maxLat,
-                        minLon: item.minLon,
-                        maxLon: item.maxLon,
-                        color: _trajectoryColors[index], //軌跡ごとの色を使用
-                      ),
+                  child: Container(
+                    width: trajectorySize,
+                    height: trajectorySize,
+                    // デバッグ用の境界線（必要に応じてコメント解除）
+                    // decoration: BoxDecoration(
+                    //   border: Border.all(color: Colors.red, width: 1),
+                    // ),
+                    child: Stack(
+                      children: [
+                        // 回転と拡大縮小を個別に適用して、ArtworkCreationScreenと同じ表示になるようにする
+                        Positioned.fill(
+                          child: Transform.rotate(
+                            angle: item.rotation,
+                            alignment: Alignment.center,
+                            child: Transform.scale(
+                              scale: item.scale,
+                              alignment: Alignment.center,
+                              child: CustomPaint(
+                                size: Size(trajectorySize, trajectorySize),
+                                painter: PolylinePainter(
+                                  positions: item.polyline,
+                                  minLat: item.minLat,
+                                  maxLat: item.maxLat,
+                                  minLon: item.minLon,
+                                  maxLon: item.maxLon,
+                                  color: _trajectoryColors[index], // 軌跡ごとの色を使用
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                 ),
