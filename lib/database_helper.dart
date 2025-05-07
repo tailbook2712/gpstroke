@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:path/path.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:geolocator/geolocator.dart';
+import 'firestore_service.dart';
 
 class DatabaseHelper {
   static final _databaseName = "walking_tracker.db";
@@ -23,6 +24,7 @@ class DatabaseHelper {
   static final columnTrajectoryIndex = 'trajectory_index';
 
   static Database? _database;
+  final FirestoreService _firestoreService = FirestoreService();
 
   Future<Database> get database async {
     if (_database != null) return _database!;
@@ -111,6 +113,31 @@ class DatabaseHelper {
       {columnTrajectoryIndex: trajectoryIndex},
       conflictAlgorithm: ConflictAlgorithm.ignore,
     );
+    
+    // Firestoreにも同期
+    List<int> indices = [trajectoryIndex];
+    await _firestoreService.saveUsedTrajectories(indices);
+  }
+
+  // 複数の使用済み軌跡インデックスを一括で保存
+  Future<void> insertUsedTrajectories(List<int> indices) async {
+    if (indices.isEmpty) return;
+    
+    Database db = await database;
+    Batch batch = db.batch();
+    
+    for (int index in indices) {
+      batch.insert(
+        usedTrajectoriesTable,
+        {columnTrajectoryIndex: index},
+        conflictAlgorithm: ConflictAlgorithm.ignore,
+      );
+    }
+    
+    await batch.commit();
+    
+    // Firestoreにも同期
+    await _firestoreService.saveUsedTrajectories(indices);
   }
 
   // 使用済み軌跡インデックスの取得
@@ -118,6 +145,35 @@ class DatabaseHelper {
     Database db = await database;
     final result = await db.query(usedTrajectoriesTable);
     return result.map((row) => row[columnTrajectoryIndex] as int).toList();
+  }
+
+  // 使用済み軌跡インデックスをFirestoreと同期
+  Future<void> syncUsedTrajectories() async {
+    try {
+      // ローカルDBから取得
+      List<int> localIndices = await getUsedTrajectories();
+      
+      // Firestoreから取得
+      List<int> remoteIndices = await _firestoreService.getUsedTrajectories();
+      
+      // マージして重複を削除
+      Set<int> mergedIndices = {...localIndices, ...remoteIndices};
+      
+      // 新しく追加された項目があれば、ローカルDBに追加
+      Set<int> newIndices = mergedIndices.difference(localIndices.toSet());
+      if (newIndices.isNotEmpty) {
+        await insertUsedTrajectories(newIndices.toList());
+        print("Firestoreから新たに同期した使用済み軌跡: ${newIndices.length}件");
+      }
+      
+      // Firestoreに更新
+      if (mergedIndices.length > remoteIndices.length) {
+        await _firestoreService.saveUsedTrajectories(mergedIndices.toList());
+        print("Firestoreへの同期が完了しました: ${mergedIndices.length}件");
+      }
+    } catch (e) {
+      print("使用済み軌跡の同期エラー: $e");
+    }
   }
 
   // すべての記録を取得するメソッド（日付の降順で並べ替え）

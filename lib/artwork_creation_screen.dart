@@ -11,6 +11,7 @@ import 'database_helper.dart';
 import 'draft_list_screen.dart';
 import 'polyline_painter.dart';
 import 'package:intl/intl.dart';
+import 'firestore_service.dart'; // Firestoreサービスをインポート
 
 import 'utils/utils.dart';
 
@@ -32,6 +33,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
   Set<int> usedTrajectoryIndices = {}; // 保存済みの軌跡インデックスを保持
   Set<int> temporarilyUsedIndices = {}; // 一時的に使用された軌跡インデックス
   final DatabaseHelper _dbHelper = DatabaseHelper();
+  final FirestoreService _firestoreService = FirestoreService(); // Firestoreサービスのインスタンス化
   String? _currentDraftFilePath; // 現在の下書きファイルパスを保持
 
   bool isRotating = false;
@@ -115,7 +117,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
     }
   }
 
-  // アートワークを保存する
+  // アートワークを保存するメソッドを修正
   Future<void> _saveArtwork() async {
     String artworkName = await _promptForArtworkName(); // 作品名を入力
     if (artworkName.isEmpty) {
@@ -144,7 +146,8 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
       }
 
       String timestamp = DateTime.now().millisecondsSinceEpoch.toString();
-      File imgFile = File('${artworksDirectory.path}/artwork_$timestamp.png');
+      String artworkId = 'artwork_$timestamp'; // ユニークなIDを作成
+      File imgFile = File('${artworksDirectory.path}/$artworkId.png');
       File canvasFile = File('${canvasDirectory.path}/canvas_$timestamp.json');
 
       // キャンバスのサイズを取得
@@ -209,11 +212,21 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
           'totalDistance': totalDistance,
           'totalSteps': totalSteps,
           'artworkName': artworkName, // 作品名
+          'artworkId': artworkId, // 作品のユニークID
         },
       };
 
       await canvasFile.writeAsString(jsonEncode(canvasState));
       await imgFile.writeAsBytes(pngBytes);
+
+      // Firestoreに作品を保存 - ここでキャンバス状態を明示的に展開してセット
+      await _firestoreService.saveArtwork(
+        artworkId: artworkId,
+        canvasState: canvasState,
+        imageData: pngBytes,
+      );
+
+      print("Firestoreに保存した作品データ: artworkId=$artworkId, canvasStateのキー=${canvasState.keys.toList()}");
 
       // 使用済みの軌跡を保存
       for (final index in temporarilyUsedIndices) {
@@ -675,17 +688,21 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                                     width: trajectorySize,
                                     height: trajectorySize,
                                     decoration: BoxDecoration(
-                                      border: selectedItem == item ? Border.all(
-                                        color: isRotating ? Colors.orange : Colors.red,
-                                        width: 2.0,
-                                      )
-                                      : null,
+                                      border: selectedItem == item
+                                          ? Border.all(
+                                              color: isRotating
+                                                  ? Colors.orange
+                                                  : Colors.red,
+                                              width: 2.0,
+                                            )
+                                          : null,
                                     ),
                                     child: Transform.scale(
                                       scale: item.scale,
                                       alignment: Alignment.center,
                                       child: CustomPaint(
-                                        size: Size(trajectorySize, trajectorySize),
+                                        size: Size(
+                                            trajectorySize, trajectorySize),
                                         painter: PolylinePainter(
                                           positions: item.polyline,
                                           minLat: item.minLat,

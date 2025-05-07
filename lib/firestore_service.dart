@@ -1,4 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'dart:convert';
+import 'dart:typed_data';
 
 class FirestoreService {
   final FirebaseFirestore _db = FirebaseFirestore.instance;
@@ -75,6 +77,147 @@ class FirestoreService {
       print("FirestoreからGroupID $groupId の歩行データを削除しました");
     } catch (e) {
       print("Firestoreから削除エラー: $e");
+    }
+  }
+
+  // 作品データをFirestoreに保存するメソッド
+  Future<void> saveArtwork({
+    required String artworkId,
+    required Map<String, dynamic> canvasState,
+    required Uint8List imageData,
+  }) async {
+    try {
+      // Base64にエンコードして保存
+      String base64Image = base64Encode(imageData);
+      
+      // マップにデータを展開して直接保存する方法
+      final Map<String, dynamic> saveData = {
+        'artworkId': artworkId,
+        'imageData': base64Image,
+        'timestamp': DateTime.now().toIso8601String(),
+        // マップの各キーを展開して保存
+        'canvasWidth': canvasState['canvasWidth'],
+        'canvasHeight': canvasState['canvasHeight'],
+        'trajectories': canvasState['trajectories'],
+        'meta': canvasState['meta'],
+      };
+      
+      print('Firestoreに保存するデータのキー: ${saveData.keys.toList()}');
+      
+      // Firestoreに作品データを保存
+      await _db.collection('artworks').doc(artworkId).set(saveData);
+      print("作品データをFirestoreに保存しました: ArtworkID $artworkId");
+    } catch (e) {
+      print("作品のFirestoreへの保存エラー: $e");
+    }
+  }
+
+  // Firestoreからすべての作品データを取得するメソッド
+  Future<List<Map<String, dynamic>>> getAllArtworks() async {
+    try {
+      QuerySnapshot snapshot = await _db.collection('artworks').get();
+      List<Map<String, dynamic>> result = [];
+      
+      for (var doc in snapshot.docs) {
+        try {
+          Map<String, dynamic> data = doc.data() as Map<String, dynamic>;
+          print('Firestoreから取得したデータのキー (${doc.id}): ${data.keys.toList()}');
+          
+          // キャンバス状態を再構築
+          Map<String, dynamic> canvasState = {
+            'canvasWidth': data['canvasWidth'],
+            'canvasHeight': data['canvasHeight'],
+            'trajectories': data['trajectories'],
+            'meta': data['meta'],
+          };
+          
+          // アートワークデータの構造を整形
+          Map<String, dynamic> artworkData = {
+            'artworkId': data['artworkId'] ?? doc.id,
+            'canvasState': canvasState,
+            'imageData': data['imageData'],
+            'timestamp': data['timestamp'] ?? DateTime.now().toIso8601String(),
+          };
+          
+          // 必須フィールドの存在確認
+          if (data.containsKey('imageData') && 
+              data.containsKey('canvasWidth') && 
+              data.containsKey('canvasHeight') && 
+              data.containsKey('trajectories') && 
+              data.containsKey('meta')) {
+            result.add(artworkData);
+            print('有効なアートワークデータ: ${doc.id}');
+          } else {
+            print("無効なアートワークデータ: 必須フィールドが不足しています。ドキュメントID: ${doc.id}");
+            print("存在するフィールド: ${data.keys.toList()}");
+          }
+        } catch (e) {
+          print("アートワークデータの処理中にエラー: ${doc.id}, $e");
+        }
+      }
+      
+      print("取得したアートワーク数: ${result.length}件");
+      return result;
+    } catch (e) {
+      print("Firestoreからの作品データ取得エラー: $e");
+      return [];
+    }
+  }
+
+  // 特定の作品をFirestoreから削除するメソッド
+  Future<void> deleteArtworkById(String artworkId) async {
+    try {
+      await _db.collection('artworks').doc(artworkId).delete();
+      print("FirestoreからArtworkID $artworkId の作品を削除しました");
+    } catch (e) {
+      print("Firestoreからの作品削除エラー: $e");
+    }
+  }
+
+  // *** 使用済み軌跡情報の同期機能 ***
+
+  // 使用済み軌跡インデックスをFirestoreに保存
+  Future<void> saveUsedTrajectories(List<int> indices) async {
+    try {
+      // 既存のデータを取得
+      DocumentSnapshot doc = await _db.collection('app_data').doc('used_trajectories').get();
+      
+      // データをマージ
+      if (doc.exists) {
+        List<dynamic> existingIndices = (doc.data() as Map<String, dynamic>)['indices'] ?? [];
+        Set<int> uniqueIndices = {...existingIndices.cast<int>(), ...indices};
+        
+        await _db.collection('app_data').doc('used_trajectories').update({
+          'indices': uniqueIndices.toList(),
+          'updated_at': DateTime.now().toIso8601String(),
+        });
+      } else {
+        // 最初の保存
+        await _db.collection('app_data').doc('used_trajectories').set({
+          'indices': indices,
+          'updated_at': DateTime.now().toIso8601String(),
+        });
+      }
+      print("使用済み軌跡情報をFirestoreに保存しました: ${indices.length}件");
+    } catch (e) {
+      print("使用済み軌跡の保存エラー: $e");
+    }
+  }
+
+  // Firestoreから使用済み軌跡インデックスを取得
+  Future<List<int>> getUsedTrajectories() async {
+    try {
+      DocumentSnapshot doc = await _db.collection('app_data').doc('used_trajectories').get();
+      
+      if (doc.exists) {
+        List<dynamic> indices = (doc.data() as Map<String, dynamic>)['indices'] ?? [];
+        print("Firestoreから使用済み軌跡情報を取得: ${indices.length}件");
+        return indices.cast<int>();
+      }
+      return [];
+    } catch (e) {
+      print("使用済み軌跡の取得エラー: $e");
+      return [];
     }
   }
 }
