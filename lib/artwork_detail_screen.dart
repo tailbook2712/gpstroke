@@ -41,8 +41,8 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen> with TickerPr
   late AnimationController _popupController;
   
   // スライドショーの設定
-  final Duration _highlightDuration = Duration(milliseconds: 500);
-  final Duration _popupDuration = Duration(milliseconds: 500);
+  final Duration _highlightDuration = Duration(seconds: 1);
+  final Duration _popupDuration = Duration(seconds: 1);
   final Duration _transitionDuration = Duration(milliseconds: 500);
   final Duration _detailScreenDuration = Duration(seconds: 5); // 詳細画面の表示時間
 
@@ -291,6 +291,7 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen> with TickerPr
           date: record['date'],
           steps: record['steps'],
           distance: (record['distance'] / 1000).toStringAsFixed(2),
+          hideBackButton: true, // 戻るボタンを非表示に設定
         ),
         transitionsBuilder: (context, animation, secondaryAnimation, child) {
           return FadeTransition(opacity: animation, child: child);
