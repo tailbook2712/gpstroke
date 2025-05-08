@@ -8,12 +8,14 @@ class WalkingDetailScreen extends StatefulWidget {
   final String date;
   final int steps;
   final String distance;
+  final bool hideBackButton; // 戻るボタンを非表示にするかどうかのフラグを追加
 
   WalkingDetailScreen({
     required this.groupId,
     required this.date,
     required this.steps,
     required this.distance,
+    this.hideBackButton = false, // デフォルトではfalse
   });
 
   @override
@@ -110,6 +112,7 @@ class _WalkingDetailScreenState extends State<WalkingDetailScreen> {
     return Scaffold(
       appBar: AppBar(
         title: Text(_formatDate(_date)), // 日付を表示
+        automaticallyImplyLeading: !widget.hideBackButton, // hideBackButtonがtrueの場合、戻るボタンを非表示
       ),
       body: Column(
         crossAxisAlignment: CrossAxisAlignment.start,

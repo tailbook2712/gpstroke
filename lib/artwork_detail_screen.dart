@@ -18,7 +18,7 @@ class ArtworkDetailScreen extends StatefulWidget {
   _ArtworkDetailScreenState createState() => _ArtworkDetailScreenState();
 }
 
-class _ArtworkDetailScreenState extends State<ArtworkDetailScreen> {
+class _ArtworkDetailScreenState extends State<ArtworkDetailScreen> with TickerProviderStateMixin {
   List<TransformablePolyline> _trajectories = [];
   late DatabaseHelper _dbHelper;
 
@@ -34,14 +34,45 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen> {
   double? savedCanvasWidth;
   double? savedCanvasHeight;
 
+  // スライドショー機能の状態管理
+  bool _isSlideshowPlaying = false;
+  int _currentTrajectoryIndex = -1; // -1は非選択状態
+  late AnimationController _highlightController;
+  late AnimationController _popupController;
+  
+  // スライドショーの設定
+  final Duration _highlightDuration = Duration(seconds: 1);
+  final Duration _popupDuration = Duration(seconds: 1);
+  final Duration _transitionDuration = Duration(milliseconds: 500);
+  final Duration _detailScreenDuration = Duration(seconds: 5); // 詳細画面の表示時間
+
   @override
   void initState() {
     super.initState();
     _dbHelper = DatabaseHelper();
+    
+    // アニメーション用コントローラの初期化
+    _highlightController = AnimationController(
+      vsync: this,
+      duration: _highlightDuration,
+    );
+    
+    _popupController = AnimationController(
+      vsync: this,
+      duration: _popupDuration,
+    );
+    
     // ウィジェットが描画された後にキャンバス状態を読み込む
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _loadCanvasState();
     });
+  }
+
+  @override
+  void dispose() {
+    _highlightController.dispose();
+    _popupController.dispose();
+    super.dispose();
   }
 
   // キャンバスの状態の復元
@@ -182,18 +213,171 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen> {
     }
   }
 
+  // スライドショーの開始
+  void _startSlideshow() async {
+    if (_trajectories.isEmpty) return;
+    
+    setState(() {
+      _isSlideshowPlaying = true;
+      _currentTrajectoryIndex = -1; // リセット
+    });
+    
+    // 最初の軌跡から順番に表示
+    _showNextTrajectory();
+  }
+  
+  // スライドショーの停止
+  void _stopSlideshow() {
+    setState(() {
+      _isSlideshowPlaying = false;
+      _currentTrajectoryIndex = -1;
+      // _currentTrajectoryDetails = null;
+    });
+    
+    // アニメーションをリセット
+    _highlightController.reset();
+    _popupController.reset();
+    
+    // 全ての軌跡の色を元に戻す
+    setState(() {
+      _trajectoryColors = List.generate(
+        _trajectories.length,
+        (_) => _isColorful 
+            ? _generateRandomColor() 
+            : Colors.blue,
+      );
+    });
+  }
+  
+  // 次の軌跡を表示
+  void _showNextTrajectory() async {
+    if (!_isSlideshowPlaying) return;
+    
+    // 次のインデックスを計算
+    int nextIndex = _currentTrajectoryIndex + 1;
+    
+    // 全ての軌跡を表示し終えたらスライドショーを停止
+    if (nextIndex >= _trajectories.length) {
+      _stopSlideshow();
+      return;
+    }
+    
+    // 次の軌跡をハイライト
+    setState(() {
+      _currentTrajectoryIndex = nextIndex;
+      
+      // 現在の軌跡をハイライト（赤色に変更）
+      _trajectoryColors[nextIndex] = Colors.red;
+    });
+    
+    // ハイライトのアニメーション
+    _highlightController.reset();
+    await _highlightController.forward();
+    
+    // 軌跡のポップアップアニメーション
+    _popupController.reset();
+    await _popupController.forward();
+    
+    // 軌跡の詳細情報を取得
+    TransformablePolyline trajectory = _trajectories[nextIndex];
+    String groupId = generateGroupId(trajectory.polyline);
+    Map<String, dynamic>? record = await _dbHelper.getWalkingDataByGroupId(groupId);
+    
+    if (record != null) {
+      // 詳細画面を表示するためのルート
+      final detailRoute = PageRouteBuilder(
+        pageBuilder: (context, animation, secondaryAnimation) => WalkingDetailScreen(
+          groupId: groupId,
+          date: record['date'],
+          steps: record['steps'],
+          distance: (record['distance'] / 1000).toStringAsFixed(2),
+          hideBackButton: true, // 戻るボタンを非表示に設定
+        ),
+        transitionsBuilder: (context, animation, secondaryAnimation, child) {
+          return FadeTransition(opacity: animation, child: child);
+        },
+        transitionDuration: Duration(milliseconds: 500),
+      );
+      
+      // 詳細画面へ遷移
+      Navigator.of(context).push(detailRoute);
+      
+      // 一定時間後に自動で戻る
+      await Future.delayed(_detailScreenDuration);
+      
+      // コンテキストが有効かつ、まだ詳細画面が表示されている場合は戻る
+      if (Navigator.of(context).canPop()) {
+        Navigator.of(context).pop();
+      }
+      
+      // ポップアップを元に戻す
+      await _popupController.reverse();
+      
+      // 現在の軌跡の色を元に戻す（または指定の色に）
+      setState(() {
+        _trajectoryColors[nextIndex] = _isColorful 
+            ? _generateRandomColor() 
+            : Colors.blue;
+      });
+      
+      // 次の軌跡へ移行するための遅延
+      await Future.delayed(_transitionDuration);
+      
+      // スライドショーがまだ再生中なら次へ進む
+      if (_isSlideshowPlaying) {
+        _showNextTrajectory();
+      }
+    } else {
+      // 記録が見つからない場合
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("軌跡の記録が見つかりません。")),
+      );
+      
+      // ポップアップを元に戻す
+      await _popupController.reverse();
+      
+      // 現在の軌跡の色を元に戻す
+      setState(() {
+        _trajectoryColors[nextIndex] = _isColorful 
+            ? _generateRandomColor() 
+            : Colors.blue;
+      });
+      
+      // 次へ進む
+      await Future.delayed(_transitionDuration);
+      _showNextTrajectory();
+    }
+  }
+  
+  // この関数は不要になったため削除
+  // 代わりにWalkingDetailScreenを表示する
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         title: Text(_artworkName),
         actions: [
+          // カラフルモード切り替えボタン
           IconButton(
             icon: Icon(
               _isColorful ? Icons.color_lens : Icons.color_lens_outlined,
             ),
             onPressed: () {
               _setColorfulMode(!_isColorful); // カラフルモードを切り替え
+            },
+          ),
+          // スライドショー制御ボタン
+          IconButton(
+            icon: Icon(
+              _isSlideshowPlaying ? Icons.stop : Icons.slideshow,
+            ),
+            onPressed: () {
+              if (_isSlideshowPlaying) {
+                _stopSlideshow();
+              } else {
+                _startSlideshow();
+              }
             },
           ),
         ],
@@ -204,9 +388,19 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen> {
         color: Colors.grey[200], // ArtworkCreationScreenと同じ背景色
         child: Stack(
           children: [
+            // 軌跡の表示
             ..._trajectories.asMap().entries.map((entry) {
               int index = entry.key;
               TransformablePolyline item = entry.value;
+              
+              // 現在表示中の軌跡かどうかの判定
+              bool isCurrentlyHighlighted = index == _currentTrajectoryIndex;
+              
+              // 拡大スケールを計算（ハイライト中ならアニメーション付き）
+              double scale = item.scale;
+              if (isCurrentlyHighlighted) {
+                scale = scale * (1.0 + (_popupController.value * 0.5)); // 最大1.5倍まで拡大
+              }
               
               return Positioned(
                 left: item.position.dx,
@@ -216,19 +410,15 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen> {
                   child: Container(
                     width: trajectorySize,
                     height: trajectorySize,
-                    // デバッグ用の境界線（必要に応じてコメント解除）
-                    // decoration: BoxDecoration(
-                    //   border: Border.all(color: Colors.red, width: 1),
-                    // ),
                     child: Stack(
                       children: [
-                        // 回転と拡大縮小を個別に適用して、ArtworkCreationScreenと同じ表示になるようにする
+                        // 回転と拡大縮小を適用
                         Positioned.fill(
                           child: Transform.rotate(
                             angle: item.rotation,
                             alignment: Alignment.center,
                             child: Transform.scale(
-                              scale: item.scale,
+                              scale: scale,
                               alignment: Alignment.center,
                               child: CustomPaint(
                                 size: Size(trajectorySize, trajectorySize),
@@ -250,6 +440,27 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen> {
                 ),
               );
             }).toList(),
+            
+            // スライドショー中のインジケーター
+            if (_isSlideshowPlaying)
+              Positioned(
+                bottom: 20,
+                left: 0,
+                right: 0,
+                child: Center(
+                  child: Container(
+                    padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: Colors.black54,
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: Text(
+                      'スライドショー再生中: ${_currentTrajectoryIndex + 1} / ${_trajectories.length}',
+                      style: TextStyle(color: Colors.white),
+                    ),
+                  ),
+                ),
+              ),
           ],
         ),
       ),
