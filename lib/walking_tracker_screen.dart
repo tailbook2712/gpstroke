@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:flutter_background_geolocation/flutter_background_geolocation.dart'
@@ -70,6 +71,101 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
   Future<void> _initializeScreen() async {
     await _restoreDataFromFirestore(); // FirestoreからローカルDBにデータを復元
     await _loadTrajectories(); // 復元後にローカルDBから軌跡をロード
+    await _syncUsedTrajectories(); // 使用済み軌跡情報を同期
+    await _restoreArtworksFromFirestore(); // Firestoreからアートワークを復元
+  }
+
+  Future<void> _syncUsedTrajectories() async {
+    await _dbHelper.syncUsedTrajectories();
+  }
+
+  // Firestoreから保存されたアートワークを復元
+  Future<void> _restoreArtworksFromFirestore() async {
+    try {
+      final artworks = await _firestoreService.getAllArtworks();
+      if (artworks.isEmpty) {
+        print('復元可能なアートワークが見つかりませんでした');
+        return;
+      }
+
+      final directory = await getApplicationDocumentsDirectory();
+      final artworksDirectory = Directory('${directory.path}/artworks');
+      final canvasDirectory = Directory('${directory.path}/canvas_states');
+
+      if (!(await artworksDirectory.exists())) {
+        await artworksDirectory.create(recursive: true);
+      }
+      if (!(await canvasDirectory.exists())) {
+        await canvasDirectory.create(recursive: true);
+      }
+
+      int restoredCount = 0;
+      for (var artwork in artworks) {
+        try {
+          final artworkId = artwork['artworkId'] ?? '';
+          if (artworkId.isEmpty) {
+            print('アートワークIDが見つかりません。スキップします。');
+            continue;
+          }
+          
+          final canvasState = artwork['canvasState'];
+          if (canvasState == null) {
+            print('キャンバス状態が見つかりません。スキップします: $artworkId');
+            continue;
+          }
+          
+          // 画像データをBase64からデコード
+          if (artwork['imageData'] == null) {
+            print('画像データが見つかりません。スキップします: $artworkId');
+            continue;
+          }
+          
+          Uint8List imageData = base64Decode(artwork['imageData']);
+          
+          // ファイルに保存
+          File imgFile = File('${artworksDirectory.path}/$artworkId.png');
+          
+          // タイムスタンプの取得（エラーハンドリングを追加）
+          String timestamp = '';
+          try {
+            if (artworkId.contains('_')) {
+              timestamp = artworkId.split('_').last;
+            } else {
+              // タイムスタンプを生成
+              timestamp = DateTime.now().millisecondsSinceEpoch.toString();
+            }
+          } catch (e) {
+            // タイムスタンプの取得に失敗した場合は現在時刻を使用
+            print('タイムスタンプの取得に失敗しました: $e');
+            timestamp = DateTime.now().millisecondsSinceEpoch.toString();
+          }
+          
+          File canvasFile = File('${canvasDirectory.path}/canvas_$timestamp.json');
+          
+          // すでに存在する場合はスキップ
+          if (await imgFile.exists() && await canvasFile.exists()) {
+            print('アートワークはすでに存在します: $artworkId');
+            continue;
+          }
+          
+          // ファイルに書き込み
+          await imgFile.writeAsBytes(imageData);
+          await canvasFile.writeAsString(jsonEncode(canvasState));
+          
+          print('アートワークを復元しました: $artworkId');
+          restoredCount++;
+        } catch (e) {
+          print('アートワークの復元中にエラー: $e');
+        }
+      }
+      
+      print('Firestoreからアートワークを復元しました: $restoredCount件');
+      
+      // アートワークのリストを更新
+      await _loadSavedArtworks();
+    } catch (e) {
+      print('Firestoreからのアートワーク復元エラー: $e');
+    }
   }
 
   // 保存された作品をロード
@@ -414,12 +510,20 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
   // アートワーク作成画面に遷移
   void _navigateToArtworkCreationScreen() async {
     await _loadTrajectories();
-    Navigator.push(
+    await _syncUsedTrajectories(); // 使用済み軌跡情報を同期してから作成画面に移動
+    
+    final result = await Navigator.push(
       context,
       MaterialPageRoute(
         builder: (context) => ArtworkCreationScreen(trajectories: trajectories),
       ),
     );
+    
+    // 作品が保存された場合、ギャラリーを更新
+    if (result != null) {
+      await _syncUsedTrajectories(); // 保存後も同期を行う
+      await _loadSavedArtworks();
+    }
   }
 
   // アートワークギャラリー画面に遷移
