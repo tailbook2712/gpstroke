@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
+import 'dart:math' as math;
 
 class PolylinePainter extends CustomPainter {
   final List<Position> positions;
   final double minLat, maxLat, minLon, maxLon;
   final Color color;
+  final bool preserveAspectRatio; // アスペクト比を保持するかどうかのフラグを追加
 
   PolylinePainter({
     required this.positions,
@@ -13,6 +15,7 @@ class PolylinePainter extends CustomPainter {
     required this.minLon,
     required this.maxLon,
     this.color = Colors.blue,
+    this.preserveAspectRatio = true, // デフォルトでアスペクト比を保持する
   });
 
   @override
@@ -32,11 +35,50 @@ class PolylinePainter extends CustomPainter {
     final centerLat = (maxLat + minLat) / 2;
     final centerLon = (maxLon + minLon) / 2;
 
-    // 座標を中心基準で画面上にスケーリング
+    // アスペクト比を保持するためのスケーリング係数を計算
+    double scaleX, scaleY;
+    double padding = 0.1; // 10%のパディングを追加
+    
+    if (preserveAspectRatio) {
+      // 緯度と経度の地球上での比率を考慮（経度1度は緯度に応じて距離が変わる）
+      // 簡易的にコサイン補正を適用（緯度に応じて経度の縮尺を調整）
+      double latCosCorrection = math.cos(centerLat * math.pi / 180.0);
+      
+      // 緯度と経度のレンジをキャンバスサイズに合わせて調整
+      double correctedLonRange = lonRange * latCosCorrection;
+      
+      // キャンバスのアスペクト比
+      double canvasAspect = size.width / size.height;
+      
+      // データのアスペクト比（経度/緯度）
+      double dataAspect = correctedLonRange / latRange;
+      
+      if (dataAspect > canvasAspect) {
+        // データが横長の場合は幅に合わせる
+        scaleX = size.width * (1 - padding * 2);
+        scaleY = (size.width / dataAspect) * (1 - padding * 2);
+      } else {
+        // データが縦長の場合は高さに合わせる
+        scaleY = size.height * (1 - padding * 2);
+        scaleX = (size.height * dataAspect) * (1 - padding * 2);
+      }
+    } else {
+      // 従来の方法（アスペクト比を保持しない）
+      scaleX = size.width * (1 - padding * 2);
+      scaleY = size.height * (1 - padding * 2);
+    }
+
+    // 座標変換とパス描画
     final List<Offset> scaledPoints = positions.map((position) {
-      final dx = (position.longitude - centerLon) / lonRange * size.width;
-      final dy = (position.latitude - centerLat) / latRange * size.height;
-      return Offset(dx + size.width / 2, size.height / 2 - dy); // 中心補正
+      // 正規化座標（0〜1の範囲）
+      double normalizedX = (position.longitude - minLon) / lonRange;
+      double normalizedY = (position.latitude - minLat) / latRange;
+      
+      // キャンバス座標に変換（Y軸は上下反転）
+      double x = normalizedX * scaleX + (size.width - scaleX) / 2;
+      double y = size.height - (normalizedY * scaleY + (size.height - scaleY) / 2);
+      
+      return Offset(x, y);
     }).toList();
 
     // ポリラインを描画
@@ -51,6 +93,11 @@ class PolylinePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant CustomPainter oldDelegate) {
-    return true; // データ変更時に再描画
+    if (oldDelegate is PolylinePainter) {
+      return color != oldDelegate.color || 
+             preserveAspectRatio != oldDelegate.preserveAspectRatio ||
+             positions != oldDelegate.positions;
+    }
+    return true;
   }
 }
