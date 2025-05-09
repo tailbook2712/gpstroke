@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'artwork_creation_screen.dart';
 import 'database_helper.dart';
 import 'utils/utils.dart';
@@ -39,12 +40,21 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen> with TickerPr
   int _currentTrajectoryIndex = -1; // -1は非選択状態
   late AnimationController _highlightController;
   late AnimationController _popupController;
+  late AnimationController _mapTransitionController;
+  
+  // 地図表示関連の状態
+  bool _isShowingMap = false;
+  GoogleMapController? _mapController;
+  Set<Polyline> _mapPolylines = {};
+  LatLng _mapCenter = LatLng(35.0, 135.0); // デフォルトの中心座標
+  Map<String, dynamic>? _currentTrajectoryDetails;
   
   // スライドショーの設定
   final Duration _highlightDuration = Duration(seconds: 1);
   final Duration _popupDuration = Duration(seconds: 1);
+  final Duration _mapTransitionDuration = Duration(milliseconds: 800);
+  final Duration _mapDisplayDuration = Duration(seconds: 5);
   final Duration _transitionDuration = Duration(milliseconds: 500);
-  final Duration _detailScreenDuration = Duration(seconds: 5); // 詳細画面の表示時間
 
   @override
   void initState() {
@@ -62,6 +72,11 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen> with TickerPr
       duration: _popupDuration,
     );
     
+    _mapTransitionController = AnimationController(
+      vsync: this,
+      duration: _mapTransitionDuration,
+    );
+    
     // ウィジェットが描画された後にキャンバス状態を読み込む
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _loadCanvasState();
@@ -72,6 +87,8 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen> with TickerPr
   void dispose() {
     _highlightController.dispose();
     _popupController.dispose();
+    _mapTransitionController.dispose();
+    _mapController?.dispose();
     super.dispose();
   }
 
@@ -220,6 +237,7 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen> with TickerPr
     setState(() {
       _isSlideshowPlaying = true;
       _currentTrajectoryIndex = -1; // リセット
+      _isShowingMap = false;
     });
     
     // 最初の軌跡から順番に表示
@@ -231,12 +249,13 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen> with TickerPr
     setState(() {
       _isSlideshowPlaying = false;
       _currentTrajectoryIndex = -1;
-      // _currentTrajectoryDetails = null;
+      _isShowingMap = false;
     });
     
     // アニメーションをリセット
     _highlightController.reset();
     _popupController.reset();
+    _mapTransitionController.reset();
     
     // 全ての軌跡の色を元に戻す
     setState(() {
@@ -246,6 +265,100 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen> with TickerPr
             ? _generateRandomColor() 
             : Colors.blue,
       );
+    });
+  }
+
+  // 軌跡の位置情報からポリラインを準備する
+  Future<void> _prepareMapData(int trajectoryIndex) async {
+    TransformablePolyline trajectory = _trajectories[trajectoryIndex];
+    String groupId = generateGroupId(trajectory.polyline);
+    
+    try {
+      // データベースから位置情報を取得
+      List<Map<String, dynamic>> positions = await _dbHelper.getPositionsByGroupId(groupId);
+      Map<String, dynamic>? record = await _dbHelper.getWalkingDataByGroupId(groupId);
+      
+      if (positions.isEmpty || record == null) {
+        print("位置情報または記録が見つかりません: $groupId");
+        return;
+      }
+      
+      // LatLngリストに変換
+      List<LatLng> polylinePoints = positions.map((pos) {
+        return LatLng(pos['latitude'], pos['longitude']);
+      }).toList();
+      
+      // 緯度と経度の範囲を計算
+      double minLat = polylinePoints.map((p) => p.latitude).reduce((a, b) => a < b ? a : b);
+      double maxLat = polylinePoints.map((p) => p.latitude).reduce((a, b) => a > b ? a : b);
+      double minLng = polylinePoints.map((p) => p.longitude).reduce((a, b) => a < b ? a : b);
+      double maxLng = polylinePoints.map((p) => p.longitude).reduce((a, b) => a > b ? a : b);
+      
+      // 地図の中心座標を計算
+      double centerLat = (minLat + maxLat) / 2;
+      double centerLng = (minLng + maxLng) / 2;
+      LatLng center = LatLng(centerLat, centerLng);
+      
+      // 緯度経度の範囲を広げてより多くのコンテキストを表示
+      double latPadding = (maxLat - minLat) * 0.3; // 30%追加
+      double lngPadding = (maxLng - minLng) * 0.3; // 30%追加
+      
+      // 地図の境界を計算（パディングを追加）
+      LatLngBounds bounds = LatLngBounds(
+        southwest: LatLng(minLat - latPadding, minLng - lngPadding),
+        northeast: LatLng(maxLat + latPadding, maxLng + lngPadding),
+      );
+      
+      // ポリラインを設定（色を赤に変更して軌跡を目立たせる）
+      Set<Polyline> polylines = {
+        Polyline(
+          polylineId: PolylineId('route_$trajectoryIndex'),
+          points: polylinePoints,
+          color: Colors.red, // 軌跡を赤色で表示
+          width: 5,
+        )
+      };
+      
+      setState(() {
+        _mapCenter = center;
+        _mapPolylines = polylines;
+        _currentTrajectoryDetails = {
+          'groupId': groupId,
+          'date': record['date'],
+          'steps': record['steps'],
+          'distance': record['distance'],
+          'polylinePoints': polylinePoints,
+          'bounds': bounds,
+          'trajectory': trajectory, // 現在の軌跡の情報も保存
+        };
+      });
+    } catch (e) {
+      print("マップデータの準備中にエラー: $e");
+    }
+  }
+  
+  // マップを表示するアニメーション
+  Future<void> _showMapAnimation() async {
+    // マップ表示の準備をする
+    setState(() {
+      _isShowingMap = true;
+    });
+    
+    // マップがレンダリングされるまで少し待機
+    await Future.delayed(Duration(milliseconds: 300));
+    
+    // マップ表示トランジションのアニメーション
+    _mapTransitionController.reset();
+    await _mapTransitionController.forward();
+    
+    // マップを表示する時間
+    await Future.delayed(_mapDisplayDuration);
+    
+    // マップ非表示のトランジション
+    await _mapTransitionController.reverse();
+    
+    setState(() {
+      _isShowingMap = false;
     });
   }
   
@@ -278,79 +391,32 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen> with TickerPr
     _popupController.reset();
     await _popupController.forward();
     
-    // 軌跡の詳細情報を取得
-    TransformablePolyline trajectory = _trajectories[nextIndex];
-    String groupId = generateGroupId(trajectory.polyline);
-    Map<String, dynamic>? record = await _dbHelper.getWalkingDataByGroupId(groupId);
+    // マップデータを準備
+    await _prepareMapData(nextIndex);
     
-    if (record != null) {
-      // 詳細画面を表示するためのルート
-      final detailRoute = PageRouteBuilder(
-        pageBuilder: (context, animation, secondaryAnimation) => WalkingDetailScreen(
-          groupId: groupId,
-          date: record['date'],
-          steps: record['steps'],
-          distance: (record['distance'] / 1000).toStringAsFixed(2),
-          hideBackButton: true, // 戻るボタンを非表示に設定
-        ),
-        transitionsBuilder: (context, animation, secondaryAnimation, child) {
-          return FadeTransition(opacity: animation, child: child);
-        },
-        transitionDuration: Duration(milliseconds: 500),
-      );
-      
-      // 詳細画面へ遷移
-      Navigator.of(context).push(detailRoute);
-      
-      // 一定時間後に自動で戻る
-      await Future.delayed(_detailScreenDuration);
-      
-      // コンテキストが有効かつ、まだ詳細画面が表示されている場合は戻る
-      if (Navigator.of(context).canPop()) {
-        Navigator.of(context).pop();
-      }
-      
-      // ポップアップを元に戻す
-      await _popupController.reverse();
-      
-      // 現在の軌跡の色を元に戻す（または指定の色に）
-      setState(() {
-        _trajectoryColors[nextIndex] = _isColorful 
-            ? _generateRandomColor() 
-            : Colors.blue;
-      });
-      
-      // 次の軌跡へ移行するための遅延
-      await Future.delayed(_transitionDuration);
-      
-      // スライドショーがまだ再生中なら次へ進む
-      if (_isSlideshowPlaying) {
-        _showNextTrajectory();
-      }
-    } else {
-      // 記録が見つからない場合
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text("軌跡の記録が見つかりません。")),
-      );
-      
-      // ポップアップを元に戻す
-      await _popupController.reverse();
-      
-      // 現在の軌跡の色を元に戻す
-      setState(() {
-        _trajectoryColors[nextIndex] = _isColorful 
-            ? _generateRandomColor() 
-            : Colors.blue;
-      });
-      
-      // 次へ進む
-      await Future.delayed(_transitionDuration);
+    // マップアニメーションを表示
+    await _showMapAnimation();
+    
+    // 軌跡の色を元に戻す
+    setState(() {
+      _trajectoryColors[nextIndex] = _isColorful 
+          ? _generateRandomColor() 
+          : Colors.blue;
+    });
+    
+    // 次の軌跡へ移行するための遅延
+    await Future.delayed(_transitionDuration);
+    
+    // スライドショーがまだ再生中なら次へ進む
+    if (_isSlideshowPlaying) {
       _showNextTrajectory();
     }
   }
-  
-  // この関数は不要になったため削除
-  // 代わりにWalkingDetailScreenを表示する
+
+  // Googleマップを初期化する際のコールバック
+  void _onMapCreated(GoogleMapController controller) {
+    _mapController = controller;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -388,6 +454,73 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen> with TickerPr
         color: Colors.grey[200], // ArtworkCreationScreenと同じ背景色
         child: Stack(
           children: [
+            // 地図表示レイヤー（アニメーション付き）
+            if (_isShowingMap && _currentTrajectoryIndex >= 0 && _currentTrajectoryDetails != null)
+              Positioned(
+                // 現在の軌跡の位置を中心として、大きめに配置
+                left: _currentTrajectoryDetails!['trajectory'].position.dx - trajectorySize * 0.75,
+                top: _currentTrajectoryDetails!['trajectory'].position.dy - trajectorySize * 0.75,
+                child: AnimatedBuilder(
+                  animation: _mapTransitionController,
+                  builder: (context, child) {
+                    return Opacity(
+                      opacity: _mapTransitionController.value,
+                      child: child,
+                    );
+                  },
+                  child: Transform.rotate(
+                    angle: _currentTrajectoryDetails!['trajectory'].rotation,
+                    alignment: Alignment.center,
+                    child: Container(
+                      // 軌跡の2.5倍の大きさで地図を表示
+                      width: trajectorySize * 2.5,
+                      height: trajectorySize * 2.5,
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(16),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black26,
+                            blurRadius: 10,
+                            spreadRadius: 1,
+                          ),
+                        ],
+                      ),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(16),
+                        child: GoogleMap(
+                          initialCameraPosition: CameraPosition(
+                            target: _mapCenter,
+                            zoom: 15.0,
+                          ),
+                          onMapCreated: (GoogleMapController controller) {
+                            _mapController = controller;
+                            
+                            // マップの境界を設定して、ポリラインが見える範囲にズーム
+                            if (_currentTrajectoryDetails!.containsKey('bounds')) {
+                              controller.animateCamera(
+                                CameraUpdate.newLatLngBounds(
+                                  _currentTrajectoryDetails!['bounds'], 
+                                  50 // 周囲のコンテキストも見えるようにパディングを追加
+                                )
+                              );
+                            }
+                          },
+                          polylines: _mapPolylines,
+                          myLocationEnabled: false,
+                          zoomControlsEnabled: false,
+                          mapToolbarEnabled: false,
+                          compassEnabled: true,
+                          rotateGesturesEnabled: false,
+                          scrollGesturesEnabled: false,
+                          zoomGesturesEnabled: false,
+                          tiltGesturesEnabled: false,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            
             // 軌跡の表示
             ..._trajectories.asMap().entries.map((entry) {
               int index = entry.key;
@@ -440,6 +573,63 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen> with TickerPr
                 ),
               );
             }).toList(),
+            
+            // 軌跡情報表示 (ハイライト時) - 情報カードを画面下部に表示
+            if (_isShowingMap && _currentTrajectoryIndex >= 0 && _currentTrajectoryDetails != null)
+              Positioned(
+                bottom: 70,
+                left: 0,
+                right: 0,
+                child: Center(
+                  child: AnimatedBuilder(
+                    animation: _mapTransitionController,
+                    builder: (context, child) {
+                      return Opacity(
+                        opacity: _mapTransitionController.value,
+                        child: child,
+                      );
+                    },
+                    child: Container(
+                      padding: EdgeInsets.all(12),
+                      margin: EdgeInsets.symmetric(horizontal: 20),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withOpacity(0.9),
+                        borderRadius: BorderRadius.circular(10),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black26,
+                            blurRadius: 8,
+                            offset: Offset(0, 2),
+                          ),
+                        ],
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.center,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            '${DateTime.tryParse(_currentTrajectoryDetails!['date'])?.toString().substring(0, 16) ?? '不明'}',
+                            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                          ),
+                          SizedBox(height: 8),
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.directions_walk, size: 16),
+                              SizedBox(width: 4),
+                              Text('${_currentTrajectoryDetails!['steps']} 歩'),
+                              SizedBox(width: 16),
+                              Icon(Icons.straighten, size: 16),
+                              SizedBox(width: 4),
+                              Text('${(_currentTrajectoryDetails!['distance'] / 1000).toStringAsFixed(2)} km'),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
             
             // スライドショー中のインジケーター
             if (_isSlideshowPlaying)
