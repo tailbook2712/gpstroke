@@ -7,6 +7,7 @@ class PolylinePainter extends CustomPainter {
   final double minLat, maxLat, minLon, maxLon;
   final Color color;
   final bool preserveAspectRatio; // アスペクト比を保持するかどうかのフラグを追加
+  final double strokeWidth; // 線の太さを調整するためのパラメータを追加
 
   PolylinePainter({
     required this.positions,
@@ -16,6 +17,7 @@ class PolylinePainter extends CustomPainter {
     required this.maxLon,
     this.color = Colors.blue,
     this.preserveAspectRatio = true, // デフォルトでアスペクト比を保持する
+    this.strokeWidth = 4.0, // デフォルトの線の太さ
   });
 
   @override
@@ -24,7 +26,7 @@ class PolylinePainter extends CustomPainter {
 
     final paint = Paint()
       ..color = color
-      ..strokeWidth = 4.0
+      ..strokeWidth = strokeWidth
       ..style = PaintingStyle.stroke;
 
     // 緯度・経度の範囲を計算
@@ -96,6 +98,7 @@ class PolylinePainter extends CustomPainter {
     if (oldDelegate is PolylinePainter) {
       return color != oldDelegate.color || 
              preserveAspectRatio != oldDelegate.preserveAspectRatio ||
+             strokeWidth != oldDelegate.strokeWidth ||
              positions != oldDelegate.positions;
     }
     return true;
