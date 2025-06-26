@@ -40,21 +40,21 @@ class PolylinePainter extends CustomPainter {
     // アスペクト比を保持するためのスケーリング係数を計算
     double scaleX, scaleY;
     double padding = 0.1; // 10%のパディングを追加
-    
+
     if (preserveAspectRatio) {
       // 緯度と経度の地球上での比率を考慮（経度1度は緯度に応じて距離が変わる）
       // 簡易的にコサイン補正を適用（緯度に応じて経度の縮尺を調整）
       double latCosCorrection = math.cos(centerLat * math.pi / 180.0);
-      
+
       // 緯度と経度のレンジをキャンバスサイズに合わせて調整
       double correctedLonRange = lonRange * latCosCorrection;
-      
+
       // キャンバスのアスペクト比
       double canvasAspect = size.width / size.height;
-      
+
       // データのアスペクト比（経度/緯度）
       double dataAspect = correctedLonRange / latRange;
-      
+
       if (dataAspect > canvasAspect) {
         // データが横長の場合は幅に合わせる
         scaleX = size.width * (1 - padding * 2);
@@ -75,11 +75,12 @@ class PolylinePainter extends CustomPainter {
       // 正規化座標（0〜1の範囲）
       double normalizedX = (position.longitude - minLon) / lonRange;
       double normalizedY = (position.latitude - minLat) / latRange;
-      
+
       // キャンバス座標に変換（Y軸は上下反転）
       double x = normalizedX * scaleX + (size.width - scaleX) / 2;
-      double y = size.height - (normalizedY * scaleY + (size.height - scaleY) / 2);
-      
+      double y =
+          size.height - (normalizedY * scaleY + (size.height - scaleY) / 2);
+
       return Offset(x, y);
     }).toList();
 
@@ -93,13 +94,76 @@ class PolylinePainter extends CustomPainter {
     }
   }
 
+  // 描画パラメータを取得するメソッド（地図整列用）
+  Map<String, dynamic> getDrawingParameters(Size size) {
+    // 緯度・経度の範囲を計算
+    final latRange = (maxLat - minLat).abs() > 0 ? maxLat - minLat : 1.0;
+    final lonRange = (maxLon - minLon).abs() > 0 ? maxLon - minLon : 1.0;
+
+    // 中心座標を基準とした変換
+    final centerLat = (maxLat + minLat) / 2;
+    final centerLon = (maxLon + minLon) / 2;
+
+    // アスペクト比を保持するためのスケーリング係数を計算
+    double scaleX, scaleY;
+    double padding = 0.1; // 10%のパディングを追加
+
+    if (preserveAspectRatio) {
+      // 緯度と経度の地球上での比率を考慮（経度1度は緯度に応じて距離が変わる）
+      // 簡易的にコサイン補正を適用（緯度に応じて経度の縮尺を調整）
+      double latCosCorrection = math.cos(centerLat * math.pi / 180.0);
+
+      // 緯度と経度のレンジをキャンバスサイズに合わせて調整
+      double correctedLonRange = lonRange * latCosCorrection;
+
+      // キャンバスのアスペクト比
+      double canvasAspect = size.width / size.height;
+
+      // データのアスペクト比（経度/緯度）
+      double dataAspect = correctedLonRange / latRange;
+
+      if (dataAspect > canvasAspect) {
+        // データが横長の場合は幅に合わせる
+        scaleX = size.width * (1 - padding * 2);
+        scaleY = (size.width / dataAspect) * (1 - padding * 2);
+      } else {
+        // データが縦長の場合は高さに合わせる
+        scaleY = size.height * (1 - padding * 2);
+        scaleX = (size.height * dataAspect) * (1 - padding * 2);
+      }
+    } else {
+      // 従来の方法（アスペクト比を保持しない）
+      scaleX = size.width * (1 - padding * 2);
+      scaleY = size.height * (1 - padding * 2);
+    }
+
+    // 実際の描画領域の計算
+    double drawingOffsetX = (size.width - scaleX) / 2;
+    double drawingOffsetY = (size.height - scaleY) / 2;
+
+    return {
+      'scaleX': scaleX,
+      'scaleY': scaleY,
+      'drawingOffsetX': drawingOffsetX,
+      'drawingOffsetY': drawingOffsetY,
+      'centerLat': centerLat,
+      'centerLon': centerLon,
+      'latRange': latRange,
+      'lonRange': lonRange,
+      'padding': padding,
+      'dataAspect': preserveAspectRatio
+          ? (lonRange * math.cos(centerLat * math.pi / 180.0)) / latRange
+          : scaleX / scaleY,
+    };
+  }
+
   @override
   bool shouldRepaint(covariant CustomPainter oldDelegate) {
     if (oldDelegate is PolylinePainter) {
-      return color != oldDelegate.color || 
-             preserveAspectRatio != oldDelegate.preserveAspectRatio ||
-             strokeWidth != oldDelegate.strokeWidth ||
-             positions != oldDelegate.positions;
+      return color != oldDelegate.color ||
+          preserveAspectRatio != oldDelegate.preserveAspectRatio ||
+          strokeWidth != oldDelegate.strokeWidth ||
+          positions != oldDelegate.positions;
     }
     return true;
   }
