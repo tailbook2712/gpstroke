@@ -23,7 +23,7 @@ class ArtworkDetailScreen extends StatefulWidget {
 class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
     with TickerProviderStateMixin {
   List<TransformablePolyline> _trajectories = [];
-  List<int> _recordedOrder = []; // 記録順序を保持するリスト
+  List<int> _recordedOrder = [];
   late DatabaseHelper _dbHelper;
 
   String _artworkName = "作品の詳細";
@@ -50,7 +50,7 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
   LatLng _mapCenter = LatLng(35.0, 135.0);
   Map<String, dynamic>? _currentTrajectoryDetails;
 
-  // スライドショーの設定（改良版）
+  // スライドショーの設定
   final Duration _highlightDuration = Duration(milliseconds: 1200);
   final Duration _mapTransitionDuration = Duration(milliseconds: 800);
   final Duration _mapAlignmentDuration = Duration(milliseconds: 1000);
@@ -339,7 +339,7 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
     });
   }
 
-  // 地図データの準備（保存メタデータ活用版）
+  // Web Mercator対応の地図データ準備
   Future<void> _prepareMapData(int actualTrajectoryIndex) async {
     TransformablePolyline trajectory = _trajectories[actualTrajectoryIndex];
     String groupId = generateGroupId(trajectory.polyline);
@@ -355,8 +355,7 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
         return;
       }
 
-      // 実際の軌跡記録日時を位置情報から取得（walking_detail_screenと同じ方法）
-      String actualRecordDate = record['date']; // フォールバック
+      String actualRecordDate = record['date'];
       if (positions.isNotEmpty && positions.first.containsKey('timestamp')) {
         actualRecordDate = positions.first['timestamp'];
       }
@@ -365,55 +364,11 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
         return LatLng(pos['latitude'], pos['longitude']);
       }).toList();
 
-      // 地理的境界を計算（保存メタデータがある場合はそれを優先）
-      double minLat, maxLat, minLng, maxLng;
-
-      // 保存されたキャンバス状態から軌跡メタデータを検索
-      String canvasJsonString = await widget.canvasFile.readAsString();
-      Map<String, dynamic> canvasData = jsonDecode(canvasJsonString);
-      List<dynamic> savedTrajectories = canvasData['trajectories'] ?? [];
-
-      Map<String, dynamic>? savedTrajectoryMeta;
-      for (var savedTraj in savedTrajectories) {
-        if (savedTraj['details'] != null &&
-            savedTraj['details']['groupId'] == groupId) {
-          savedTrajectoryMeta = savedTraj;
-          break;
-        }
-      }
-
-      if (savedTrajectoryMeta != null &&
-          savedTrajectoryMeta['geoBounds'] != null) {
-        // 保存されたメタデータから地理的境界を取得
-        minLat = savedTrajectoryMeta['geoBounds']['minLat'];
-        maxLat = savedTrajectoryMeta['geoBounds']['maxLat'];
-        minLng = savedTrajectoryMeta['geoBounds']['minLng'];
-        maxLng = savedTrajectoryMeta['geoBounds']['maxLng'];
-
-        if (_debugMode) {
-          print(
-              '保存メタデータから地理的境界を取得: lat($minLat, $maxLat), lng($minLng, $maxLng)');
-        }
-      } else {
-        // フォールバック：現在の位置データから計算
-        minLat = polylinePoints
-            .map((p) => p.latitude)
-            .reduce((a, b) => a < b ? a : b);
-        maxLat = polylinePoints
-            .map((p) => p.latitude)
-            .reduce((a, b) => a > b ? a : b);
-        minLng = polylinePoints
-            .map((p) => p.longitude)
-            .reduce((a, b) => a < b ? a : b);
-        maxLng = polylinePoints
-            .map((p) => p.longitude)
-            .reduce((a, b) => a > b ? a : b);
-
-        if (_debugMode) {
-          print(
-              '現在の位置データから地理的境界を計算: lat($minLat, $maxLat), lng($minLng, $maxLng)');
-        }
-      }
+      // 地理的境界を計算
+      double minLat = polylinePoints.map((p) => p.latitude).reduce(math.min);
+      double maxLat = polylinePoints.map((p) => p.latitude).reduce(math.max);
+      double minLng = polylinePoints.map((p) => p.longitude).reduce(math.min);
+      double maxLng = polylinePoints.map((p) => p.longitude).reduce(math.max);
 
       double centerLat = (minLat + maxLat) / 2;
       double centerLng = (minLng + maxLng) / 2;
@@ -433,39 +388,13 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
         )
       };
 
-      // 座標変換パラメータを計算
-      double latRange = maxLat - minLat;
-      double lonRange = maxLng - minLng;
-      double latCosCorrection = math.cos(centerLat * math.pi / 180.0);
-
-      if (_debugMode) {
-        print('=== 軌跡詳細情報 ===');
-        print('GroupID: $groupId');
-        print('データベースから取得した記録日時: ${record['date']}');
-        print('データベースから取得した歩数: ${record['steps']}');
-        print('データベースから取得した距離: ${record['distance']}');
-        if (savedTrajectoryMeta != null) {
-          print('保存メタデータから取得した詳細: ${savedTrajectoryMeta['details']}');
-        }
-      }
-
       setState(() {
         _mapCenter = center;
         _mapPolylines = polylines;
 
-        // 日時の優先順位：保存メタデータを優先（実際の軌跡記録日時を使用）
-        String displayDate = actualRecordDate; // 位置情報から取得した実際の記録日時を使用
-        if (savedTrajectoryMeta != null &&
-            savedTrajectoryMeta['details'] != null &&
-            savedTrajectoryMeta['details']['date'] != null &&
-            savedTrajectoryMeta['details']['date'].toString().isNotEmpty) {
-          // 保存メタデータの日時が実際の軌跡記録日時
-          displayDate = savedTrajectoryMeta['details']['date'];
-        }
-
         _currentTrajectoryDetails = {
           'groupId': groupId,
-          'date': actualRecordDate, // 位置情報から取得した実際の記録日時を使用
+          'date': actualRecordDate,
           'steps': record['steps'],
           'distance': record['distance'],
           'polylinePoints': polylinePoints,
@@ -476,10 +405,6 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
           'maxLat': maxLat,
           'minLng': minLng,
           'maxLng': maxLng,
-          'latRange': latRange,
-          'lonRange': lonRange,
-          'latCosCorrection': latCosCorrection,
-          'savedTrajectoryMeta': savedTrajectoryMeta, // 保存メタデータも追加
         };
 
         if (_debugMode) {
@@ -489,22 +414,18 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
           print('使用中の記録日時: $actualRecordDate');
           print('歩数: ${record['steps']}, 距離: ${record['distance']}');
           print('地理的境界: lat($minLat, $maxLat), lng($minLng, $maxLng)');
-          if (savedTrajectoryMeta != null) {
-            print(
-                '保存メタデータ: 位置(${savedTrajectoryMeta['position']['absoluteX']}, ${savedTrajectoryMeta['position']['absoluteY']}), スケール=${savedTrajectoryMeta['scale']}, 回転=${savedTrajectoryMeta['rotation']}');
-          }
         }
       });
 
-      // 地図位置の精密計算
-      _calculatePreciseMapAlignment(trajectory, actualTrajectoryIndex);
+      // Web Mercator対応の地図整列計算
+      _calculateWebMercatorMapAlignment(trajectory, actualTrajectoryIndex);
     } catch (e) {
       print("マップデータの準備中にエラー: $e");
     }
   }
 
-  // 精密な地図整列計算（修正版 - 軌跡描画位置と完全同期）
-  void _calculatePreciseMapAlignment(
+  // 完全Web Mercator地図整列計算（絶対座標系統一版）
+  void _calculateWebMercatorMapAlignment(
       TransformablePolyline trajectory, int trajectoryIndex) {
     if (_currentTrajectoryDetails == null) return;
 
@@ -515,160 +436,181 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
         AppBar().preferredSize.height;
     double currentBodyWidth = mediaQuery.size.width;
 
-    // === 1. 軌跡の実際の描画位置を正確に取得 ===
-    Map<String, dynamic>? savedMeta = _currentTrajectoryDetails!['savedTrajectoryMeta'];
-    
-    // 軌跡の実際の中心位置（Transform.rotate及びTransform.scaleの中心）
-    double trajectoryContainerCenterX = trajectory.position.dx + trajectorySize / 2;
-    double trajectoryContainerCenterY = trajectory.position.dy + trajectorySize / 2;
+    // === 1. 基本情報の取得 ===
+    double minLat = _currentTrajectoryDetails!['minLat'];
+    double maxLat = _currentTrajectoryDetails!['maxLat'];
+    double minLng = _currentTrajectoryDetails!['minLng'];
+    double maxLng = _currentTrajectoryDetails!['maxLng'];
 
-    // === 2. PolylinePainterの描画パラメータを取得 ===
+    // === 2. 始点基準の整列方式（高精度版） ===
+    // 軌跡の始点を基準点として使用
+    if (trajectory.polyline.isEmpty) return;
+    Position startPoint = trajectory.polyline.first;
+    double startPointLat = startPoint.latitude;
+    double startPointLng = startPoint.longitude;
+
+    // === 3. 描画パラメータの取得 ===
     final painter = PolylinePainter(
       positions: trajectory.polyline,
-      minLat: _currentTrajectoryDetails!['minLat'],
-      maxLat: _currentTrajectoryDetails!['maxLat'],
-      minLon: _currentTrajectoryDetails!['minLng'],
-      maxLon: _currentTrajectoryDetails!['maxLng'],
+      minLat: minLat,
+      maxLat: maxLat,
+      minLon: minLng,
+      maxLon: maxLng,
       color: Colors.blue,
       preserveAspectRatio: true,
       strokeWidth: 4.0,
     );
 
-    final drawingParams = painter.getDrawingParameters(Size(trajectorySize, trajectorySize));
-    
-    double scaleX = drawingParams['scaleX'];
-    double scaleY = drawingParams['scaleY'];
-    double drawingOffsetX = drawingParams['drawingOffsetX'];
-    double drawingOffsetY = drawingParams['drawingOffsetY'];
-    double centerLat = drawingParams['centerLat'];
-    double centerLon = drawingParams['centerLon'];
-    double latRange = drawingParams['latRange'];
-    double lonRange = drawingParams['lonRange'];
+    final drawingParams =
+        painter.getDrawingParameters(Size(trajectorySize, trajectorySize));
 
-    // === 3. スケール適用後の実際の描画サイズと位置を計算 ===
-    double actualScale = trajectory.scale;
-    double scaledDrawingWidth = scaleX * actualScale;
-    double scaledDrawingHeight = scaleY * actualScale;
-    
-    // スケール適用後の描画オフセット（正確な計算）
-    double scaledDrawingOffsetX = drawingOffsetX + (scaleX - scaledDrawingWidth) / 2;
-    double scaledDrawingOffsetY = drawingOffsetY + (scaleY - scaledDrawingHeight) / 2;
-    
-    // 軌跡コンテナ内での実際の描画中心位置（正確な計算）
-    double drawingCenterInContainerX = scaledDrawingOffsetX + scaledDrawingWidth / 2;
-    double drawingCenterInContainerY = scaledDrawingOffsetY + scaledDrawingHeight / 2;
+    // === 4. 統一座標変換関数の定義 ===
+    Offset transformPointToOverlayScreen(double lat, double lng) {
+      // A) 地理座標 → Web Mercator
+      double mercatorX = PolylinePainter.longitudeToWebMercatorX(lng);
+      double mercatorY = PolylinePainter.latitudeToWebMercatorY(lat);
 
-    // === 4. 回転を考慮した実際の描画中心位置を計算 ===
-    double actualRotation = trajectory.rotation;
-    double finalDrawingCenterX, finalDrawingCenterY;
+      // B) Web Mercator → 正規化座標
+      double minMercatorX = drawingParams['minMercatorX'];
+      double maxMercatorX = drawingParams['maxMercatorX'];
+      double minMercatorY = drawingParams['minMercatorY'];
+      double maxMercatorY = drawingParams['maxMercatorY'];
+      double mercatorXRange = maxMercatorX - minMercatorX;
+      double mercatorYRange = maxMercatorY - minMercatorY;
 
-    if (actualRotation != 0.0) {
-      // 回転中心（軌跡コンテナの中心）からの相対位置
-      double relativeX = drawingCenterInContainerX - trajectorySize / 2;
-      double relativeY = drawingCenterInContainerY - trajectorySize / 2;
-      
-      // 回転変換
-      double cosAngle = math.cos(actualRotation);
-      double sinAngle = math.sin(actualRotation);
-      
-      double rotatedRelativeX = relativeX * cosAngle - relativeY * sinAngle;
-      double rotatedRelativeY = relativeX * sinAngle + relativeY * cosAngle;
-      
-      // 絶対位置に変換
-      finalDrawingCenterX = trajectoryContainerCenterX + rotatedRelativeX;
-      finalDrawingCenterY = trajectoryContainerCenterY + rotatedRelativeY;
-    } else {
-      // 回転なしの場合
-      finalDrawingCenterX = trajectoryContainerCenterX + (drawingCenterInContainerX - trajectorySize / 2);
-      finalDrawingCenterY = trajectoryContainerCenterY + (drawingCenterInContainerY - trajectorySize / 2);
+      double normalizedX = (mercatorX - minMercatorX) / mercatorXRange;
+      double normalizedY = (mercatorY - minMercatorY) / mercatorYRange;
+
+      // C) 正規化座標 → 基本ピクセル座標（コンテナ内）
+      double scaleX = drawingParams['scaleX'];
+      double scaleY = drawingParams['scaleY'];
+      double drawingOffsetX = drawingParams['drawingOffsetX'];
+      double drawingOffsetY = drawingParams['drawingOffsetY'];
+
+      double basePixelX = normalizedX * scaleX + drawingOffsetX;
+      double basePixelY =
+          trajectorySize - (normalizedY * scaleY + drawingOffsetY);
+
+      // D) スケール適用（コンテナ中心基準）
+      double containerCenterX = trajectorySize / 2;
+      double containerCenterY = trajectorySize / 2;
+      double relativeX = basePixelX - containerCenterX;
+      double relativeY = basePixelY - containerCenterY;
+      double scaledRelativeX = relativeX * trajectory.scale;
+      double scaledRelativeY = relativeY * trajectory.scale;
+
+      // E) 回転適用（コンテナ中心基準）
+      double rotatedRelativeX, rotatedRelativeY;
+      if (trajectory.rotation != 0.0) {
+        double cosAngle = math.cos(trajectory.rotation);
+        double sinAngle = math.sin(trajectory.rotation);
+        rotatedRelativeX =
+            scaledRelativeX * cosAngle - scaledRelativeY * sinAngle;
+        rotatedRelativeY =
+            scaledRelativeX * sinAngle + scaledRelativeY * cosAngle;
+      } else {
+        rotatedRelativeX = scaledRelativeX;
+        rotatedRelativeY = scaledRelativeY;
+      }
+
+      // F) 最終画面座標
+      double screenX =
+          trajectory.position.dx + containerCenterX + rotatedRelativeX;
+      double screenY =
+          trajectory.position.dy + containerCenterY + rotatedRelativeY;
+
+      return Offset(screenX, screenY);
     }
 
-    // === 5. 画面中心からのオフセットを計算 ===
+    // === 5. オーバーレイの始点位置を正確に計算 ===
+    Offset overlayStartPointScreen =
+        transformPointToOverlayScreen(startPointLat, startPointLng);
+
+    // === 6. 地図の適切な設定計算 ===
+    // A) ズームレベルの計算（地理的範囲から）
+    double latRange = maxLat - minLat;
+    double lngRange = maxLng - minLng;
+
+    // 軌跡の実際の描画サイズ（変形適用後）
+    double actualDrawingWidth = drawingParams['scaleX'] * trajectory.scale;
+    double actualDrawingHeight = drawingParams['scaleY'] * trajectory.scale;
+
+    // より安定したズーム計算
+    double pixelsPerDegreeLat = actualDrawingHeight / latRange;
+    double pixelsPerDegreeLng = actualDrawingWidth / lngRange;
+    double pixelsPerDegree = math.min(pixelsPerDegreeLat, pixelsPerDegreeLng);
+
+    // 経験的なズームレベル計算（Google Maps基準）
+    double zoom = math.log(pixelsPerDegree * 360 / 256) / math.log(2);
+    zoom = zoom.clamp(10.0, 19.0);
+
+    // B) 地図中心の計算（始点を画面中心に直接配置）
+    // オーバーレイの始点が画面中心に来るように地図中心を設定
     double screenCenterX = currentBodyWidth / 2;
     double screenCenterY = currentBodyHeight / 2;
-    
-    double pixelOffsetX = finalDrawingCenterX - screenCenterX;
-    double pixelOffsetY = finalDrawingCenterY - screenCenterY;
 
-    // === 6. 地理的座標への変換 ===
-    // 補正された経度範囲を使用
-    double correctedLonRange = lonRange * math.cos(centerLat * math.pi / 180.0);
-    
-    // ズームレベルの計算
-    double avgDisplaySize = (scaledDrawingWidth + scaledDrawingHeight) / 2;
-    double avgGeoRange = (latRange + correctedLonRange) / 2;
-    double degreesPerPixel = avgGeoRange / avgDisplaySize;
-    double zoom = math.log(360 / (degreesPerPixel * 256)) / math.log(2);
-    zoom = zoom.clamp(12.0, 18.0);
+    // 始点を画面中心に配置するため、地図中心は始点そのものに設定
+    double mapCenterLat = startPointLat;
+    double mapCenterLng = startPointLng;
 
-    // より正確な度数変換
-    double metersPerPixel = 156543.03392 * math.cos(centerLat * math.pi / 180) / math.pow(2, zoom);
-    double degreesPerMeter = 1 / (111320 * math.cos(centerLat * math.pi / 180));
-    double pixelToDegreesX = metersPerPixel * degreesPerMeter;
-    double pixelToDegreesY = 1 / (111320 / metersPerPixel);
-
-    // 地理的オフセット
-    double lngOffset = pixelOffsetX * pixelToDegreesX;
-    double latOffset = -pixelOffsetY * pixelToDegreesY; // Y軸は反転
-
-    // === 7. 回転角度の設定 ===
+    // C) 回転角度の設定
     double bearing = 0.0;
-    if (actualRotation != 0.0) {
-      bearing = -(actualRotation * 180 / math.pi);
+    if (trajectory.rotation != 0.0) {
+      bearing = -(trajectory.rotation * 180 / math.pi); // ラジアン→度、方向反転
       bearing = bearing % 360;
       if (bearing < 0) bearing += 360;
     }
 
-    // === 8. 最終的な地図中心座標 ===
-    LatLng adjustedCenter = LatLng(
-      centerLat + latOffset,
-      centerLon + lngOffset,
-    );
-
-    // 整列用カメラ位置を保存
+    // === 7. 最終的な地図カメラ位置 ===
     _alignedCameraPosition = CameraPosition(
-      target: adjustedCenter,
+      target: LatLng(mapCenterLat, mapCenterLng),
       zoom: zoom,
       bearing: bearing,
       tilt: 0,
     );
 
     if (_debugMode) {
-      print('=== 修正版軌跡描画同期地図整列計算 ===');
-      print('軌跡位置: (${trajectory.position.dx}, ${trajectory.position.dy})');
-      print('軌跡コンテナ中心: (${trajectoryContainerCenterX}, ${trajectoryContainerCenterY})');
-      print('軌跡スケール: ${actualScale}, 回転: ${actualRotation} rad');
-      print('--- 描画パラメータ ---');
-      print('基本描画サイズ: ${scaleX} x ${scaleY}');
-      print('基本描画オフセット: (${drawingOffsetX}, ${drawingOffsetY})');
-      print('スケール後描画サイズ: ${scaledDrawingWidth} x ${scaledDrawingHeight}');
-      print('スケール後描画オフセット: (${scaledDrawingOffsetX}, ${scaledDrawingOffsetY})');
-      print('コンテナ内描画中心: (${drawingCenterInContainerX}, ${drawingCenterInContainerY})');
-      print('最終描画中心: (${finalDrawingCenterX}, ${finalDrawingCenterY})');
-      print('--- 地図計算 ---');
+      print('=== 始点基準による精密地図整列計算 ===');
+      print('軌跡インデックス: $trajectoryIndex');
+      print('軌跡コンテナ位置: (${trajectory.position.dx}, ${trajectory.position.dy})');
+      print(
+          '軌跡変形: スケール=${trajectory.scale}, 回転=${trajectory.rotation} rad (${trajectory.rotation * 180 / math.pi}°)');
+      print('--- 始点基準 ---');
+      print(
+          '軌跡始点（地理座標）: (${startPointLat.toStringAsFixed(8)}, ${startPointLng.toStringAsFixed(8)})');
+      print(
+          'オーバーレイ始点画面座標: (${overlayStartPointScreen.dx.toStringAsFixed(1)}, ${overlayStartPointScreen.dy.toStringAsFixed(1)})');
+      print('--- オーバーレイ描画 ---');
+      print('基本描画サイズ: ${drawingParams['scaleX']} x ${drawingParams['scaleY']}');
+      print('実際の描画サイズ: ${actualDrawingWidth} x ${actualDrawingHeight}');
+      print('--- 地図設定 ---');
+      print(
+          '地理的範囲: 緯度=${latRange.toStringAsFixed(6)}°, 経度=${lngRange.toStringAsFixed(6)}°');
+      print('ピクセル密度: ${pixelsPerDegree.toStringAsFixed(2)} px/degree');
+      print('ズームレベル: ${zoom.toStringAsFixed(2)}');
       print('画面中心: (${screenCenterX}, ${screenCenterY})');
-      print('画面中心からのオフセット: (${pixelOffsetX}, ${pixelOffsetY})');
-      print('地理的オフセット: lat=${latOffset}, lng=${lngOffset}');
-      print('調整後地図中心: ${adjustedCenter.latitude}, ${adjustedCenter.longitude}');
-      print('ズーム: ${zoom}, 回転: ${bearing}°');
+      print('始点を画面中心に直接配置: 地図中心 = 始点座標');
+      print(
+          '最終地図中心: (${mapCenterLat.toStringAsFixed(8)}, ${mapCenterLng.toStringAsFixed(8)})');
+      print('地図回転: ${bearing.toStringAsFixed(1)}°');
     }
   }
 
-  // 改良版地図表示アニメーション（より滑らか）
+  // 地図表示アニメーション
   Future<void> _showMapAnimation() async {
     setState(() {
       _isShowingMap = true;
       _isMapAligned = false;
     });
 
-    // 地図の初期化待機（短縮）
+    // 地図の初期化待機
     await Future.delayed(Duration(milliseconds: 300));
 
-    // フェードイン（より滑らか）
+    // フェードイン
     _mapTransitionController.reset();
     await _mapTransitionController.forward();
 
-    // 地図を精密に整列（待機時間追加）
+    // 地図を精密に整列
     await Future.delayed(Duration(milliseconds: 200));
     await _alignMapPrecisely();
 
@@ -703,9 +645,20 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
 
     // 整列完了の待機時間
     await Future.delayed(Duration(milliseconds: 200));
+
+    // 座標比較・検証を実行
+    if (_currentTrajectoryDetails != null) {
+      int trajectoryIndex =
+          _currentTrajectoryDetails!['actualTrajectoryIndex'] ?? 0;
+      await _validateTrajectoryAlignment(trajectoryIndex);
+      await _autoCorrectOverlayPosition(trajectoryIndex);
+
+      // 実験的機能：オーバーレイ位置の自動調整
+      await _experimentalMapAlignment(trajectoryIndex);
+    }
   }
 
-  // 次の軌跡を表示（改良版）
+  // 次の軌跡を表示
   void _showNextTrajectory() async {
     if (!_isSlideshowPlaying) return;
 
@@ -735,7 +688,7 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
     // 地図データを準備
     await _prepareMapData(actualTrajectoryIndex);
 
-    // 改良版地図アニメーションを表示
+    // 地図アニメーションを表示
     await _showMapAnimation();
 
     // 軌跡の色を元に戻す
@@ -840,7 +793,7 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
         color: Colors.grey[200],
         child: Stack(
           children: [
-            // 背景地図表示（完全整列版）
+            // 背景地図表示（Web Mercator対応版）
             if (_isShowingMap && _currentTrajectoryDetails != null)
               Positioned.fill(
                 child: AnimatedBuilder(
@@ -893,19 +846,19 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
                 ),
               ),
 
-            // 軌跡の表示（改良版 - より正確な位置制御）
+            // 軌跡の表示（Web Mercator対応版）
             ..._trajectories.asMap().entries.map((entry) {
               int index = entry.key;
               TransformablePolyline item = entry.value;
 
-              // ハイライト効果（強化版）
+              // ハイライト効果
               bool isCurrentlyHighlighted = _isSlideshowPlaying &&
                   _currentTrajectoryIndex >= 0 &&
                   _recordedOrder.isNotEmpty &&
                   _currentTrajectoryIndex < _recordedOrder.length &&
                   _recordedOrder[_currentTrajectoryIndex] == index;
 
-              // シンプルなハイライト効果（グロー効果なし）
+              // シンプルなハイライト効果
               double pulseScale = 1.0;
 
               if (isCurrentlyHighlighted) {
@@ -949,7 +902,7 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
               );
             }).toList(),
 
-            // 軌跡情報表示（元のサイズに戻す）
+            // 軌跡情報表示
             if (_isShowingMap && _currentTrajectoryDetails != null)
               Positioned(
                 bottom: 80,
@@ -1033,7 +986,7 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
                 ),
               ),
 
-            // スライドショーインジケーター（元のデザインに戻す）
+            // スライドショーインジケーター
             if (_isSlideshowPlaying)
               Positioned(
                 bottom: 20,
@@ -1098,7 +1051,7 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
     );
   }
 
-  // 統計情報アイテムを構築するヘルパーメソッド（元のサイズに戻す）
+  // 統計情報アイテムを構築するヘルパーメソッド
   Widget _buildStatItem(IconData icon, String text, Color color) {
     return Row(
       mainAxisSize: MainAxisSize.min,
@@ -1122,5 +1075,719 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
         ),
       ],
     );
+  }
+
+  // 地図上の軌跡座標とオーバーレイ座標を比較・検証する機能
+  Future<void> _validateTrajectoryAlignment(int trajectoryIndex) async {
+    if (_mapController == null || _currentTrajectoryDetails == null) return;
+
+    TransformablePolyline trajectory = _trajectories[trajectoryIndex];
+
+    if (_debugMode) {
+      print('=== 始点基準による地図オーバーレイ座標比較 ===');
+      print('軌跡インデックス: $trajectoryIndex');
+    }
+
+    // === 統一座標変換関数の定義 ===
+    final painter = PolylinePainter(
+      positions: trajectory.polyline,
+      minLat: trajectory.minLat,
+      maxLat: trajectory.maxLat,
+      minLon: trajectory.minLon,
+      maxLon: trajectory.maxLon,
+      color: Colors.blue,
+      preserveAspectRatio: true,
+      strokeWidth: 4.0,
+    );
+
+    final drawingParams =
+        painter.getDrawingParameters(Size(trajectorySize, trajectorySize));
+
+    Offset transformPointToOverlayScreen(double lat, double lng) {
+      // A) 地理座標 → Web Mercator
+      double mercatorX = PolylinePainter.longitudeToWebMercatorX(lng);
+      double mercatorY = PolylinePainter.latitudeToWebMercatorY(lat);
+
+      // B) Web Mercator → 正規化座標
+      double minMercatorX = drawingParams['minMercatorX'];
+      double maxMercatorX = drawingParams['maxMercatorX'];
+      double minMercatorY = drawingParams['minMercatorY'];
+      double maxMercatorY = drawingParams['maxMercatorY'];
+      double mercatorXRange = maxMercatorX - minMercatorX;
+      double mercatorYRange = maxMercatorY - minMercatorY;
+
+      double normalizedX = (mercatorX - minMercatorX) / mercatorXRange;
+      double normalizedY = (mercatorY - minMercatorY) / mercatorYRange;
+
+      // C) 正規化座標 → 基本ピクセル座標（コンテナ内）
+      double scaleX = drawingParams['scaleX'];
+      double scaleY = drawingParams['scaleY'];
+      double drawingOffsetX = drawingParams['drawingOffsetX'];
+      double drawingOffsetY = drawingParams['drawingOffsetY'];
+
+      double basePixelX = normalizedX * scaleX + drawingOffsetX;
+      double basePixelY =
+          trajectorySize - (normalizedY * scaleY + drawingOffsetY);
+
+      // D) スケール適用（コンテナ中心基準）
+      double containerCenterX = trajectorySize / 2;
+      double containerCenterY = trajectorySize / 2;
+      double relativeX = basePixelX - containerCenterX;
+      double relativeY = basePixelY - containerCenterY;
+      double scaledRelativeX = relativeX * trajectory.scale;
+      double scaledRelativeY = relativeY * trajectory.scale;
+
+      // E) 回転適用（コンテナ中心基準）
+      double rotatedRelativeX, rotatedRelativeY;
+      if (trajectory.rotation != 0.0) {
+        double cosAngle = math.cos(trajectory.rotation);
+        double sinAngle = math.sin(trajectory.rotation);
+        rotatedRelativeX =
+            scaledRelativeX * cosAngle - scaledRelativeY * sinAngle;
+        rotatedRelativeY =
+            scaledRelativeX * sinAngle + scaledRelativeY * cosAngle;
+      } else {
+        rotatedRelativeX = scaledRelativeX;
+        rotatedRelativeY = scaledRelativeY;
+      }
+
+      // F) 最終画面座標
+      double screenX =
+          trajectory.position.dx + containerCenterX + rotatedRelativeX;
+      double screenY =
+          trajectory.position.dy + containerCenterY + rotatedRelativeY;
+
+      return Offset(screenX, screenY);
+    }
+
+    // === 検証する代表点の選択 ===
+    List<Position> samplePoints = [];
+    List<String> pointLabels = [];
+
+    // データ重心を追加
+    if (trajectory.polyline.isNotEmpty) {
+      double totalLat = 0, totalLng = 0;
+      for (Position pos in trajectory.polyline) {
+        totalLat += pos.latitude;
+        totalLng += pos.longitude;
+      }
+      double centroidLat = totalLat / trajectory.polyline.length;
+      double centroidLng = totalLng / trajectory.polyline.length;
+
+      samplePoints.add(Position(
+        latitude: centroidLat,
+        longitude: centroidLng,
+        timestamp: DateTime.now(),
+        accuracy: 0,
+        altitude: 0,
+        altitudeAccuracy: 0,
+        heading: 0,
+        headingAccuracy: 0,
+        speed: 0,
+        speedAccuracy: 0,
+      ));
+      pointLabels.add('重心');
+    }
+
+    // 軌跡の開始点、中間点、終了点も追加
+    if (trajectory.polyline.isNotEmpty) {
+      samplePoints.add(trajectory.polyline.first);
+      pointLabels.add('開始点');
+
+      if (trajectory.polyline.length > 2) {
+        samplePoints.add(trajectory.polyline[trajectory.polyline.length ~/ 2]);
+        pointLabels.add('中間点');
+      }
+
+      samplePoints.add(trajectory.polyline.last);
+      pointLabels.add('終了点');
+    }
+
+    // === 座標比較の実行 ===
+    List<double> mapScreenX = [];
+    List<double> mapScreenY = [];
+    List<Offset> overlayScreenCoords = [];
+
+    for (int i = 0; i < samplePoints.length; i++) {
+      Position point = samplePoints[i];
+      LatLng latLng = LatLng(point.latitude, point.longitude);
+
+      // 地図上の画面座標を取得
+      try {
+        ScreenCoordinate screenCoord =
+            await _mapController!.getScreenCoordinate(latLng);
+        mapScreenX.add(screenCoord.x.toDouble());
+        mapScreenY.add(screenCoord.y.toDouble());
+
+        if (_debugMode) {
+          print(
+              '${pointLabels[i]} - 地理座標: (${point.latitude.toStringAsFixed(8)}, ${point.longitude.toStringAsFixed(8)})');
+          print(
+              '${pointLabels[i]} - 地図スクリーン座標: (${screenCoord.x}, ${screenCoord.y})');
+        }
+      } catch (e) {
+        if (_debugMode) {
+          print('${pointLabels[i]} - 座標変換エラー: $e');
+        }
+        mapScreenX.add(0);
+        mapScreenY.add(0);
+      }
+
+      // 統一座標変換関数でオーバーレイ座標を計算
+      Offset overlayCoord =
+          transformPointToOverlayScreen(point.latitude, point.longitude);
+      overlayScreenCoords.add(overlayCoord);
+
+      if (_debugMode) {
+        print(
+            '${pointLabels[i]} - オーバーレイ座標: (${overlayCoord.dx.toStringAsFixed(1)}, ${overlayCoord.dy.toStringAsFixed(1)})');
+      }
+    }
+
+    // === 座標差の計算と表示 ===
+    if (_debugMode && mapScreenX.isNotEmpty) {
+      print('--- 座標差分析 ---');
+      double totalError = 0;
+      int validComparisons = 0;
+
+      for (int i = 0; i < samplePoints.length && i < mapScreenX.length; i++) {
+        if (mapScreenX[i] != 0 || mapScreenY[i] != 0) {
+          double deltaX = mapScreenX[i] - overlayScreenCoords[i].dx;
+          double deltaY = mapScreenY[i] - overlayScreenCoords[i].dy;
+          double distance = math.sqrt(deltaX * deltaX + deltaY * deltaY);
+
+          print(
+              '${pointLabels[i]} - 座標差: (${deltaX.toStringAsFixed(1)}, ${deltaY.toStringAsFixed(1)}) 距離: ${distance.toStringAsFixed(1)}px');
+
+          totalError += distance;
+          validComparisons++;
+        }
+      }
+
+      if (validComparisons > 0) {
+        double averageError = totalError / validComparisons;
+        print('平均座標誤差: ${averageError.toStringAsFixed(1)}px');
+
+        if (averageError > 50) {
+          print('状態: 大きな位置ずれが検出されました');
+        } else if (averageError > 20) {
+          print('状態: 軽微な位置ずれがあります');
+        } else if (averageError > 5) {
+          print('状態: 微小な位置ずれがあります');
+        } else {
+          print('状態: 良好な位置精度です');
+        }
+      }
+    }
+  }
+
+  // 統一座標系による自動補正計算
+  Future<void> _autoCorrectOverlayPosition(int trajectoryIndex) async {
+    if (_mapController == null || _currentTrajectoryDetails == null) return;
+
+    TransformablePolyline trajectory = _trajectories[trajectoryIndex];
+
+    // === 統一座標変換関数の定義 ===
+    final painter = PolylinePainter(
+      positions: trajectory.polyline,
+      minLat: trajectory.minLat,
+      maxLat: trajectory.maxLat,
+      minLon: trajectory.minLon,
+      maxLon: trajectory.maxLon,
+      color: Colors.blue,
+      preserveAspectRatio: true,
+      strokeWidth: 4.0,
+    );
+
+    final drawingParams =
+        painter.getDrawingParameters(Size(trajectorySize, trajectorySize));
+
+    Offset transformPointToOverlayScreen(double lat, double lng) {
+      // A) 地理座標 → Web Mercator
+      double mercatorX = PolylinePainter.longitudeToWebMercatorX(lng);
+      double mercatorY = PolylinePainter.latitudeToWebMercatorY(lat);
+
+      // B) Web Mercator → 正規化座標
+      double minMercatorX = drawingParams['minMercatorX'];
+      double maxMercatorX = drawingParams['maxMercatorX'];
+      double minMercatorY = drawingParams['minMercatorY'];
+      double maxMercatorY = drawingParams['maxMercatorY'];
+      double mercatorXRange = maxMercatorX - minMercatorX;
+      double mercatorYRange = maxMercatorY - minMercatorY;
+
+      double normalizedX = (mercatorX - minMercatorX) / mercatorXRange;
+      double normalizedY = (mercatorY - minMercatorY) / mercatorYRange;
+
+      // C) 正規化座標 → 基本ピクセル座標（コンテナ内）
+      double scaleX = drawingParams['scaleX'];
+      double scaleY = drawingParams['scaleY'];
+      double drawingOffsetX = drawingParams['drawingOffsetX'];
+      double drawingOffsetY = drawingParams['drawingOffsetY'];
+
+      double basePixelX = normalizedX * scaleX + drawingOffsetX;
+      double basePixelY =
+          trajectorySize - (normalizedY * scaleY + drawingOffsetY);
+
+      // D) スケール適用（コンテナ中心基準）
+      double containerCenterX = trajectorySize / 2;
+      double containerCenterY = trajectorySize / 2;
+      double relativeX = basePixelX - containerCenterX;
+      double relativeY = basePixelY - containerCenterY;
+      double scaledRelativeX = relativeX * trajectory.scale;
+      double scaledRelativeY = relativeY * trajectory.scale;
+
+      // E) 回転適用（コンテナ中心基準）
+      double rotatedRelativeX, rotatedRelativeY;
+      if (trajectory.rotation != 0.0) {
+        double cosAngle = math.cos(trajectory.rotation);
+        double sinAngle = math.sin(trajectory.rotation);
+        rotatedRelativeX =
+            scaledRelativeX * cosAngle - scaledRelativeY * sinAngle;
+        rotatedRelativeY =
+            scaledRelativeX * sinAngle + scaledRelativeY * cosAngle;
+      } else {
+        rotatedRelativeX = scaledRelativeX;
+        rotatedRelativeY = scaledRelativeY;
+      }
+
+      // F) 最終画面座標
+      double screenX =
+          trajectory.position.dx + containerCenterX + rotatedRelativeX;
+      double screenY =
+          trajectory.position.dy + containerCenterY + rotatedRelativeY;
+
+      return Offset(screenX, screenY);
+    }
+
+    // === データ重心の正確な計算 ===
+    double totalLat = 0, totalLng = 0;
+    for (Position pos in trajectory.polyline) {
+      totalLat += pos.latitude;
+      totalLng += pos.longitude;
+    }
+    double exactCentroidLat = totalLat / trajectory.polyline.length;
+    double exactCentroidLng = totalLng / trajectory.polyline.length;
+
+    try {
+      // 地図上の重心位置を取得
+      LatLng centroidLatLng = LatLng(exactCentroidLat, exactCentroidLng);
+      ScreenCoordinate mapCentroidScreen =
+          await _mapController!.getScreenCoordinate(centroidLatLng);
+
+      // 統一座標変換でオーバーレイの重心位置を計算
+      Offset overlayCentroidScreen =
+          transformPointToOverlayScreen(exactCentroidLat, exactCentroidLng);
+
+      // === 座標ずれの計算 ===
+      double deltaX = mapCentroidScreen.x.toDouble() - overlayCentroidScreen.dx;
+      double deltaY = mapCentroidScreen.y.toDouble() - overlayCentroidScreen.dy;
+      double errorMagnitude = math.sqrt(deltaX * deltaX + deltaY * deltaY);
+
+      if (_debugMode) {
+        print('=== 始点基準による自動補正計算 ===');
+        print(
+            'データ重心（地理座標）: (${exactCentroidLat.toStringAsFixed(8)}, ${exactCentroidLng.toStringAsFixed(8)})');
+        print('地図重心スクリーン座標: (${mapCentroidScreen.x}, ${mapCentroidScreen.y})');
+        print(
+            'オーバーレイ重心座標: (${overlayCentroidScreen.dx.toStringAsFixed(1)}, ${overlayCentroidScreen.dy.toStringAsFixed(1)})');
+        print(
+            '座標ずれ: (${deltaX.toStringAsFixed(1)}, ${deltaY.toStringAsFixed(1)})');
+        print('ずれの大きさ: ${errorMagnitude.toStringAsFixed(1)} ピクセル');
+
+        // 精度評価
+        if (errorMagnitude > 50) {
+          print('評価: 大きな位置ずれが検出されました');
+        } else if (errorMagnitude > 20) {
+          print('評価: 軽微な位置ずれがあります');
+        } else if (errorMagnitude > 5) {
+          print('評価: 微小な位置ずれがあります');
+        } else {
+          print('評価: 優秀な位置精度です');
+        }
+
+        // 追加の診断情報
+        print('--- 診断情報 ---');
+        print(
+            '軌跡変形: スケール=${trajectory.scale.toStringAsFixed(3)}, 回転=${(trajectory.rotation * 180 / math.pi).toStringAsFixed(1)}°');
+        print(
+            '軌跡コンテナ位置: (${trajectory.position.dx.toStringAsFixed(1)}, ${trajectory.position.dy.toStringAsFixed(1)})');
+
+        // 座標変換の各段階での値も表示
+        double mercatorX =
+            PolylinePainter.longitudeToWebMercatorX(exactCentroidLng);
+        double mercatorY =
+            PolylinePainter.latitudeToWebMercatorY(exactCentroidLat);
+        print(
+            'Web Mercator座標: (${mercatorX.toStringAsFixed(6)}, ${mercatorY.toStringAsFixed(6)})');
+      }
+    } catch (e) {
+      if (_debugMode) {
+        print('統一座標系自動補正計算エラー: $e');
+      }
+    }
+  }
+
+  // 実験的機能：地図位置の自動調整（オーバーレイに合わせる）
+  Future<void> _experimentalMapAlignment(int trajectoryIndex) async {
+    if (_mapController == null || _currentTrajectoryDetails == null) return;
+
+    TransformablePolyline trajectory = _trajectories[trajectoryIndex];
+    if (trajectory.polyline.isEmpty) return;
+
+    int maxIterations = 7; // 最大7回まで調整を試行（精度向上）
+    double toleranceThreshold = 3.0; // 3px以下なら調整完了とみなす（精密化）
+
+    for (int iteration = 1; iteration <= maxIterations; iteration++) {
+      try {
+        if (_debugMode) {
+          print('=== 実験的地図位置調整 (${iteration}回目) ===');
+        }
+
+        // === 1. 現在のオーバーレイ始点座標を計算 ===
+        Position startPoint = trajectory.polyline.first;
+
+        final painter = PolylinePainter(
+          positions: trajectory.polyline,
+          minLat: trajectory.minLat,
+          maxLat: trajectory.maxLat,
+          minLon: trajectory.minLon,
+          maxLon: trajectory.maxLon,
+          color: Colors.blue,
+          preserveAspectRatio: true,
+          strokeWidth: 4.0,
+        );
+
+        final drawingParams =
+            painter.getDrawingParameters(Size(trajectorySize, trajectorySize));
+
+        // 統一座標変換でオーバーレイ始点位置を計算
+        double mercatorX =
+            PolylinePainter.longitudeToWebMercatorX(startPoint.longitude);
+        double mercatorY =
+            PolylinePainter.latitudeToWebMercatorY(startPoint.latitude);
+
+        double minMercatorX = drawingParams['minMercatorX'];
+        double maxMercatorX = drawingParams['maxMercatorX'];
+        double minMercatorY = drawingParams['minMercatorY'];
+        double maxMercatorY = drawingParams['maxMercatorY'];
+        double mercatorXRange = maxMercatorX - minMercatorX;
+        double mercatorYRange = maxMercatorY - minMercatorY;
+
+        double normalizedX = (mercatorX - minMercatorX) / mercatorXRange;
+        double normalizedY = (mercatorY - minMercatorY) / mercatorYRange;
+
+        double scaleX = drawingParams['scaleX'];
+        double scaleY = drawingParams['scaleY'];
+        double drawingOffsetX = drawingParams['drawingOffsetX'];
+        double drawingOffsetY = drawingParams['drawingOffsetY'];
+
+        double basePixelX = normalizedX * scaleX + drawingOffsetX;
+        double basePixelY =
+            trajectorySize - (normalizedY * scaleY + drawingOffsetY);
+
+        // スケールと回転を適用
+        double containerCenterX = trajectorySize / 2;
+        double containerCenterY = trajectorySize / 2;
+        double relativeX = basePixelX - containerCenterX;
+        double relativeY = basePixelY - containerCenterY;
+        double scaledRelativeX = relativeX * trajectory.scale;
+        double scaledRelativeY = relativeY * trajectory.scale;
+
+        double rotatedRelativeX, rotatedRelativeY;
+        if (trajectory.rotation != 0.0) {
+          double cosAngle = math.cos(trajectory.rotation);
+          double sinAngle = math.sin(trajectory.rotation);
+          rotatedRelativeX =
+              scaledRelativeX * cosAngle - scaledRelativeY * sinAngle;
+          rotatedRelativeY =
+              scaledRelativeX * sinAngle + scaledRelativeY * cosAngle;
+        } else {
+          rotatedRelativeX = scaledRelativeX;
+          rotatedRelativeY = scaledRelativeY;
+        }
+
+        // 現在のオーバーレイ始点座標（画面上の絶対位置）
+        double overlayStartRelativeX = containerCenterX + rotatedRelativeX;
+        double overlayStartRelativeY = containerCenterY + rotatedRelativeY;
+        double overlayStartAbsX =
+            trajectory.position.dx + overlayStartRelativeX;
+        double overlayStartAbsY =
+            trajectory.position.dy + overlayStartRelativeY;
+
+        // === 2. 座標系補正のための実験的オフセット ===
+        // デバッグログから、Y方向に約50-52ピクセルの一定誤差があることが判明
+        // これは地図ウィジェットの座標系とオーバーレイ座標系の違いによるもの
+        double experimentalYOffset = 52.0; // 実験的Y補正値
+
+        // オーバーレイ始点の絶対座標（画面全体基準）
+        double overlayAbsX = overlayStartAbsX;
+        double overlayAbsY = overlayStartAbsY + experimentalYOffset; // Y補正を適用
+
+        // 地図ウィジェット内での相対座標に変換
+        double overlayMapRelativeX = overlayAbsX;
+        double overlayMapRelativeY = overlayAbsY;
+
+        if (_debugMode) {
+          print(
+              '目標オーバーレイ始点座標: (${overlayStartAbsX.toStringAsFixed(1)}, ${overlayStartAbsY.toStringAsFixed(1)})');
+          print(
+              '実験的Y補正後座標: (${overlayMapRelativeX.toStringAsFixed(1)}, ${overlayMapRelativeY.toStringAsFixed(1)})');
+        }
+
+        // === 3. 地図ウィジェット基準の座標系を取得 ===
+        // 地図ウィジェットの画面上での位置オフセットを考慮
+        final RenderBox? renderBox = context.findRenderObject() as RenderBox?;
+        Size screenSize = renderBox?.size ?? Size(390, 707);
+
+        // より正確な地図領域のサイズ
+        double screenCenterX = screenSize.width / 2;
+        double screenCenterY = screenSize.height / 2;
+
+        if (_debugMode) {
+          print('実際の画面サイズ: ${screenSize.width} x ${screenSize.height}');
+          print(
+              '動的画面中心: (${screenCenterX.toStringAsFixed(1)}, ${screenCenterY.toStringAsFixed(1)})');
+        }
+
+        // === 4. より正確な地図調整計算 ===
+        // 現在の地図の始点座標を取得（地図ウィジェット座標系）
+        LatLng startLatLng = LatLng(startPoint.latitude, startPoint.longitude);
+        ScreenCoordinate currentMapStartCoord =
+            await _mapController!.getScreenCoordinate(startLatLng);
+
+        // 目標位置と現在位置の直接的な差分
+        // オーバーレイ座標を地図座標系に合わせて計算
+        double directOffsetX =
+            overlayMapRelativeX - currentMapStartCoord.x.toDouble();
+        double directOffsetY =
+            overlayMapRelativeY - currentMapStartCoord.y.toDouble();
+
+        if (_debugMode) {
+          print(
+              '現在の地図始点座標: (${currentMapStartCoord.x}, ${currentMapStartCoord.y})');
+          print(
+              '直接オフセット: (${directOffsetX.toStringAsFixed(1)}, ${directOffsetY.toStringAsFixed(1)})');
+        }
+
+        // オフセットが小さい場合は調整完了
+        double directOffsetMagnitude = math.sqrt(
+            directOffsetX * directOffsetX + directOffsetY * directOffsetY);
+        if (directOffsetMagnitude < toleranceThreshold) {
+          if (_debugMode) {
+            print(
+                '地図調整完了: 直接誤差${directOffsetMagnitude.toStringAsFixed(1)}px < ${toleranceThreshold}px');
+          }
+          break;
+        }
+
+        // === 4. 画面座標オフセットを地理座標オフセットに変換 ===
+        // 修正：地図始点をオーバーレイ始点に移動させるため、オフセットの方向を逆転
+        // 地図の始点が目標位置に来るよう、地図を反対方向に移動する
+        double reverseOffsetX = -directOffsetX;
+        double reverseOffsetY = -directOffsetY;
+
+        // 画面中心基準で地理座標の差分を計算
+        LatLng currentCenter = await _mapController!.getLatLng(ScreenCoordinate(
+          x: screenCenterX.round(),
+          y: screenCenterY.round(),
+        ));
+
+        // 逆方向オフセット分だけ離れた点の地理座標を取得
+        LatLng offsetPoint = await _mapController!.getLatLng(ScreenCoordinate(
+          x: (screenCenterX + reverseOffsetX).round(),
+          y: (screenCenterY + reverseOffsetY).round(),
+        ));
+
+        double latOffset = offsetPoint.latitude - currentCenter.latitude;
+        double lngOffset = offsetPoint.longitude - currentCenter.longitude;
+
+        // === 5. 地図の中心を調整 ===
+        // 現在の地図中心から計算したオフセット分だけ移動
+        LatLng currentMapCenter =
+            await _mapController!.getLatLng(ScreenCoordinate(
+          x: screenCenterX.round(),
+          y: screenCenterY.round(),
+        ));
+
+        LatLng newMapCenter = LatLng(
+          currentMapCenter.latitude + latOffset,
+          currentMapCenter.longitude + lngOffset,
+        );
+
+        if (_debugMode) {
+          print(
+              '現在の地図中心: (${currentMapCenter.latitude.toStringAsFixed(8)}, ${currentMapCenter.longitude.toStringAsFixed(8)})');
+          print(
+              '新しい地図中心: (${newMapCenter.latitude.toStringAsFixed(8)}, ${newMapCenter.longitude.toStringAsFixed(8)})');
+          print(
+              '修正後の画面オフセット: (${reverseOffsetX.toStringAsFixed(1)}, ${reverseOffsetY.toStringAsFixed(1)})');
+          print(
+              '地理座標オフセット: (${latOffset.toStringAsFixed(8)}, ${lngOffset.toStringAsFixed(8)})');
+        }
+
+        // === 6. 地図を新しい中心に移動 ===
+        await _mapController!.animateCamera(
+          CameraUpdate.newLatLng(newMapCenter),
+        );
+
+        // 少し待ってから検証
+        await Future.delayed(Duration(milliseconds: 100));
+
+        // === 7. 調整後の検証 ===
+        ScreenCoordinate mapStartCoordAfter =
+            await _mapController!.getScreenCoordinate(startLatLng);
+
+        double adjustmentX = overlayStartAbsX - mapStartCoordAfter.x.toDouble();
+        double adjustmentY = overlayStartAbsY - mapStartCoordAfter.y.toDouble();
+        double adjustmentMagnitude =
+            math.sqrt(adjustmentX * adjustmentX + adjustmentY * adjustmentY);
+
+        if (_debugMode) {
+          print(
+              '調整後の地図始点座標: (${mapStartCoordAfter.x}, ${mapStartCoordAfter.y})');
+          print(
+              '残存誤差: (${adjustmentX.toStringAsFixed(1)}, ${adjustmentY.toStringAsFixed(1)})');
+          print('残存誤差の大きさ: ${adjustmentMagnitude.toStringAsFixed(1)}px');
+        }
+
+        // 調整が十分小さい場合は完了
+        if (adjustmentMagnitude < toleranceThreshold) {
+          if (_debugMode) {
+            print(
+                '地図調整完了: 誤差${adjustmentMagnitude.toStringAsFixed(1)}px < ${toleranceThreshold}px');
+          }
+          break;
+        }
+
+        // 次の反復のために少し待つ
+        if (iteration < maxIterations) {
+          await Future.delayed(Duration(milliseconds: 50));
+        }
+      } catch (e) {
+        if (_debugMode) {
+          print('実験的地図調整エラー (${iteration}回目): $e');
+        }
+        break;
+      }
+    }
+
+    // 最終的な検証
+    if (_debugMode) {
+      Future.delayed(Duration(milliseconds: 100), () {
+        _verifyFinalMapAlignment(trajectoryIndex);
+      });
+    }
+  }
+
+  // 最終的な地図整列状況を検証する機能
+  Future<void> _verifyFinalMapAlignment(int trajectoryIndex) async {
+    if (_mapController == null) return;
+
+    try {
+      TransformablePolyline trajectory = _trajectories[trajectoryIndex];
+      if (trajectory.polyline.isEmpty) return;
+
+      // オーバーレイ始点座標を計算
+      Position startPoint = trajectory.polyline.first;
+
+      final painter = PolylinePainter(
+        positions: trajectory.polyline,
+        minLat: trajectory.minLat,
+        maxLat: trajectory.maxLat,
+        minLon: trajectory.minLon,
+        maxLon: trajectory.maxLon,
+        color: Colors.blue,
+        preserveAspectRatio: true,
+        strokeWidth: 4.0,
+      );
+
+      final drawingParams =
+          painter.getDrawingParameters(Size(trajectorySize, trajectorySize));
+
+      double mercatorX =
+          PolylinePainter.longitudeToWebMercatorX(startPoint.longitude);
+      double mercatorY =
+          PolylinePainter.latitudeToWebMercatorY(startPoint.latitude);
+
+      double minMercatorX = drawingParams['minMercatorX'];
+      double maxMercatorX = drawingParams['maxMercatorX'];
+      double minMercatorY = drawingParams['minMercatorY'];
+      double maxMercatorY = drawingParams['maxMercatorY'];
+      double mercatorXRange = maxMercatorX - minMercatorX;
+      double mercatorYRange = maxMercatorY - minMercatorY;
+
+      double normalizedX = (mercatorX - minMercatorX) / mercatorXRange;
+      double normalizedY = (mercatorY - minMercatorY) / mercatorYRange;
+
+      double scaleX = drawingParams['scaleX'];
+      double scaleY = drawingParams['scaleY'];
+      double drawingOffsetX = drawingParams['drawingOffsetX'];
+      double drawingOffsetY = drawingParams['drawingOffsetY'];
+
+      double basePixelX = normalizedX * scaleX + drawingOffsetX;
+      double basePixelY =
+          trajectorySize - (normalizedY * scaleY + drawingOffsetY);
+
+      double containerCenterX = trajectorySize / 2;
+      double containerCenterY = trajectorySize / 2;
+      double relativeX = basePixelX - containerCenterX;
+      double relativeY = basePixelY - containerCenterY;
+      double scaledRelativeX = relativeX * trajectory.scale;
+      double scaledRelativeY = relativeY * trajectory.scale;
+
+      double rotatedRelativeX, rotatedRelativeY;
+      if (trajectory.rotation != 0.0) {
+        double cosAngle = math.cos(trajectory.rotation);
+        double sinAngle = math.sin(trajectory.rotation);
+        rotatedRelativeX =
+            scaledRelativeX * cosAngle - scaledRelativeY * sinAngle;
+        rotatedRelativeY =
+            scaledRelativeX * sinAngle + scaledRelativeY * cosAngle;
+      } else {
+        rotatedRelativeX = scaledRelativeX;
+        rotatedRelativeY = scaledRelativeY;
+      }
+
+      double overlayStartRelativeX = containerCenterX + rotatedRelativeX;
+      double overlayStartRelativeY = containerCenterY + rotatedRelativeY;
+
+      double overlayStartAbsX = trajectory.position.dx + overlayStartRelativeX;
+      double overlayStartAbsY = trajectory.position.dy + overlayStartRelativeY;
+
+      // 地図始点座標を取得
+      LatLng startLatLng = LatLng(startPoint.latitude, startPoint.longitude);
+      ScreenCoordinate mapStartCoord =
+          await _mapController!.getScreenCoordinate(startLatLng);
+
+      // 最終的な誤差を計算
+      double finalErrorX = overlayStartAbsX - mapStartCoord.x.toDouble();
+      double finalErrorY = overlayStartAbsY - mapStartCoord.y.toDouble();
+      double finalErrorMagnitude =
+          math.sqrt(finalErrorX * finalErrorX + finalErrorY * finalErrorY);
+
+      if (_debugMode) {
+        print('=== 最終地図整列検証結果 ===');
+        print(
+            '目標オーバーレイ座標: (${overlayStartAbsX.toStringAsFixed(1)}, ${overlayStartAbsY.toStringAsFixed(1)})');
+        print('最終地図座標: (${mapStartCoord.x}, ${mapStartCoord.y})');
+        print(
+            '最終誤差: (${finalErrorX.toStringAsFixed(1)}, ${finalErrorY.toStringAsFixed(1)})');
+        print('最終誤差の大きさ: ${finalErrorMagnitude.toStringAsFixed(1)}px');
+
+        if (finalErrorMagnitude < 5) {
+          print('最終評価: ★★★ 地図整列が優秀です！');
+        } else if (finalErrorMagnitude < 15) {
+          print('最終評価: ★★☆ 地図整列が良好です');
+        } else if (finalErrorMagnitude < 50) {
+          print('最終評価: ★☆☆ 地図整列に改善が見られます');
+        } else {
+          print('最終評価: ☆☆☆ 地図整列にさらなる改善が必要です');
+        }
+      }
+    } catch (e) {
+      if (_debugMode) {
+        print('最終地図整列検証エラー: $e');
+      }
+    }
   }
 }
