@@ -383,7 +383,7 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
         Polyline(
           polylineId: PolylineId('route_$actualTrajectoryIndex'),
           points: polylinePoints,
-          color: Colors.red.withOpacity(0.9),
+          color: Colors.red.withOpacity(0.4), // 透明度を0.9から0.4に変更してより薄く
           width: scaledLineWidth.round(),
         )
       };
