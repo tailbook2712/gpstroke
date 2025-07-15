@@ -1,5 +1,5 @@
 # Flutter/Dart プロジェクト共通の設定
-
+!*.gitignore // Dartコードを除外するための設定ファイル
 # Dart package の依存関係
 .packages
 .pub/
