@@ -1,4 +1,4 @@
-# Flutter/Dart プロジェクト共通の設定
+# Flutter/Dart プロジェクト - Dartコードのみをプッシュ
 
 # Dart package の依存関係
 .packages
@@ -7,6 +7,12 @@
 .flutter-plugins-dependencies
 .dart_tool/
 build/
+pubspec.lock
+
+# Flutter設定・メタデータファイル
+.metadata
+.flutter-plugins
+.flutter-plugins-dependencies
 
 # IntelliJ/Android Studio
 .idea/
@@ -19,32 +25,27 @@ build/
 # macOS
 .DS_Store
 
-# iOS関連
-ios/Pods/
-ios/.symlinks/
-ios/Flutter/Flutter.framework
-ios/Flutter/Flutter.podspec
-ios/Runner.xcworkspace/
-ios/Flutter/App.framework
-ios/Flutter/Flutter.podspec.lock
-*ios/Runner/Environment.swift
+# プラットフォーム固有ディレクトリを全て除外
+ios/
+android/
+web/
+linux/
+macos/
+windows/
 
-# Android関連
-android/.gradle/
-android/app/build/
-android/.idea/
-android/local.properties
-android/app/app.iml
-
-# Firebase関連
+# Firebase関連設定ファイル
 firebase_app_id_file.json
+firebase.json
 
-# その他のキャッシュファイルやエディタ関連ファイル
+# 分析・設定ファイル
+analysis_options.yaml
+*.iml
+
+# その他のキャッシュ・ログファイル
 *.log
 *.tmp
 *.swp
-*.lock
 
-# Web関連
-web/.dart_tool/
-web/build/
+# 依存関係ファイル
+pubspec.lock
+pubspec.lock
