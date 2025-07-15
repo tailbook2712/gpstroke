@@ -27,13 +27,13 @@ class ArtworkCreationScreen extends StatefulWidget {
 class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
   List<TransformablePolyline> selectedTrajectories = [];
   TransformablePolyline? selectedItem;
-  final GlobalKey _canvasKey = GlobalKey();
   final GlobalKey _boundaryKey = GlobalKey();
   List<List<Position>> recordedTrajectories = [];
   Set<int> usedTrajectoryIndices = {}; // 保存済みの軌跡インデックスを保持
   Set<int> temporarilyUsedIndices = {}; // 一時的に使用された軌跡インデックス
   final DatabaseHelper _dbHelper = DatabaseHelper();
-  final FirestoreService _firestoreService = FirestoreService(); // Firestoreサービスのインスタンス化
+  final FirestoreService _firestoreService =
+      FirestoreService(); // Firestoreサービスのインスタンス化
   String? _currentDraftFilePath; // 現在の下書きファイルパスを保持
 
   bool isRotating = false;
@@ -152,15 +152,15 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
 
       // キャンバスのサイズを取得
       final canvasSize = _boundaryKey.currentContext!.size!;
-      
+
       // 実際のスクリーンサイズ（AppBarを除く）を取得
       final mediaQuery = MediaQuery.of(context);
-      final screenHeight = mediaQuery.size.height - 
-          mediaQuery.padding.top - 
-          mediaQuery.padding.bottom - 
+      final screenHeight = mediaQuery.size.height -
+          mediaQuery.padding.top -
+          mediaQuery.padding.bottom -
           AppBar().preferredSize.height;
       final screenWidth = mediaQuery.size.width;
-      
+
       print('保存時のキャンバスサイズ: ${canvasSize.width} x ${canvasSize.height}');
       print('保存時の実際の画面サイズ: $screenWidth x $screenHeight');
 
@@ -168,6 +168,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
       int trajectoryCount = selectedTrajectories.length;
       double totalDistance = 0.0;
       int totalSteps = 0;
+      List<Map<String, dynamic>> trajectoryDetailsCache = [];
 
       for (var item in selectedTrajectories) {
         final groupId = generateGroupId(item.polyline);
@@ -175,36 +176,72 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
             await _dbHelper.getWalkingDataByGroupId(groupId);
         totalDistance += (trajectoryDetails?['distance'] as double? ?? 0.0);
         totalSteps += (trajectoryDetails?['steps'] as int? ?? 0);
+        trajectoryDetailsCache.add({
+          'item': item,
+          'details': trajectoryDetails,
+          'groupId': groupId,
+        });
       }
 
-      // 保存時のキャンバス状態
+      // 保存時のキャンバス状態（詳細メタデータ付き）
       final canvasState = {
         'canvasWidth': screenWidth, // 実際の画面幅を保存
         'canvasHeight': screenHeight, // 実際の画面高さを保存（AppBarを除く）
-        'trajectories': selectedTrajectories.map((item) {
+        'actualCanvasSize': {
+          'width': canvasSize.width,
+          'height': canvasSize.height,
+        },
+        'trajectories': trajectoryDetailsCache.map((cached) {
+          final item = cached['item'] as TransformablePolyline;
+          final trajectoryDetails = cached['details'];
+          final groupId = cached['groupId'];
+
           // 軌跡の相対位置を計算（0〜1の範囲に正規化）
           double relativeX = item.position.dx / screenWidth;
           double relativeY = item.position.dy / screenHeight;
-          
+
+          // 軌跡の地理的範囲を計算
+          double minLat = item.polyline.map((p) => p.latitude).reduce(math.min);
+          double maxLat = item.polyline.map((p) => p.latitude).reduce(math.max);
+          double minLng =
+              item.polyline.map((p) => p.longitude).reduce(math.min);
+          double maxLng =
+              item.polyline.map((p) => p.longitude).reduce(math.max);
+
           print('軌跡の絶対位置: (${item.position.dx}, ${item.position.dy})');
           print('軌跡の相対位置: ($relativeX, $relativeY)');
           print('軌跡の回転角度: ${item.rotation}');
           print('軌跡のスケール: ${item.scale}');
-          
+          print('軌跡の地理的範囲: lat($minLat, $maxLat), lng($minLng, $maxLng)');
+
           return {
             'positions': item.polyline.map((p) {
               return {
                 'latitude': p.latitude,
                 'longitude': p.longitude,
-                'timestamp': p.timestamp?.toIso8601String() ?? "",
+                'timestamp': p.timestamp.toIso8601String(),
               };
             }).toList(),
             'position': {
               'dx': relativeX,
               'dy': relativeY,
+              'absoluteX': item.position.dx,
+              'absoluteY': item.position.dy,
             },
             'scale': item.scale,
             'rotation': item.rotation,
+            'geoBounds': {
+              'minLat': minLat,
+              'maxLat': maxLat,
+              'minLng': minLng,
+              'maxLng': maxLng,
+            },
+            'details': {
+              'groupId': groupId,
+              'distance': trajectoryDetails?['distance'] ?? 0.0,
+              'steps': trajectoryDetails?['steps'] ?? 0,
+              'date': trajectoryDetails?['date'] ?? '',
+            },
           };
         }).toList(),
         'meta': {
@@ -213,6 +250,8 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
           'totalSteps': totalSteps,
           'artworkName': artworkName, // 作品名
           'artworkId': artworkId, // 作品のユニークID
+          'createdAt': DateTime.now().toIso8601String(),
+          'version': '2.0', // メタデータのバージョン
         },
       };
 
@@ -226,7 +265,8 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
         imageData: pngBytes,
       );
 
-      print("Firestoreに保存した作品データ: artworkId=$artworkId, canvasStateのキー=${canvasState.keys.toList()}");
+      print(
+          "Firestoreに保存した作品データ: artworkId=$artworkId, canvasStateのキー=${canvasState.keys.toList()}");
 
       // 使用済みの軌跡を保存
       for (final index in temporarilyUsedIndices) {
@@ -347,7 +387,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                   Navigator.pop(context); // モーダルを閉じる
                   setState(() {
                     final trajectoryIndex =
-                        recordedTrajectories.indexOf(trajectory!);
+                        recordedTrajectories.indexOf(trajectory);
                     temporarilyUsedIndices.add(trajectoryIndex);
                     // 新しい軌跡を追加するとき、scaleを0.6に設定（元の動作と同じ）
                     final newTrajectory = TransformablePolyline(
@@ -366,7 +406,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                     CustomPaint(
                       size: Size(60, 60), // モーダル内のプレビューサイズはそのまま
                       painter: PolylinePainter(
-                        positions: trajectory!,
+                        positions: trajectory,
                         minLat: trajectory
                             .map((p) => p.latitude)
                             .reduce((a, b) => a < b ? a : b),
@@ -426,7 +466,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
               return {
                 'latitude': p.latitude,
                 'longitude': p.longitude,
-                'timestamp': p.timestamp?.toIso8601String() ?? "",
+                'timestamp': p.timestamp.toIso8601String(),
               };
             }).toList(),
             'position': {
