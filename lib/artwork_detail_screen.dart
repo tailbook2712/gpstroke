@@ -8,7 +8,6 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'artwork_creation_screen.dart';
 import 'database_helper.dart';
 import 'utils/utils.dart';
-import 'walking_detail_screen.dart';
 import 'polyline_painter.dart';
 
 class ArtworkDetailScreen extends StatefulWidget {
@@ -274,32 +273,64 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
   }
 
   Future<void> _showTrajectoryDetails(TransformablePolyline trajectory) async {
-    try {
-      String groupId = generateGroupId(trajectory.polyline);
-      Map<String, dynamic>? record =
-          await _dbHelper.getWalkingDataByGroupId(groupId);
+    // 既にアニメーション中の場合は無視
+    if (_isSlideshowPlaying) return;
 
-      if (record != null) {
-        Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (context) => WalkingDetailScreen(
-              groupId: groupId,
-              date: record['date'],
-              steps: record['steps'],
-              distance: (record['distance'] / 1000).toStringAsFixed(2),
-              rotation: trajectory.rotation,
-            ),
-          ),
-        );
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("記録が見つかりません。")),
-        );
-      }
+    // 軌跡のインデックスを取得
+    int trajectoryIndex = _trajectories.indexOf(trajectory);
+    if (trajectoryIndex == -1) return;
+
+    // 個別軌跡アニメーションを開始
+    await _playIndividualTrajectoryAnimation(trajectoryIndex);
+  }
+
+  // 個別軌跡のアニメーション
+  Future<void> _playIndividualTrajectoryAnimation(int trajectoryIndex) async {
+    try {
+      // アニメーション状態を設定
+      setState(() {
+        _isSlideshowPlaying = true; // 他のタップを無効にするため
+        _currentTrajectoryIndex = trajectoryIndex;
+        _isShowingMap = false;
+        _isMapAligned = false;
+        // 対象軌跡を赤色にハイライト
+        _trajectoryColors[trajectoryIndex] = Colors.red;
+        // キャッシュをクリア
+        _cachedCameraPosition = null;
+        _alignedCameraPosition = null;
+      });
+
+      // ハイライトアニメーション
+      _highlightController.reset();
+      await _highlightController.forward();
+
+      // 地図データを準備
+      await _prepareMapData(trajectoryIndex);
+
+      // 地図アニメーションを表示
+      await _showMapAnimation();
+
+      // 軌跡の色を元に戻す
+      setState(() {
+        _trajectoryColors[trajectoryIndex] =
+            _isColorful ? _generateRandomColor() : Colors.blue;
+        _isSlideshowPlaying = false; // アニメーション終了
+        _currentTrajectoryIndex = -1;
+        _isShowingMap = false;
+      });
     } catch (e) {
+      setState(() {
+        _isSlideshowPlaying = false;
+        _currentTrajectoryIndex = -1;
+        _isShowingMap = false;
+        if (trajectoryIndex < _trajectoryColors.length) {
+          _trajectoryColors[trajectoryIndex] =
+              _isColorful ? _generateRandomColor() : Colors.blue;
+        }
+      });
+
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text("エラーが発生しました: $e")),
+        SnackBar(content: Text("アニメーションエラーが発生しました: $e")),
       );
     }
   }
@@ -854,9 +885,14 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
               // ハイライト効果
               bool isCurrentlyHighlighted = _isSlideshowPlaying &&
                   _currentTrajectoryIndex >= 0 &&
-                  _recordedOrder.isNotEmpty &&
-                  _currentTrajectoryIndex < _recordedOrder.length &&
-                  _recordedOrder[_currentTrajectoryIndex] == index;
+                  (
+                      // スライドショーの場合
+                      (_recordedOrder.isNotEmpty &&
+                              _currentTrajectoryIndex < _recordedOrder.length &&
+                              _recordedOrder[_currentTrajectoryIndex] ==
+                                  index) ||
+                          // 個別軌跡アニメーションの場合
+                          _currentTrajectoryIndex == index);
 
               // シンプルなハイライト効果
               double pulseScale = 1.0;
@@ -872,7 +908,9 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
                 left: item.position.dx,
                 top: item.position.dy,
                 child: GestureDetector(
-                  onTap: () => _showTrajectoryDetails(item),
+                  onTap: _isSlideshowPlaying
+                      ? null
+                      : () => _showTrajectoryDetails(item),
                   child: Container(
                     width: trajectorySize,
                     height: trajectorySize,
@@ -982,66 +1020,6 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
                         ),
                       );
                     },
-                  ),
-                ),
-              ),
-
-            // スライドショーインジケーター
-            if (_isSlideshowPlaying)
-              Positioned(
-                bottom: 20,
-                left: 0,
-                right: 0,
-                child: Center(
-                  child: Container(
-                    padding: EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-                    decoration: BoxDecoration(
-                      color: Colors.black87,
-                      borderRadius: BorderRadius.circular(25),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black26,
-                          blurRadius: 8,
-                          offset: Offset(0, 4),
-                        ),
-                      ],
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(
-                          Icons.play_circle_filled,
-                          color: Colors.white,
-                          size: 20,
-                        ),
-                        SizedBox(width: 8),
-                        Text(
-                          'アニメーション再生中',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 14,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                        SizedBox(width: 12),
-                        Container(
-                          padding:
-                              EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                          decoration: BoxDecoration(
-                            color: Colors.white.withOpacity(0.2),
-                            borderRadius: BorderRadius.circular(10),
-                          ),
-                          child: Text(
-                            '${_currentTrajectoryIndex + 1} / ${_recordedOrder.length}',
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontSize: 12,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
                   ),
                 ),
               ),
