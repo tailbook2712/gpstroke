@@ -8,7 +8,6 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'artwork_creation_screen.dart';
 import 'database_helper.dart';
 import 'utils/utils.dart';
-import 'walking_detail_screen.dart';
 import 'polyline_painter.dart';
 
 class ArtworkDetailScreen extends StatefulWidget {
@@ -38,6 +37,7 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
 
   // スライドショー機能の状態管理
   bool _isSlideshowPlaying = false;
+  bool _isIndividualTrajectoryAnimation = false; // 個別軌跡アニメーションフラグ
   int _currentTrajectoryIndex = -1;
   late AnimationController _highlightController;
   late AnimationController _mapTransitionController;
@@ -56,6 +56,10 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
   final Duration _mapAlignmentDuration = Duration(milliseconds: 1000);
   final Duration _mapDisplayDuration = Duration(seconds: 3);
   final Duration _transitionDuration = Duration(milliseconds: 600);
+
+  // スライドショーの速度制御
+  int _playbackSpeed = 1; // 1倍速、2倍速、3倍速、または負の値で早戻し
+  final List<int> _speedOptions = [-3, -2, -1, 1, 2, 3]; // 利用可能な速度オプション
 
   // デバッグフラグ
   final bool _debugMode = true;
@@ -274,32 +278,68 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
   }
 
   Future<void> _showTrajectoryDetails(TransformablePolyline trajectory) async {
-    try {
-      String groupId = generateGroupId(trajectory.polyline);
-      Map<String, dynamic>? record =
-          await _dbHelper.getWalkingDataByGroupId(groupId);
+    // 既にアニメーション中の場合は無視
+    if (_isSlideshowPlaying) return;
 
-      if (record != null) {
-        Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (context) => WalkingDetailScreen(
-              groupId: groupId,
-              date: record['date'],
-              steps: record['steps'],
-              distance: (record['distance'] / 1000).toStringAsFixed(2),
-              rotation: trajectory.rotation,
-            ),
-          ),
-        );
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("記録が見つかりません。")),
-        );
-      }
+    // 軌跡のインデックスを取得
+    int trajectoryIndex = _trajectories.indexOf(trajectory);
+    if (trajectoryIndex == -1) return;
+
+    // 個別軌跡アニメーションを開始
+    await _playIndividualTrajectoryAnimation(trajectoryIndex);
+  }
+
+  // 個別軌跡のアニメーション
+  Future<void> _playIndividualTrajectoryAnimation(int trajectoryIndex) async {
+    try {
+      // アニメーション状態を設定
+      setState(() {
+        _isSlideshowPlaying = true; // 他のタップを無効にするため
+        _isIndividualTrajectoryAnimation = true; // 個別軌跡アニメーションフラグ
+        _currentTrajectoryIndex = trajectoryIndex;
+        _isShowingMap = false;
+        _isMapAligned = false;
+        // 対象軌跡を赤色にハイライト
+        _trajectoryColors[trajectoryIndex] = Colors.red;
+        // キャッシュをクリア
+        _cachedCameraPosition = null;
+        _alignedCameraPosition = null;
+      });
+
+      // ハイライトアニメーション（固定速度）
+      _highlightController.duration = _highlightDuration;
+      _highlightController.reset();
+      await _highlightController.forward();
+
+      // 地図データを準備
+      await _prepareMapData(trajectoryIndex);
+
+      // 地図アニメーションを表示（固定速度）
+      await _showMapAnimationFixed();
+
+      // 軌跡の色を元に戻す
+      setState(() {
+        _trajectoryColors[trajectoryIndex] =
+            _isColorful ? _generateRandomColor() : Colors.blue;
+        _isSlideshowPlaying = false; // アニメーション終了
+        _isIndividualTrajectoryAnimation = false; // 個別軌跡アニメーション終了
+        _currentTrajectoryIndex = -1;
+        _isShowingMap = false;
+      });
     } catch (e) {
+      setState(() {
+        _isSlideshowPlaying = false;
+        _isIndividualTrajectoryAnimation = false;
+        _currentTrajectoryIndex = -1;
+        _isShowingMap = false;
+        if (trajectoryIndex < _trajectoryColors.length) {
+          _trajectoryColors[trajectoryIndex] =
+              _isColorful ? _generateRandomColor() : Colors.blue;
+        }
+      });
+
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text("エラーが発生しました: $e")),
+        SnackBar(content: Text("アニメーションエラーが発生しました: $e")),
       );
     }
   }
@@ -309,6 +349,7 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
 
     setState(() {
       _isSlideshowPlaying = true;
+      _isIndividualTrajectoryAnimation = false; // スライドショー開始時は個別軌跡アニメーションではない
       _currentTrajectoryIndex = -1;
       _isShowingMap = false;
       _isMapAligned = false;
@@ -320,6 +361,7 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
   void _stopSlideshow() {
     setState(() {
       _isSlideshowPlaying = false;
+      _isIndividualTrajectoryAnimation = false; // スライドショー停止時もリセット
       _currentTrajectoryIndex = -1;
       _isShowingMap = false;
       _isMapAligned = false;
@@ -337,6 +379,46 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
         (_) => _isColorful ? _generateRandomColor() : Colors.blue,
       );
     });
+  }
+
+  // 速度制御メソッド
+  void _increaseSpeed() {
+    setState(() {
+      int currentIndex = _speedOptions.indexOf(_playbackSpeed);
+      if (currentIndex < _speedOptions.length - 1) {
+        _playbackSpeed = _speedOptions[currentIndex + 1];
+      } else {
+        _playbackSpeed = 1; // 3倍速の次は1倍速に戻る
+      }
+    });
+  }
+
+  void _decreaseSpeed() {
+    setState(() {
+      int currentIndex = _speedOptions.indexOf(_playbackSpeed);
+      if (currentIndex > 0) {
+        _playbackSpeed = _speedOptions[currentIndex - 1];
+      } else {
+        _playbackSpeed = 1; // -3倍速の次は1倍速に戻る
+      }
+    });
+  }
+
+  // 速度に応じたDurationを計算
+  Duration _getScaledDuration(Duration baseDuration) {
+    if (_playbackSpeed == 0) return baseDuration;
+    double speedMultiplier = _playbackSpeed.abs().toDouble();
+    return Duration(
+        milliseconds: (baseDuration.inMilliseconds / speedMultiplier).round());
+  }
+
+  // 速度表示のテキストを取得
+  String _getSpeedText() {
+    if (_playbackSpeed > 0) {
+      return '${_playbackSpeed}倍速';
+    } else {
+      return '${_playbackSpeed.abs()}倍速(早戻し)';
+    }
   }
 
   // Web Mercator対応の地図データ準備
@@ -596,6 +678,38 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
     }
   }
 
+  // 個別軌跡用の地図表示アニメーション（固定速度）
+  Future<void> _showMapAnimationFixed() async {
+    setState(() {
+      _isShowingMap = true;
+      _isMapAligned = false;
+    });
+
+    // 地図の初期化待機（固定速度）
+    await Future.delayed(Duration(milliseconds: 300));
+
+    // フェードイン（固定速度）
+    _mapTransitionController.duration = _mapTransitionDuration;
+    _mapTransitionController.reset();
+    await _mapTransitionController.forward();
+
+    // 地図を精密に整列（固定速度）
+    await Future.delayed(Duration(milliseconds: 200));
+    await _alignMapPreciselyFixed();
+
+    // 整列表示時間（固定速度）
+    await Future.delayed(_mapDisplayDuration);
+
+    // フェードアウト（固定速度）
+    _mapTransitionController.duration = _mapTransitionDuration;
+    await _mapTransitionController.reverse();
+
+    setState(() {
+      _isShowingMap = false;
+      _isMapAligned = false;
+    });
+  }
+
   // 地図表示アニメーション
   Future<void> _showMapAnimation() async {
     setState(() {
@@ -603,21 +717,25 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
       _isMapAligned = false;
     });
 
-    // 地図の初期化待機
-    await Future.delayed(Duration(milliseconds: 300));
+    // 地図の初期化待機（速度適用）
+    await Future.delayed(_getScaledDuration(Duration(milliseconds: 300)));
 
-    // フェードイン
+    // フェードイン（速度調整）
+    _mapTransitionController.duration =
+        _getScaledDuration(_mapTransitionDuration);
     _mapTransitionController.reset();
     await _mapTransitionController.forward();
 
-    // 地図を精密に整列
-    await Future.delayed(Duration(milliseconds: 200));
+    // 地図を精密に整列（速度適用）
+    await Future.delayed(_getScaledDuration(Duration(milliseconds: 200)));
     await _alignMapPrecisely();
 
-    // 整列表示時間
-    await Future.delayed(_mapDisplayDuration);
+    // 整列表示時間（速度適用）
+    await Future.delayed(_getScaledDuration(_mapDisplayDuration));
 
-    // フェードアウト
+    // フェードアウト（速度調整）
+    _mapTransitionController.duration =
+        _getScaledDuration(_mapTransitionDuration);
     await _mapTransitionController.reverse();
 
     setState(() {
@@ -634,7 +752,42 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
       _isMapAligned = true;
     });
 
-    // 地図の整列アニメーション
+    // 地図の整列アニメーション（速度調整）
+    _mapAlignmentController.duration =
+        _getScaledDuration(_mapAlignmentDuration);
+    _mapAlignmentController.reset();
+    await _mapAlignmentController.forward();
+
+    // カメラを精密位置に移動（速度調整されたアニメーション）
+    await _mapController!.animateCamera(
+      CameraUpdate.newCameraPosition(_alignedCameraPosition!),
+    );
+
+    // 整列完了の待機時間（速度調整）
+    await Future.delayed(_getScaledDuration(Duration(milliseconds: 200)));
+
+    // 座標比較・検証を実行
+    if (_currentTrajectoryDetails != null) {
+      int trajectoryIndex =
+          _currentTrajectoryDetails!['actualTrajectoryIndex'] ?? 0;
+      await _validateTrajectoryAlignment(trajectoryIndex);
+      await _autoCorrectOverlayPosition(trajectoryIndex);
+
+      // 実験的機能：オーバーレイ位置の自動調整
+      await _experimentalMapAlignment(trajectoryIndex);
+    }
+  }
+
+  // 個別軌跡用の精密地図整列の実行（固定速度）
+  Future<void> _alignMapPreciselyFixed() async {
+    if (_mapController == null || _alignedCameraPosition == null) return;
+
+    setState(() {
+      _isMapAligned = true;
+    });
+
+    // 地図の整列アニメーション（固定速度）
+    _mapAlignmentController.duration = _mapAlignmentDuration;
     _mapAlignmentController.reset();
     await _mapAlignmentController.forward();
 
@@ -643,7 +796,7 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
       CameraUpdate.newCameraPosition(_alignedCameraPosition!),
     );
 
-    // 整列完了の待機時間
+    // 整列完了の待機時間（固定速度）
     await Future.delayed(Duration(milliseconds: 200));
 
     // 座標比較・検証を実行
@@ -655,6 +808,60 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
 
       // 実験的機能：オーバーレイ位置の自動調整
       await _experimentalMapAlignment(trajectoryIndex);
+    }
+  }
+
+  // 前の軌跡を表示
+  void _showPreviousTrajectory() async {
+    if (!_isSlideshowPlaying) return;
+
+    int prevStepIndex = _currentTrajectoryIndex - 1;
+
+    if (prevStepIndex < 0) {
+      // 最初の軌跡より前に戻ろうとした場合、スライドショーを終了
+      _stopSlideshow();
+      return;
+    }
+
+    // 実際の軌跡インデックス（記録順序に従う）
+    int actualTrajectoryIndex = _recordedOrder[prevStepIndex];
+
+    setState(() {
+      _currentTrajectoryIndex = prevStepIndex;
+      // ハイライトする軌跡を赤色に変更
+      _trajectoryColors[actualTrajectoryIndex] = Colors.red;
+      // 新しい軌跡に変わったのでキャッシュをクリア
+      _cachedCameraPosition = null;
+      _alignedCameraPosition = null;
+    });
+
+    // ハイライトアニメーション（速度調整）
+    _highlightController.duration = _getScaledDuration(_highlightDuration);
+    _highlightController.reset();
+    await _highlightController.forward();
+
+    // 地図データを準備
+    await _prepareMapData(actualTrajectoryIndex);
+
+    // 地図アニメーションを表示
+    await _showMapAnimation();
+
+    // 軌跡の色を元に戻す
+    setState(() {
+      _trajectoryColors[actualTrajectoryIndex] =
+          _isColorful ? _generateRandomColor() : Colors.blue;
+    });
+
+    // 速度に応じた次の軌跡への遷移の待機
+    await Future.delayed(_getScaledDuration(_transitionDuration));
+
+    // 続行（早戻しの場合は前の軌跡に進む）
+    if (_isSlideshowPlaying) {
+      if (_playbackSpeed < 0) {
+        _showPreviousTrajectory();
+      } else {
+        _showNextTrajectory();
+      }
     }
   }
 
@@ -681,7 +888,8 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
       _alignedCameraPosition = null;
     });
 
-    // ハイライトアニメーション
+    // ハイライトアニメーション（速度調整）
+    _highlightController.duration = _getScaledDuration(_highlightDuration);
     _highlightController.reset();
     await _highlightController.forward();
 
@@ -697,12 +905,16 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
           _isColorful ? _generateRandomColor() : Colors.blue;
     });
 
-    // 次の軌跡への遷移の待機
-    await Future.delayed(_transitionDuration);
+    // 速度に応じた次の軌跡への遷移の待機
+    await Future.delayed(_getScaledDuration(_transitionDuration));
 
-    // 続行
+    // 続行（早戻しの場合は前の軌跡に進む）
     if (_isSlideshowPlaying) {
-      _showNextTrajectory();
+      if (_playbackSpeed < 0) {
+        _showPreviousTrajectory();
+      } else {
+        _showNextTrajectory();
+      }
     }
   }
 
@@ -854,9 +1066,14 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
               // ハイライト効果
               bool isCurrentlyHighlighted = _isSlideshowPlaying &&
                   _currentTrajectoryIndex >= 0 &&
-                  _recordedOrder.isNotEmpty &&
-                  _currentTrajectoryIndex < _recordedOrder.length &&
-                  _recordedOrder[_currentTrajectoryIndex] == index;
+                  (
+                      // スライドショーの場合
+                      (_recordedOrder.isNotEmpty &&
+                              _currentTrajectoryIndex < _recordedOrder.length &&
+                              _recordedOrder[_currentTrajectoryIndex] ==
+                                  index) ||
+                          // 個別軌跡アニメーションの場合
+                          _currentTrajectoryIndex == index);
 
               // シンプルなハイライト効果
               double pulseScale = 1.0;
@@ -872,7 +1089,9 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
                 left: item.position.dx,
                 top: item.position.dy,
                 child: GestureDetector(
-                  onTap: () => _showTrajectoryDetails(item),
+                  onTap: _isSlideshowPlaying
+                      ? null
+                      : () => _showTrajectoryDetails(item),
                   child: Container(
                     width: trajectorySize,
                     height: trajectorySize,
@@ -905,7 +1124,7 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
             // 軌跡情報表示
             if (_isShowingMap && _currentTrajectoryDetails != null)
               Positioned(
-                bottom: 80,
+                bottom: 120,
                 left: 0,
                 right: 0,
                 child: Center(
@@ -986,15 +1205,16 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
                 ),
               ),
 
-            // スライドショーインジケーター
-            if (_isSlideshowPlaying)
+            // 速度制御UI（スライドショー中のみ表示、個別軌跡アニメーション中は非表示）
+            if (_isSlideshowPlaying && !_isIndividualTrajectoryAnimation)
               Positioned(
                 bottom: 20,
                 left: 0,
                 right: 0,
                 child: Center(
                   child: Container(
-                    padding: EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+                    padding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    margin: EdgeInsets.symmetric(horizontal: 20),
                     decoration: BoxDecoration(
                       color: Colors.black87,
                       borderRadius: BorderRadius.circular(25),
@@ -1006,39 +1226,64 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
                         ),
                       ],
                     ),
-                    child: Row(
+                    child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Icon(
-                          Icons.play_circle_filled,
-                          color: Colors.white,
-                          size: 20,
-                        ),
-                        SizedBox(width: 8),
-                        Text(
-                          'アニメーション再生中',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 14,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                        SizedBox(width: 12),
+                        // 軌跡番号表示
                         Container(
                           padding:
-                              EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                          decoration: BoxDecoration(
-                            color: Colors.white.withOpacity(0.2),
-                            borderRadius: BorderRadius.circular(10),
-                          ),
+                              EdgeInsets.symmetric(horizontal: 12, vertical: 4),
                           child: Text(
                             '${_currentTrajectoryIndex + 1} / ${_recordedOrder.length}',
                             style: TextStyle(
-                              color: Colors.white,
                               fontSize: 12,
-                              fontWeight: FontWeight.bold,
+                              fontWeight: FontWeight.w500,
+                              color: Colors.white70,
                             ),
                           ),
+                        ),
+                        // 速度制御
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            // 左矢印（速度ダウン）
+                            IconButton(
+                              onPressed: _decreaseSpeed,
+                              icon: Icon(Icons.keyboard_arrow_left),
+                              color: Colors.white,
+                              iconSize: 28,
+                              padding: EdgeInsets.all(8),
+                              constraints: BoxConstraints(
+                                minWidth: 44,
+                                minHeight: 44,
+                              ),
+                            ),
+                            // 速度表示
+                            Container(
+                              padding: EdgeInsets.symmetric(
+                                  horizontal: 16, vertical: 8),
+                              child: Text(
+                                _getSpeedText(),
+                                style: TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w600,
+                                  color: Colors.white,
+                                ),
+                              ),
+                            ),
+                            // 右矢印（速度アップ）
+                            IconButton(
+                              onPressed: _increaseSpeed,
+                              icon: Icon(Icons.keyboard_arrow_right),
+                              color: Colors.white,
+                              iconSize: 28,
+                              padding: EdgeInsets.all(8),
+                              constraints: BoxConstraints(
+                                minWidth: 44,
+                                minHeight: 44,
+                              ),
+                            ),
+                          ],
                         ),
                       ],
                     ),
