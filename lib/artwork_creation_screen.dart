@@ -36,8 +36,8 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
       FirestoreService(); // Firestoreサービスのインスタンス化
   String? _currentDraftFilePath; // 現在の下書きファイルパスを保持
 
-  bool isDraggingRotationHandle = false; // 回転ハンドルをドラッグ中かどうか
-  Offset? rotationDragStartPoint; // 回転ドラッグ開始点
+  bool isRotating = false;
+  bool isScaling = false;
   final double canvasPadding = 20.0;
 
   // 軌跡のサイズ定義
@@ -211,6 +211,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
           print('軌跡の絶対位置: (${item.position.dx}, ${item.position.dy})');
           print('軌跡の相対位置: ($relativeX, $relativeY)');
           print('軌跡の回転角度: ${item.rotation}');
+          print('軌跡のスケール: ${item.scale}');
           print('軌跡の地理的範囲: lat($minLat, $maxLat), lng($minLng, $maxLng)');
 
           return {
@@ -227,6 +228,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
               'absoluteX': item.position.dx,
               'absoluteY': item.position.dy,
             },
+            'scale': item.scale,
             'rotation': item.rotation,
             'geoBounds': {
               'minLat': minLat,
@@ -395,6 +397,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                         MediaQuery.of(context).size.height / 2 - 50, // 位置を調整
                       ),
                     );
+                    newTrajectory.scale = 0.8; // デフォルトスケール設定
                     selectedTrajectories.add(newTrajectory);
                   });
                 },
@@ -470,6 +473,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
               'dx': item.position.dx / canvasSize.width,
               'dy': item.position.dy / canvasSize.height,
             },
+            'scale': item.scale,
             'rotation': item.rotation,
           };
         }).toList(),
@@ -533,7 +537,9 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
             (item['position']['dx'] ?? 0) * canvasWidth,
             (item['position']['dy'] ?? 0) * canvasHeight,
           ),
-        )..rotation = item['rotation'] ?? 0.0;
+        )
+          ..rotation = item['rotation'] ?? 0.0
+          ..scale = item['scale'] ?? 1.0;
       }).toList();
 
       // 現在の下書きファイルパスを保存
@@ -643,18 +649,65 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                               selectedItem = item;
                             });
                           },
-                          onPanStart: (details) {
-                            // 回転ハンドルでの回転中は移動操作を無効化
-                            if (isDraggingRotationHandle) return;
-                          },
-                          onPanUpdate: (details) {
-                            // 回転ハンドルでの回転中は移動操作を無効化
-                            if (isDraggingRotationHandle) return;
-
-                            // 選択された軌跡のみ移動操作を受け入れる
+                          onScaleStart: (details) {
+                            // 選択された軌跡のみ回転操作を受け入れる
                             if (isSelected) {
                               setState(() {
-                                item.position += details.delta;
+                                item.lastRotation = item.rotation;
+                                item.lastScale = item.scale;
+                                isRotating = false;
+                                isScaling = false;
+                              });
+                            }
+                          },
+                          onScaleUpdate: (details) {
+                            // 選択された軌跡のみ更新する
+                            if (isSelected) {
+                              // 前回のフレームから変化があった場合のみ更新
+                              final bool hasRotationChange =
+                                  details.rotation.abs() > 0.001;
+                              final bool hasScaleChange =
+                                  (details.scale - 1.0).abs() > 0.001;
+                              final bool hasPositionChange =
+                                  details.focalPointDelta.distance > 0.5;
+
+                              if (hasRotationChange ||
+                                  hasScaleChange ||
+                                  hasPositionChange) {
+                                setState(() {
+                                  // 回転操作中かどうかを状態として保持
+                                  isRotating = hasRotationChange;
+                                  isScaling = hasScaleChange;
+
+                                  // 回転処理 - 回転中はスケールを変更しない
+                                  if (isRotating) {
+                                    item.rotation =
+                                        item.lastRotation + details.rotation;
+                                  }
+                                  // スケール処理 - 回転中でない場合のみ
+                                  else if (isScaling) {
+                                    // 最小・最大のスケール制限を設定
+                                    final newScale =
+                                        item.lastScale * details.scale;
+                                    item.scale = newScale.clamp(
+                                        0.3, 3.0); // 最小0.3倍、最大3倍に制限
+                                  }
+
+                                  // 移動処理 - どの向きでも自然に動くように
+                                  if (hasPositionChange) {
+                                    item.position += details.focalPointDelta;
+                                  }
+                                });
+                              }
+                            }
+                          },
+                          onScaleEnd: (_) {
+                            if (isSelected) {
+                              setState(() {
+                                isRotating = false;
+                                isScaling = false;
+                                item.lastRotation = item.rotation;
+                                item.lastScale = item.scale;
                               });
                             }
                           },
@@ -671,130 +724,34 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                                 child: Transform.rotate(
                                   angle: item.rotation,
                                   alignment: Alignment.center,
-                                  child: Stack(
-                                    children: [
-                                      Container(
-                                        width: trajectorySize,
-                                        height: trajectorySize,
-                                        decoration: BoxDecoration(
-                                          border: selectedItem == item
-                                              ? Border.all(
-                                                  color:
-                                                      isDraggingRotationHandle
-                                                          ? Colors.orange
-                                                          : Colors.red,
-                                                  width: 2.0,
-                                                )
-                                              : null,
-                                        ),
-                                        child: CustomPaint(
-                                          size: Size(
-                                              trajectorySize, trajectorySize),
-                                          painter: PolylinePainter(
-                                            positions: item.polyline,
-                                            minLat: item.minLat,
-                                            maxLat: item.maxLat,
-                                            minLon: item.minLon,
-                                            maxLon: item.maxLon,
-                                          ),
+                                  child: Container(
+                                    width: trajectorySize,
+                                    height: trajectorySize,
+                                    decoration: BoxDecoration(
+                                      border: selectedItem == item
+                                          ? Border.all(
+                                              color: isRotating
+                                                  ? Colors.orange
+                                                  : Colors.red,
+                                              width: 2.0,
+                                            )
+                                          : null,
+                                    ),
+                                    child: Transform.scale(
+                                      scale: item.scale,
+                                      alignment: Alignment.center,
+                                      child: CustomPaint(
+                                        size: Size(
+                                            trajectorySize, trajectorySize),
+                                        painter: PolylinePainter(
+                                          positions: item.polyline,
+                                          minLat: item.minLat,
+                                          maxLat: item.maxLat,
+                                          minLon: item.minLon,
+                                          maxLon: item.maxLon,
                                         ),
                                       ),
-                                      // 回転ハンドル（選択されている時のみ表示、枠線と一緒に回転するが向きは固定）
-                                      if (selectedItem == item)
-                                        Positioned(
-                                          right: 4, // 枠線の内側に配置（4pxのマージン）
-                                          bottom: 4, // 枠線の内側に配置（4pxのマージン）
-                                          child: Transform.rotate(
-                                            angle: -item
-                                                .rotation, // 軌跡の回転に対して逆回転させて向きを固定
-                                            alignment: Alignment.center,
-                                            child: GestureDetector(
-                                              onPanStart: (details) {
-                                                setState(() {
-                                                  isDraggingRotationHandle =
-                                                      true;
-                                                  rotationDragStartPoint =
-                                                      details.globalPosition;
-                                                  item.lastRotation =
-                                                      item.rotation;
-                                                });
-                                              },
-                                              onPanUpdate: (details) {
-                                                if (isDraggingRotationHandle &&
-                                                    rotationDragStartPoint !=
-                                                        null) {
-                                                  // 軌跡の中心を計算
-                                                  final center = Offset(
-                                                    item.position.dx +
-                                                        trajectorySize / 2,
-                                                    item.position.dy +
-                                                        trajectorySize / 2,
-                                                  );
-
-                                                  // 開始点から中心への角度
-                                                  final startAngle = math.atan2(
-                                                    rotationDragStartPoint!.dy -
-                                                        center.dy,
-                                                    rotationDragStartPoint!.dx -
-                                                        center.dx,
-                                                  );
-
-                                                  // 現在点から中心への角度
-                                                  final currentAngle =
-                                                      math.atan2(
-                                                    details.globalPosition.dy -
-                                                        center.dy,
-                                                    details.globalPosition.dx -
-                                                        center.dx,
-                                                  );
-
-                                                  // 角度差を計算して回転を適用
-                                                  final angleDelta =
-                                                      currentAngle - startAngle;
-
-                                                  setState(() {
-                                                    item.rotation =
-                                                        item.lastRotation +
-                                                            angleDelta;
-                                                  });
-                                                }
-                                              },
-                                              onPanEnd: (details) {
-                                                setState(() {
-                                                  isDraggingRotationHandle =
-                                                      false;
-                                                  rotationDragStartPoint = null;
-                                                  item.lastRotation =
-                                                      item.rotation;
-                                                });
-                                              },
-                                              child: Container(
-                                                width: 36,
-                                                height: 36,
-                                                decoration: BoxDecoration(
-                                                  color: Colors.blue,
-                                                  shape: BoxShape.circle,
-                                                  border: Border.all(
-                                                      color: Colors.white,
-                                                      width: 2),
-                                                  boxShadow: [
-                                                    BoxShadow(
-                                                      color: Colors.black26,
-                                                      blurRadius: 4,
-                                                      offset: Offset(0, 2),
-                                                    ),
-                                                  ],
-                                                ),
-                                                child: Icon(
-                                                  Icons.rotate_right,
-                                                  size: 16,
-                                                  color: Colors.white,
-                                                ),
-                                              ),
-                                            ),
-                                          ),
-                                        ),
-                                    ],
+                                    ),
                                   ),
                                 ),
                               ),
@@ -831,6 +788,8 @@ class TransformablePolyline {
   Offset position;
   double rotation;
   double lastRotation;
+  double scale;
+  double lastScale;
 
   double minLat;
   double maxLat;
@@ -840,6 +799,8 @@ class TransformablePolyline {
   TransformablePolyline(this.polyline, this.position)
       : rotation = 0.0,
         lastRotation = 0.0,
+        scale = 1.0, // デフォルト値を設定
+        lastScale = 1.0,
         minLat =
             polyline.map((p) => p.latitude).reduce((a, b) => a < b ? a : b),
         maxLat =

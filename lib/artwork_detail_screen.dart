@@ -231,7 +231,9 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
           return TransformablePolyline(
             positions,
             Offset(restoredX, restoredY),
-          )..rotation = item['rotation'] ?? 0.0;
+          )
+            ..scale = item['scale'] ?? 1.0
+            ..rotation = item['rotation'] ?? 0.0;
         }).toList();
 
         _trajectoryColors = List.generate(
@@ -454,12 +456,17 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
       double centerLng = (minLng + maxLng) / 2;
       LatLng center = LatLng(centerLat, centerLng);
 
+      // 軌跡のスケールと回転に基づいてポリラインの太さを調整
+      double baseLineWidth = 4.0;
+      double scaledLineWidth = baseLineWidth * trajectory.scale;
+      scaledLineWidth = scaledLineWidth.clamp(2.0, 12.0);
+
       Set<Polyline> polylines = {
         Polyline(
           polylineId: PolylineId('route_$actualTrajectoryIndex'),
           points: polylinePoints,
           color: Colors.red.withOpacity(0.4), // 透明度を0.9から0.4に変更してより薄く
-          width: 4,
+          width: scaledLineWidth.round(),
         )
       };
 
@@ -566,22 +573,26 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
       double basePixelY =
           trajectorySize - (normalizedY * scaleY + drawingOffsetY);
 
-      // D) 回転適用（コンテナ中心基準）
+      // D) スケール適用（コンテナ中心基準）
       double containerCenterX = trajectorySize / 2;
       double containerCenterY = trajectorySize / 2;
       double relativeX = basePixelX - containerCenterX;
       double relativeY = basePixelY - containerCenterY;
+      double scaledRelativeX = relativeX * trajectory.scale;
+      double scaledRelativeY = relativeY * trajectory.scale;
 
       // E) 回転適用（コンテナ中心基準）
       double rotatedRelativeX, rotatedRelativeY;
       if (trajectory.rotation != 0.0) {
         double cosAngle = math.cos(trajectory.rotation);
         double sinAngle = math.sin(trajectory.rotation);
-        rotatedRelativeX = relativeX * cosAngle - relativeY * sinAngle;
-        rotatedRelativeY = relativeX * sinAngle + relativeY * cosAngle;
+        rotatedRelativeX =
+            scaledRelativeX * cosAngle - scaledRelativeY * sinAngle;
+        rotatedRelativeY =
+            scaledRelativeX * sinAngle + scaledRelativeY * cosAngle;
       } else {
-        rotatedRelativeX = relativeX;
-        rotatedRelativeY = relativeY;
+        rotatedRelativeX = scaledRelativeX;
+        rotatedRelativeY = scaledRelativeY;
       }
 
       // F) 最終画面座標
@@ -602,9 +613,9 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
     double latRange = maxLat - minLat;
     double lngRange = maxLng - minLng;
 
-    // 軌跡の実際の描画サイズ
-    double actualDrawingWidth = drawingParams['scaleX'];
-    double actualDrawingHeight = drawingParams['scaleY'];
+    // 軌跡の実際の描画サイズ（変形適用後）
+    double actualDrawingWidth = drawingParams['scaleX'] * trajectory.scale;
+    double actualDrawingHeight = drawingParams['scaleY'] * trajectory.scale;
 
     // より安定したズーム計算
     double pixelsPerDegreeLat = actualDrawingHeight / latRange;
@@ -645,7 +656,7 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
       print('軌跡インデックス: $trajectoryIndex');
       print('軌跡コンテナ位置: (${trajectory.position.dx}, ${trajectory.position.dy})');
       print(
-          '軌跡変形: 回転=${trajectory.rotation} rad (${trajectory.rotation * 180 / math.pi}°)');
+          '軌跡変形: スケール=${trajectory.scale}, 回転=${trajectory.rotation} rad (${trajectory.rotation * 180 / math.pi}°)');
       print('--- 始点基準 ---');
       print(
           '軌跡始点（地理座標）: (${startPointLat.toStringAsFixed(8)}, ${startPointLng.toStringAsFixed(8)})');
@@ -1088,7 +1099,7 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
                       angle: item.rotation,
                       alignment: Alignment.center,
                       child: Transform.scale(
-                        scale: pulseScale,
+                        scale: item.scale * pulseScale,
                         alignment: Alignment.center,
                         child: CustomPaint(
                           size: Size(trajectorySize, trajectorySize),
@@ -1363,22 +1374,26 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
       double basePixelY =
           trajectorySize - (normalizedY * scaleY + drawingOffsetY);
 
-      // D) 回転適用（コンテナ中心基準）
+      // D) スケール適用（コンテナ中心基準）
       double containerCenterX = trajectorySize / 2;
       double containerCenterY = trajectorySize / 2;
       double relativeX = basePixelX - containerCenterX;
       double relativeY = basePixelY - containerCenterY;
+      double scaledRelativeX = relativeX * trajectory.scale;
+      double scaledRelativeY = relativeY * trajectory.scale;
 
       // E) 回転適用（コンテナ中心基準）
       double rotatedRelativeX, rotatedRelativeY;
       if (trajectory.rotation != 0.0) {
         double cosAngle = math.cos(trajectory.rotation);
         double sinAngle = math.sin(trajectory.rotation);
-        rotatedRelativeX = relativeX * cosAngle - relativeY * sinAngle;
-        rotatedRelativeY = relativeX * sinAngle + relativeY * cosAngle;
+        rotatedRelativeX =
+            scaledRelativeX * cosAngle - scaledRelativeY * sinAngle;
+        rotatedRelativeY =
+            scaledRelativeX * sinAngle + scaledRelativeY * cosAngle;
       } else {
-        rotatedRelativeX = relativeX;
-        rotatedRelativeY = relativeY;
+        rotatedRelativeX = scaledRelativeX;
+        rotatedRelativeY = scaledRelativeY;
       }
 
       // F) 最終画面座標
@@ -1558,22 +1573,26 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
       double basePixelY =
           trajectorySize - (normalizedY * scaleY + drawingOffsetY);
 
-      // D) 回転適用（コンテナ中心基準）
+      // D) スケール適用（コンテナ中心基準）
       double containerCenterX = trajectorySize / 2;
       double containerCenterY = trajectorySize / 2;
       double relativeX = basePixelX - containerCenterX;
       double relativeY = basePixelY - containerCenterY;
+      double scaledRelativeX = relativeX * trajectory.scale;
+      double scaledRelativeY = relativeY * trajectory.scale;
 
       // E) 回転適用（コンテナ中心基準）
       double rotatedRelativeX, rotatedRelativeY;
       if (trajectory.rotation != 0.0) {
         double cosAngle = math.cos(trajectory.rotation);
         double sinAngle = math.sin(trajectory.rotation);
-        rotatedRelativeX = relativeX * cosAngle - relativeY * sinAngle;
-        rotatedRelativeY = relativeX * sinAngle + relativeY * cosAngle;
+        rotatedRelativeX =
+            scaledRelativeX * cosAngle - scaledRelativeY * sinAngle;
+        rotatedRelativeY =
+            scaledRelativeX * sinAngle + scaledRelativeY * cosAngle;
       } else {
-        rotatedRelativeX = relativeX;
-        rotatedRelativeY = relativeY;
+        rotatedRelativeX = scaledRelativeX;
+        rotatedRelativeY = scaledRelativeY;
       }
 
       // F) 最終画面座標
@@ -1634,7 +1653,7 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
         // 追加の診断情報
         print('--- 診断情報 ---');
         print(
-            '軌跡変形: 回転=${(trajectory.rotation * 180 / math.pi).toStringAsFixed(1)}°');
+            '軌跡変形: スケール=${trajectory.scale.toStringAsFixed(3)}, 回転=${(trajectory.rotation * 180 / math.pi).toStringAsFixed(1)}°');
         print(
             '軌跡コンテナ位置: (${trajectory.position.dx.toStringAsFixed(1)}, ${trajectory.position.dy.toStringAsFixed(1)})');
 
@@ -1711,21 +1730,25 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
         double basePixelY =
             trajectorySize - (normalizedY * scaleY + drawingOffsetY);
 
-        // 回転を適用
+        // スケールと回転を適用
         double containerCenterX = trajectorySize / 2;
         double containerCenterY = trajectorySize / 2;
         double relativeX = basePixelX - containerCenterX;
         double relativeY = basePixelY - containerCenterY;
+        double scaledRelativeX = relativeX * trajectory.scale;
+        double scaledRelativeY = relativeY * trajectory.scale;
 
         double rotatedRelativeX, rotatedRelativeY;
         if (trajectory.rotation != 0.0) {
           double cosAngle = math.cos(trajectory.rotation);
           double sinAngle = math.sin(trajectory.rotation);
-          rotatedRelativeX = relativeX * cosAngle - relativeY * sinAngle;
-          rotatedRelativeY = relativeX * sinAngle + relativeY * cosAngle;
+          rotatedRelativeX =
+              scaledRelativeX * cosAngle - scaledRelativeY * sinAngle;
+          rotatedRelativeY =
+              scaledRelativeX * sinAngle + scaledRelativeY * cosAngle;
         } else {
-          rotatedRelativeX = relativeX;
-          rotatedRelativeY = relativeY;
+          rotatedRelativeX = scaledRelativeX;
+          rotatedRelativeY = scaledRelativeY;
         }
 
         // 現在のオーバーレイ始点座標（画面上の絶対位置）
@@ -1954,15 +1977,20 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
       double containerCenterY = trajectorySize / 2;
       double relativeX = basePixelX - containerCenterX;
       double relativeY = basePixelY - containerCenterY;
+      double scaledRelativeX = relativeX * trajectory.scale;
+      double scaledRelativeY = relativeY * trajectory.scale;
+
       double rotatedRelativeX, rotatedRelativeY;
       if (trajectory.rotation != 0.0) {
         double cosAngle = math.cos(trajectory.rotation);
         double sinAngle = math.sin(trajectory.rotation);
-        rotatedRelativeX = relativeX * cosAngle - relativeY * sinAngle;
-        rotatedRelativeY = relativeX * sinAngle + relativeY * cosAngle;
+        rotatedRelativeX =
+            scaledRelativeX * cosAngle - scaledRelativeY * sinAngle;
+        rotatedRelativeY =
+            scaledRelativeX * sinAngle + scaledRelativeY * cosAngle;
       } else {
-        rotatedRelativeX = relativeX;
-        rotatedRelativeY = relativeY;
+        rotatedRelativeX = scaledRelativeX;
+        rotatedRelativeY = scaledRelativeY;
       }
 
       double overlayStartRelativeX = containerCenterX + rotatedRelativeX;

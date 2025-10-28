@@ -7,7 +7,7 @@
     <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
 
     <application
-        android:label="walk_tracker_app"
+        android:label="GPStroke"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         android:foregroundServiceType="location"
