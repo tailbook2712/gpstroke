@@ -55,23 +55,23 @@ class _ArtworkListScreenState extends State<ArtworkListScreen> {
       // ローカルファイルを削除
       final imageFile = artworks[index]['imageFile'] as File;
       final canvasFile = artworks[index]['canvasFile'] as File;
-      
+
       if (await imageFile.exists()) {
         await imageFile.delete();
       }
       if (await canvasFile.exists()) {
         await canvasFile.delete();
       }
-      
+
       // Firestoreからも削除
       if (artworkId.isNotEmpty) {
         await _firestoreService.deleteArtworkById(artworkId);
       }
-      
+
       setState(() {
         artworks.removeAt(index);
       });
-      
+
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('作品を削除しました')),
       );
@@ -110,12 +110,14 @@ class _ArtworkListScreenState extends State<ArtworkListScreen> {
 
                       final meta = snapshot.data!;
                       final trajectoryCount = meta['trajectoryCount'] ?? 0;
-                      final totalDistance = (meta['totalDistance'] ?? 0.0) / 1000.0; // km単位に変換
+                      // ⚠️ 注意: totalDistance は既にkm単位で保存されている
+                      final totalDistance = (meta['totalDistance'] ?? 0.0);
                       final totalSteps = meta['totalSteps'] ?? 0;
                       final artworkId = meta['artworkId'] ?? '';
 
                       return Dismissible(
-                        key: ValueKey(artworkId.isEmpty ? index.toString() : artworkId),
+                        key: ValueKey(
+                            artworkId.isEmpty ? index.toString() : artworkId),
                         direction: DismissDirection.endToStart,
                         background: Container(
                           alignment: Alignment.centerRight,
@@ -132,11 +134,13 @@ class _ArtworkListScreenState extends State<ArtworkListScreen> {
                                 content: Text("この作品を削除してもよろしいですか？"),
                                 actions: [
                                   TextButton(
-                                    onPressed: () => Navigator.of(context).pop(false),
+                                    onPressed: () =>
+                                        Navigator.of(context).pop(false),
                                     child: Text("キャンセル"),
                                   ),
                                   TextButton(
-                                    onPressed: () => Navigator.of(context).pop(true),
+                                    onPressed: () =>
+                                        Navigator.of(context).pop(true),
                                     child: Text("削除"),
                                   ),
                                 ],
@@ -169,17 +173,25 @@ class _ArtworkListScreenState extends State<ArtworkListScreen> {
                                 // 画像部分 - アスペクト比を維持して表示
                                 Expanded(
                                   child: ClipRRect(
-                                    borderRadius: BorderRadius.vertical(top: Radius.circular(12)),
+                                    borderRadius: BorderRadius.vertical(
+                                        top: Radius.circular(12)),
                                     child: FutureBuilder<Size>(
-                                      future: _getImageSize(artworks[index]['imageFile']),
+                                      future: _getImageSize(
+                                          artworks[index]['imageFile']),
                                       builder: (context, imageSnapshot) {
                                         // 画像サイズが取得できた場合はそのアスペクト比を使用
-                                        final aspectRatio = imageSnapshot.hasData
-                                            ? imageSnapshot.data!.width / imageSnapshot.data!.height
-                                            : 16 / 9; // デフォルトのアスペクト比
+                                        final aspectRatio =
+                                            imageSnapshot.hasData
+                                                ? imageSnapshot.data!.width /
+                                                    imageSnapshot.data!.height
+                                                : 16 / 9; // デフォルトのアスペクト比
 
-                                        final containerWidth = (MediaQuery.of(context).size.width - 48) / 2; // 2列表示を考慮
-                                        final containerHeight = containerWidth / aspectRatio;
+                                        final containerWidth =
+                                            (MediaQuery.of(context).size.width -
+                                                    48) /
+                                                2; // 2列表示を考慮
+                                        final containerHeight =
+                                            containerWidth / aspectRatio;
 
                                         return Container(
                                           height: containerHeight,
@@ -199,7 +211,8 @@ class _ArtworkListScreenState extends State<ArtworkListScreen> {
                                 Padding(
                                   padding: const EdgeInsets.all(8.0),
                                   child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
                                     children: [
                                       Text(
                                         meta['artworkName'],

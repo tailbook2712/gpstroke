@@ -23,6 +23,7 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
     with TickerProviderStateMixin {
   List<TransformablePolyline> _trajectories = [];
   List<int> _recordedOrder = [];
+  List<Map<String, dynamic>> _trajectoryMetadata = []; // 軌跡のメタデータを保持
   late DatabaseHelper _dbHelper;
 
   String _artworkName = "作品の詳細";
@@ -236,6 +237,11 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
             ..rotation = item['rotation'] ?? 0.0;
         }).toList();
 
+        // メタデータを保存
+        _trajectoryMetadata = (data['trajectories'] as List<dynamic>)
+            .map((item) => (item['details'] as Map<String, dynamic>? ?? {}))
+            .toList();
+
         _trajectoryColors = List.generate(
           _trajectories.length,
           (_) => Colors.blue,
@@ -424,7 +430,16 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
   // Web Mercator対応の地図データ準備
   Future<void> _prepareMapData(int actualTrajectoryIndex) async {
     TransformablePolyline trajectory = _trajectories[actualTrajectoryIndex];
-    String groupId = generateGroupId(trajectory.polyline);
+
+    // メタデータから直接groupIdを取得（保存時と同じgroupIdを使用）
+    String groupId = '';
+    if (actualTrajectoryIndex < _trajectoryMetadata.length &&
+        _trajectoryMetadata[actualTrajectoryIndex].containsKey('groupId')) {
+      groupId = _trajectoryMetadata[actualTrajectoryIndex]['groupId'];
+    } else {
+      // フォールバック: メタデータがない場合は計算（古い形式のファイル対応）
+      groupId = generateGroupId(trajectory.polyline);
+    }
 
     try {
       List<Map<String, dynamic>> positions =
@@ -434,6 +449,9 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
 
       if (positions.isEmpty || record == null) {
         print("位置情報または記録が見つかりません: $groupId");
+        print("メタデータから取得したgroupId: $groupId");
+        print(
+            "インデックス: $actualTrajectoryIndex, メタデータ数: ${_trajectoryMetadata.length}");
         return;
       }
 
@@ -1190,7 +1208,7 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
                                     SizedBox(width: 24),
                                     _buildStatItem(
                                       Icons.straighten,
-                                      '${(_currentTrajectoryDetails!['distance'] / 1000).toStringAsFixed(2)} km',
+                                      '${(_currentTrajectoryDetails!['distance'] as double).toStringAsFixed(2)} km',
                                       Colors.green,
                                     ),
                                   ],

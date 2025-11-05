@@ -49,6 +49,10 @@ dependencies:
   cloud_firestore: ^5.4.4
   pedometer: ^4.0.2
   flutter_background_geolocation: ^4.16.6
+  file_picker: ^8.1.2
+  xml: ^6.5.0
+  intl: ^0.20.1
+  shared_preferences: ^2.2.2
 
 dev_dependencies:
   flutter_test:

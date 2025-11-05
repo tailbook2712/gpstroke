@@ -12,6 +12,7 @@ import 'package:walk_tracker_app/artwork_list_screen.dart';
 import 'package:walk_tracker_app/artwork_creation_screen.dart';
 import 'database_helper.dart';
 import 'firestore_service.dart';
+import 'garmin_import_screen.dart';
 import 'package:pedometer/pedometer.dart';
 
 import 'utils/utils.dart';
@@ -22,10 +23,13 @@ class WalkingTrackerScreen extends StatefulWidget {
 }
 
 class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
+  // ignore: unused_field
   Position? _currentPosition;
   Position? _previousPosition;
   List<Position> _positions = [];
+  // ignore: unused_field
   bool _isMoving = false;
+  // ignore: unused_field
   bool _isTracking = false;
   bool _isRecording = false;
   double _totalDistance = 0.0;
@@ -107,24 +111,24 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
             print('アートワークIDが見つかりません。スキップします。');
             continue;
           }
-          
+
           final canvasState = artwork['canvasState'];
           if (canvasState == null) {
             print('キャンバス状態が見つかりません。スキップします: $artworkId');
             continue;
           }
-          
+
           // 画像データをBase64からデコード
           if (artwork['imageData'] == null) {
             print('画像データが見つかりません。スキップします: $artworkId');
             continue;
           }
-          
+
           Uint8List imageData = base64Decode(artwork['imageData']);
-          
+
           // ファイルに保存
           File imgFile = File('${artworksDirectory.path}/$artworkId.png');
-          
+
           // タイムスタンプの取得（エラーハンドリングを追加）
           String timestamp = '';
           try {
@@ -139,28 +143,29 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
             print('タイムスタンプの取得に失敗しました: $e');
             timestamp = DateTime.now().millisecondsSinceEpoch.toString();
           }
-          
-          File canvasFile = File('${canvasDirectory.path}/canvas_$timestamp.json');
-          
+
+          File canvasFile =
+              File('${canvasDirectory.path}/canvas_$timestamp.json');
+
           // すでに存在する場合はスキップ
           if (await imgFile.exists() && await canvasFile.exists()) {
             print('アートワークはすでに存在します: $artworkId');
             continue;
           }
-          
+
           // ファイルに書き込み
           await imgFile.writeAsBytes(imageData);
           await canvasFile.writeAsString(jsonEncode(canvasState));
-          
+
           print('アートワークを復元しました: $artworkId');
           restoredCount++;
         } catch (e) {
           print('アートワークの復元中にエラー: $e');
         }
       }
-      
+
       print('Firestoreからアートワークを復元しました: $restoredCount件');
-      
+
       // アートワークのリストを更新
       await _loadSavedArtworks();
     } catch (e) {
@@ -184,22 +189,25 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
     final artworkFiles = artworksDirectory.listSync().whereType<File>();
     final canvasFiles = canvasDirectory.listSync().whereType<File>();
 
-    savedArtworks = artworkFiles.map((artworkFile) {
-      // 対応するキャンバス状態ファイルを取得
-      final timestamp = artworkFile.path.split('_').last.split('.').first;
-      final canvasFile = canvasFiles.firstWhere(
-        (file) => file.path.contains(timestamp),
-        orElse: () => File(''), // 見つからなければ空ファイル（スキップ）
-      );
+    savedArtworks = artworkFiles
+        .map((artworkFile) {
+          // 対応するキャンバス状態ファイルを取得
+          final timestamp = artworkFile.path.split('_').last.split('.').first;
+          final canvasFile = canvasFiles.firstWhere(
+            (file) => file.path.contains(timestamp),
+            orElse: () => File(''), // 見つからなければ空ファイル（スキップ）
+          );
 
-      if (canvasFile.existsSync()) {
-        return {
-          'imageFile': artworkFile,
-          'canvasFile': canvasFile,
-        };
-      }
-      return null; // キャンバスファイルがない場合スキップ
-    }).whereType<Map<String, dynamic>>().toList();
+          if (canvasFile.existsSync()) {
+            return {
+              'imageFile': artworkFile,
+              'canvasFile': canvasFile,
+            };
+          }
+          return null; // キャンバスファイルがない場合スキップ
+        })
+        .whereType<Map<String, dynamic>>()
+        .toList();
   }
 
   // 位置情報の許可を確認してトラッキングを開始
@@ -274,14 +282,14 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
       return {
         'latitude': position.latitude,
         'longitude': position.longitude,
-        'timestamp': position.timestamp!.toIso8601String(),
+        'timestamp': position.timestamp.toIso8601String(),
       };
     }).toList();
 
     final currentDate = DateTime.now().toIso8601String();
     // generateGroupId を使って groupId を生成
     String groupId = generateGroupId(_positions);
-  
+
     await _dbHelper.insertWalkingData(
       groupId: groupId,
       date: currentDate,
@@ -313,11 +321,11 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
         timestamp: DateTime.now(),
         accuracy: location.coords.accuracy,
         altitude: location.coords.altitude,
-        altitudeAccuracy: location.coords.altitudeAccuracy ?? 0.0,
+        altitudeAccuracy: location.coords.altitudeAccuracy,
         heading: location.coords.heading,
         speed: location.coords.speed,
-        speedAccuracy: location.coords.speedAccuracy ?? 0.0,
-        headingAccuracy: location.coords.headingAccuracy ?? 0.0,
+        speedAccuracy: location.coords.speedAccuracy,
+        headingAccuracy: location.coords.headingAccuracy,
       ));
     }, (bg.LocationError error) {
       print("[onLocation] ERROR: ${error.code}, ${error.message}");
@@ -366,7 +374,7 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
         // さらに早い場合
         recordingInterval = 2000;
       }
-      
+
       // 記録中の場合、位置情報を記録
       if (_isRecording) {
         _positions.add(newPosition);
@@ -440,7 +448,8 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
   // Firestoreからデータを復元
   Future<void> _restoreDataFromFirestore() async {
     try {
-      List<Map<String, dynamic>> allWalkingData = await _firestoreService.getAllWalkingData();
+      List<Map<String, dynamic>> allWalkingData =
+          await _firestoreService.getAllWalkingData();
       for (var data in allWalkingData) {
         // 各フィールドを取得
         String groupId = data['groupId'] ?? 0;
@@ -450,7 +459,8 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
 
         // positionsがリスト型かを確認
         if (data['positions'] is List) {
-          List<Map<String, dynamic>> positions = List<Map<String, dynamic>>.from(data['positions']);
+          List<Map<String, dynamic>> positions =
+              List<Map<String, dynamic>>.from(data['positions']);
 
           // データをローカルデータベースに保存
           await _dbHelper.insertWalkingData(
@@ -473,7 +483,8 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
   // ローカルデータベースから軌跡を読み込む
   Future<void> _loadTrajectories() async {
     try {
-      List<Map<String, dynamic>> walkingData = await _dbHelper.getAllWalkingData();
+      List<Map<String, dynamic>> walkingData =
+          await _dbHelper.getAllWalkingData();
       List<List<Position>> loadedTrajectories = [];
 
       for (var data in walkingData) {
@@ -511,14 +522,14 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
   void _navigateToArtworkCreationScreen() async {
     await _loadTrajectories();
     await _syncUsedTrajectories(); // 使用済み軌跡情報を同期してから作成画面に移動
-    
+
     final result = await Navigator.push(
       context,
       MaterialPageRoute(
         builder: (context) => ArtworkCreationScreen(trajectories: trajectories),
       ),
     );
-    
+
     // 作品が保存された場合、ギャラリーを更新
     if (result != null) {
       await _syncUsedTrajectories(); // 保存後も同期を行う
@@ -535,6 +546,21 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
         builder: (context) => ArtworkListScreen(savedArtworks: savedArtworks),
       ),
     );
+  }
+
+  // Garmin インポート画面に遷移
+  Future<void> _navigateToGarminImportScreen() async {
+    final result = await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => GarminImportScreen(),
+      ),
+    );
+
+    // インポート後、軌跡を再読み込み
+    if (result != null) {
+      await _loadTrajectories();
+    }
   }
 
   @override
@@ -584,6 +610,10 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
         ),
       ),
       bottomNavigationBar: BottomNavigationBar(
+        type: BottomNavigationBarType.fixed,
+        currentIndex: 0,
+        selectedItemColor: Colors.blue,
+        unselectedItemColor: Colors.grey,
         items: [
           BottomNavigationBarItem(
             icon: Icon(Icons.location_on),
@@ -592,6 +622,10 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
           BottomNavigationBarItem(
             icon: Icon(Icons.brush),
             label: '作品の制作',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.download),
+            label: 'Garmin',
           ),
           BottomNavigationBarItem(
             icon: Icon(Icons.collections),
@@ -606,6 +640,9 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
               _navigateToArtworkCreationScreen();
               break;
             case 2:
+              _navigateToGarminImportScreen();
+              break;
+            case 3:
               _navigatetoArtworkGalleryScreen();
               break;
           }
