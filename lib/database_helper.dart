@@ -2,7 +2,6 @@ import 'dart:convert';
 
 import 'package:path/path.dart';
 import 'package:sqflite/sqflite.dart';
-import 'package:geolocator/geolocator.dart';
 import 'firestore_service.dart';
 
 class DatabaseHelper {
@@ -19,6 +18,7 @@ class DatabaseHelper {
   static final columnSteps = 'steps';
   static final columnDistance = 'distance';
   static final columnPositions = 'positions'; // JSON形式で位置情報を保存
+  static final columnIsFromGarmin = 'is_from_garmin'; // Garminからのインポート判定
 
   // used_trajectories テーブルのカラム
   static final columnTrajectoryIndex = 'trajectory_index';
@@ -49,7 +49,8 @@ class DatabaseHelper {
         $columnDate TEXT NOT NULL,
         $columnSteps INTEGER NOT NULL,
         $columnDistance REAL NOT NULL,
-        $columnPositions TEXT NOT NULL
+        $columnPositions TEXT NOT NULL,
+        $columnIsFromGarmin INTEGER NOT NULL DEFAULT 0
       )
     ''');
 
@@ -67,6 +68,7 @@ class DatabaseHelper {
     required int steps,
     required double distance,
     required List<Map<String, dynamic>> positions,
+    bool isFromGarmin = false,
   }) async {
     Database db = await database;
 
@@ -90,6 +92,7 @@ class DatabaseHelper {
         columnSteps: steps,
         columnDistance: distance,
         columnPositions: jsonEncode(positions),
+        columnIsFromGarmin: isFromGarmin ? 1 : 0,
       },
     );
   }
@@ -113,7 +116,7 @@ class DatabaseHelper {
       {columnTrajectoryIndex: trajectoryIndex},
       conflictAlgorithm: ConflictAlgorithm.ignore,
     );
-    
+
     // Firestoreにも同期
     List<int> indices = [trajectoryIndex];
     await _firestoreService.saveUsedTrajectories(indices);
@@ -122,10 +125,10 @@ class DatabaseHelper {
   // 複数の使用済み軌跡インデックスを一括で保存
   Future<void> insertUsedTrajectories(List<int> indices) async {
     if (indices.isEmpty) return;
-    
+
     Database db = await database;
     Batch batch = db.batch();
-    
+
     for (int index in indices) {
       batch.insert(
         usedTrajectoriesTable,
@@ -133,9 +136,9 @@ class DatabaseHelper {
         conflictAlgorithm: ConflictAlgorithm.ignore,
       );
     }
-    
+
     await batch.commit();
-    
+
     // Firestoreにも同期
     await _firestoreService.saveUsedTrajectories(indices);
   }
@@ -152,20 +155,20 @@ class DatabaseHelper {
     try {
       // ローカルDBから取得
       List<int> localIndices = await getUsedTrajectories();
-      
+
       // Firestoreから取得
       List<int> remoteIndices = await _firestoreService.getUsedTrajectories();
-      
+
       // マージして重複を削除
       Set<int> mergedIndices = {...localIndices, ...remoteIndices};
-      
+
       // 新しく追加された項目があれば、ローカルDBに追加
       Set<int> newIndices = mergedIndices.difference(localIndices.toSet());
       if (newIndices.isNotEmpty) {
         await insertUsedTrajectories(newIndices.toList());
         print("Firestoreから新たに同期した使用済み軌跡: ${newIndices.length}件");
       }
-      
+
       // Firestoreに更新
       if (mergedIndices.length > remoteIndices.length) {
         await _firestoreService.saveUsedTrajectories(mergedIndices.toList());
@@ -188,7 +191,8 @@ class DatabaseHelper {
   // データ削除 (指定したグループIDのデータを削除)
   Future<void> deleteWalkingDataByGroupId(String groupId) async {
     Database db = await database;
-    await db.delete(tableWalkingData, where: '$columnGroupId = ?', whereArgs: [groupId]);
+    await db.delete(tableWalkingData,
+        where: '$columnGroupId = ?', whereArgs: [groupId]);
   }
 
   // 指定したグループIDに対応する記録を取得
@@ -207,7 +211,8 @@ class DatabaseHelper {
     return result.isNotEmpty ? result.first : null;
   }
 
-  Future<List<Map<String, dynamic>>> getPositionsByGroupId(String groupId) async {
+  Future<List<Map<String, dynamic>>> getPositionsByGroupId(
+      String groupId) async {
     Database db = await database;
 
     // groupId に対応するデータを取得
@@ -231,8 +236,60 @@ class DatabaseHelper {
   }
 
   Future<void> debugPrintAllWalkingData() async {
-    Database db = await database;
-    List<Map<String, dynamic>> allData = await db.query(tableWalkingData);
+    // デバッグ用メソッド - 将来の使用に備えて保持
+    // List<Map<String, dynamic>> allData = await database.then((db) => db.query(tableWalkingData));
     // print("All walking data: $allData");
+  }
+
+  /// Garmin データソースのデータを取得
+  Future<List<Map<String, dynamic>>> getGarminActivities() async {
+    Database db = await database;
+    List<Map<String, dynamic>> result = await db.query(
+      tableWalkingData,
+      where: '$columnIsFromGarmin = ?',
+      whereArgs: [1],
+      orderBy: '$columnDate DESC',
+    );
+    return result;
+  }
+
+  /// 特定のデータソースを持つデータをすべて取得
+  Future<List<Map<String, dynamic>>> getActivitiesBySource(
+      String source) async {
+    Database db = await database;
+    List<Map<String, dynamic>> result = await db.query(
+      tableWalkingData,
+      where: '$columnGroupId LIKE ?',
+      whereArgs: ['${source}_%'],
+      orderBy: '$columnDate DESC',
+    );
+    return result;
+  }
+
+  /// Garmin軌跡を使用済みにマーク
+  Future<void> markGarminActivityAsUsed(String groupId) async {
+    Database db = await database;
+    // is_from_garmin=1 のデータを used_trajectories テーブルに記録
+    final data = await db.query(
+      tableWalkingData,
+      where: '$columnGroupId = ? AND $columnIsFromGarmin = ?',
+      whereArgs: [groupId, 1],
+    );
+
+    if (data.isNotEmpty) {
+      // groupId の hash値をインデックスとして使用
+      final index = groupId.hashCode;
+      await insertUsedTrajectory(index);
+    }
+  }
+
+  /// Garmin軌跡がまだ使用可能かチェック
+  Future<bool> isGarminActivityAvailable(String groupId) async {
+    Database db = await database;
+    final usedTrajectories = await db.query(usedTrajectoriesTable);
+    final usedIndices =
+        usedTrajectories.map((t) => t[columnTrajectoryIndex] as int).toSet();
+
+    return !usedIndices.contains(groupId.hashCode);
   }
 }

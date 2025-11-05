@@ -2,16 +2,17 @@ import 'dart:convert';
 import 'dart:typed_data';
 import 'dart:ui';
 import 'dart:math' as math;
+import 'dart:async';
 import 'package:flutter/rendering.dart';
 import 'package:path_provider/path_provider.dart';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:intl/intl.dart';
 import 'database_helper.dart';
 import 'draft_list_screen.dart';
 import 'polyline_painter.dart';
-import 'package:intl/intl.dart';
-import 'firestore_service.dart'; // Firestoreサービスをインポート
+import 'firestore_service.dart';
 
 import 'utils/utils.dart';
 
@@ -54,7 +55,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
     try {
       recordedTrajectories.clear();
 
-      // ローカルデータベースからデータを取得
+      // ローカルデータベースからデータを取得（Garmin軌跡を除外）
       List<Map<String, dynamic>> allWalkingData =
           await _dbHelper.getAllWalkingData();
 
@@ -66,6 +67,12 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
       List<List<Position>> uniqueTrajectoryList = [];
 
       for (var data in allWalkingData) {
+        // Garmin軌跡は除外（is_from_garmin = 1）
+        final isFromGarmin = (data['is_from_garmin'] ?? 0) as int;
+        if (isFromGarmin == 1) {
+          continue;
+        }
+
         String groupId = data['group_id'];
 
         if (!uniqueGroupIds.contains(groupId)) {
@@ -172,14 +179,82 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
 
       for (var item in selectedTrajectories) {
         final groupId = generateGroupId(item.polyline);
-        final trajectoryDetails =
+        var trajectoryDetails =
             await _dbHelper.getWalkingDataByGroupId(groupId);
+
+        // デバッグ: Garmin軌跡の場合、複数のgroupIdを試す
+        String actualGroupId = groupId;
+        if (trajectoryDetails == null) {
+          print('⚠️ groupId "$groupId" でデータが見つかりません。Garmin軌跡か確認中...');
+          // DB内に保存されているすべてのGarmin軌跡を確認
+          final garminActivities = await _dbHelper.getGarminActivities();
+          print('  利用可能なGarmin軌跡数: ${garminActivities.length}');
+
+          if (garminActivities.isNotEmpty) {
+            // 座標の境界から最も近いGarmin軌跡を見つける
+            double minLat =
+                item.polyline.map((p) => p.latitude).reduce(math.min);
+            double maxLat =
+                item.polyline.map((p) => p.latitude).reduce(math.max);
+            double minLng =
+                item.polyline.map((p) => p.longitude).reduce(math.min);
+            double maxLng =
+                item.polyline.map((p) => p.longitude).reduce(math.max);
+
+            double centerLat = (minLat + maxLat) / 2;
+            double centerLng = (minLng + maxLng) / 2;
+
+            print('  軌跡の中心座標: ($centerLat, $centerLng)');
+
+            // すべてのGarmin軌跡を確認
+            for (final activity in garminActivities) {
+              print(
+                  '    - groupId: ${activity['group_id']}, distance: ${activity['distance']}, steps: ${activity['steps']}');
+
+              // 座標を復元してチェック
+              final positions = jsonDecode(activity['positions']) as List;
+              if (positions.isNotEmpty) {
+                final firstPos = positions.first as Map<String, dynamic>;
+                final lastPos = positions.last as Map<String, dynamic>;
+
+                final minLatDB = math.min(
+                    (firstPos['latitude'] as num).toDouble(),
+                    (lastPos['latitude'] as num).toDouble());
+                final maxLatDB = math.max(
+                    (firstPos['latitude'] as num).toDouble(),
+                    (lastPos['latitude'] as num).toDouble());
+                final minLngDB = math.min(
+                    (firstPos['longitude'] as num).toDouble(),
+                    (lastPos['longitude'] as num).toDouble());
+                final maxLngDB = math.max(
+                    (firstPos['longitude'] as num).toDouble(),
+                    (lastPos['longitude'] as num).toDouble());
+
+                print(
+                    '      DB座標範囲: lat($minLatDB, $maxLatDB), lng($minLngDB, $maxLngDB)');
+
+                // 座標範囲が重なっているか確認
+                if (minLat <= maxLatDB &&
+                    maxLat >= minLatDB &&
+                    minLng <= maxLngDB &&
+                    maxLng >= minLngDB) {
+                  print('      ✅ 座標が一致！このgroupIdを使用します');
+                  actualGroupId = activity['group_id'] as String;
+                  trajectoryDetails =
+                      await _dbHelper.getWalkingDataByGroupId(actualGroupId);
+                  break;
+                }
+              }
+            }
+          }
+        }
+
         totalDistance += (trajectoryDetails?['distance'] as double? ?? 0.0);
         totalSteps += (trajectoryDetails?['steps'] as int? ?? 0);
         trajectoryDetailsCache.add({
           'item': item,
           'details': trajectoryDetails,
-          'groupId': groupId,
+          'groupId': actualGroupId,
         });
       }
 
@@ -349,95 +424,45 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
-      builder: (context) {
-        // 使用可能な軌跡をフィルタリング
-        final availableTrajectories = List.generate(
-          recordedTrajectories.length,
-          (index) => !usedTrajectoryIndices.contains(index) &&
-                  !temporarilyUsedIndices.contains(index)
-              ? recordedTrajectories[index]
-              : null,
-        ).where((trajectory) => trajectory != null).toList();
-
-        // 軌跡を最新の順にソート
-        availableTrajectories.sort((a, b) {
-          final DateTime latestA = a!.map((p) => p.timestamp).reduce(
-              (value, element) => value.isAfter(element) ? value : element);
-          final DateTime latestB = b!.map((p) => p.timestamp).reduce(
-              (value, element) => value.isAfter(element) ? value : element);
-          return latestB.compareTo(latestA); // 新しい順
-        });
-
-        return Container(
-          height: MediaQuery.of(context).size.height * 0.5,
-          padding: EdgeInsets.all(10),
-          child: GridView.builder(
-            gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: 3,
-              crossAxisSpacing: 10,
-              mainAxisSpacing: 10,
+      backgroundColor: Colors.transparent,
+      builder: (context) => DraggableScrollableSheet(
+        initialChildSize: 0.5,
+        minChildSize: 0.3,
+        maxChildSize: 0.9,
+        builder: (context, scrollController) => Container(
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.only(
+              topLeft: Radius.circular(20),
+              topRight: Radius.circular(20),
             ),
-            itemCount: availableTrajectories.length,
-            itemBuilder: (context, index) {
-              final trajectory = availableTrajectories[index];
-              DateTime date = trajectory!.first.timestamp;
-              String formattedDate = DateFormat('MM/dd').format(date);
-              return GestureDetector(
-                onTap: () {
-                  Navigator.pop(context); // モーダルを閉じる
-                  setState(() {
-                    final trajectoryIndex =
-                        recordedTrajectories.indexOf(trajectory);
-                    temporarilyUsedIndices.add(trajectoryIndex);
-                    // 新しい軌跡を追加するとき、scaleを0.6に設定（元の動作と同じ）
-                    final newTrajectory = TransformablePolyline(
-                      trajectory,
-                      Offset(
-                        MediaQuery.of(context).size.width / 2 - 50, // 位置を調整
-                        MediaQuery.of(context).size.height / 2 - 50, // 位置を調整
-                      ),
-                    );
-                    newTrajectory.scale = 0.8; // デフォルトスケール設定
-                    selectedTrajectories.add(newTrajectory);
-                  });
-                },
-                child: Stack(
-                  children: [
-                    CustomPaint(
-                      size: Size(60, 60), // モーダル内のプレビューサイズはそのまま
-                      painter: PolylinePainter(
-                        positions: trajectory,
-                        minLat: trajectory
-                            .map((p) => p.latitude)
-                            .reduce((a, b) => a < b ? a : b),
-                        maxLat: trajectory
-                            .map((p) => p.latitude)
-                            .reduce((a, b) => a > b ? a : b),
-                        minLon: trajectory
-                            .map((p) => p.longitude)
-                            .reduce((a, b) => a < b ? a : b),
-                        maxLon: trajectory
-                            .map((p) => p.longitude)
-                            .reduce((a, b) => a > b ? a : b),
-                      ),
-                    ),
-                    Positioned(
-                      top: 0,
-                      right: 0,
-                      child: Container(
-                        padding: EdgeInsets.all(4),
-                        color: Colors.white.withOpacity(0.8),
-                        child:
-                            Text(formattedDate, style: TextStyle(fontSize: 12)),
-                      ),
-                    ),
-                  ],
-                ),
-              );
+          ),
+          child: _TrajectoryModalContent(
+            recordedTrajectories: recordedTrajectories,
+            usedTrajectoryIndices: usedTrajectoryIndices,
+            temporarilyUsedIndices: temporarilyUsedIndices,
+            dbHelper: _dbHelper,
+            scrollController: scrollController,
+            onSelectTrajectory: (trajectory) {
+              Navigator.pop(context);
+              setState(() {
+                final trajectoryIndex =
+                    recordedTrajectories.indexOf(trajectory);
+                temporarilyUsedIndices.add(trajectoryIndex);
+                final newTrajectory = TransformablePolyline(
+                  trajectory,
+                  Offset(
+                    MediaQuery.of(context).size.width / 2 - 50,
+                    MediaQuery.of(context).size.height / 2 - 50,
+                  ),
+                );
+                newTrajectory.scale = 0.8;
+                selectedTrajectories.add(newTrajectory);
+              });
             },
           ),
-        );
-      },
+        ),
+      ),
     );
   }
 
@@ -809,4 +834,229 @@ class TransformablePolyline {
             polyline.map((p) => p.longitude).reduce((a, b) => a < b ? a : b),
         maxLon =
             polyline.map((p) => p.longitude).reduce((a, b) => a > b ? a : b);
+}
+
+/// 軌跡選択モーダルのコンテンツ
+class _TrajectoryModalContent extends StatefulWidget {
+  final List<List<Position>> recordedTrajectories;
+  final Set<int> usedTrajectoryIndices;
+  final Set<int> temporarilyUsedIndices;
+  final DatabaseHelper dbHelper;
+  final Function(List<Position>) onSelectTrajectory;
+  final ScrollController? scrollController;
+
+  _TrajectoryModalContent({
+    required this.recordedTrajectories,
+    required this.usedTrajectoryIndices,
+    required this.temporarilyUsedIndices,
+    required this.dbHelper,
+    required this.onSelectTrajectory,
+    this.scrollController,
+  });
+
+  @override
+  _TrajectoryModalContentState createState() => _TrajectoryModalContentState();
+}
+
+class _TrajectoryModalContentState extends State<_TrajectoryModalContent> {
+  List<Map<String, dynamic>> _garminActivities = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _loadGarminActivities();
+  }
+
+  Future<void> _loadGarminActivities() async {
+    final activities = await widget.dbHelper.getGarminActivities();
+    setState(() {
+      _garminActivities = activities;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // 使用可能な軌跡をフィルタリング
+    final availableTrajectories = List.generate(
+      widget.recordedTrajectories.length,
+      (index) => !widget.usedTrajectoryIndices.contains(index) &&
+              !widget.temporarilyUsedIndices.contains(index)
+          ? widget.recordedTrajectories[index]
+          : null,
+    ).where((trajectory) => trajectory != null).cast<List<Position>>().toList();
+
+    // 軌跡を最新の順にソート
+    availableTrajectories.sort((a, b) {
+      final DateTime latestA = a
+          .map((p) => p.timestamp)
+          .reduce((value, element) => value.isAfter(element) ? value : element);
+      final DateTime latestB = b
+          .map((p) => p.timestamp)
+          .reduce((value, element) => value.isAfter(element) ? value : element);
+      return latestB.compareTo(latestA);
+    });
+
+    // 使用可能なGarmin軌跡をフィルタリング（is_from_garmin = 1 でまだ使用済みにマークされていないもの）
+    final availableGarminActivities = _garminActivities.where((activity) {
+      final groupId = activity['group_id'] as String;
+      final index = groupId.hashCode;
+      return !widget.usedTrajectoryIndices.contains(index) &&
+          !widget.temporarilyUsedIndices.contains(index);
+    }).toList();
+
+    // 記録した軌跡とGarmin軌跡を統合
+    return _buildCombinedTrajectories(
+        availableTrajectories, availableGarminActivities);
+  }
+
+  // 記録した軌跡とGarmin軌跡を統合表示
+  Widget _buildCombinedTrajectories(
+    List<List<Position>> recordedTrajectories,
+    List<Map<String, dynamic>> availableGarminActivities,
+  ) {
+    if (recordedTrajectories.isEmpty && availableGarminActivities.isEmpty) {
+      return Center(
+        child: Text('軌跡がありません'),
+      );
+    }
+
+    // Garmin アクティビティを Position リストに変換
+    final List<Map<String, dynamic>> garminTrajectories = [];
+    for (final activity in availableGarminActivities) {
+      final positions = (jsonDecode(activity['positions']) as List).map((pos) {
+        return Position(
+          latitude: pos['latitude'],
+          longitude: pos['longitude'],
+          timestamp: DateTime.tryParse(pos['timestamp']) ?? DateTime.now(),
+          accuracy: 0.0,
+          altitude: 0.0,
+          heading: 0.0,
+          speed: 0.0,
+          speedAccuracy: 0.0,
+          altitudeAccuracy: 0.0,
+          headingAccuracy: 0.0,
+        );
+      }).toList();
+
+      garminTrajectories.add({
+        'positions': positions,
+        'isGarmin': true,
+        'date': activity['date'] as String,
+        'distance': activity['distance'] as double,
+        'steps': activity['steps'] as int,
+        'groupId': activity['group_id'] as String,
+      });
+    }
+
+    // 記録した軌跡も同じ形式に
+    final List<Map<String, dynamic>> recordedWithMetadata = [];
+    for (final trajectory in recordedTrajectories) {
+      recordedWithMetadata.add({
+        'positions': trajectory,
+        'isGarmin': false,
+        'date': DateFormat('MM/dd').format(trajectory.first.timestamp),
+      });
+    }
+
+    // 両方を結合してソート（最新順）
+    final List<Map<String, dynamic>> allTrajectories = [
+      ...recordedWithMetadata,
+      ...garminTrajectories
+    ];
+    allTrajectories.sort((a, b) {
+      final List<Position> positionsA = a['positions'];
+      final List<Position> positionsB = b['positions'];
+      final DateTime latestA = positionsA
+          .map((p) => p.timestamp)
+          .reduce((value, element) => value.isAfter(element) ? value : element);
+      final DateTime latestB = positionsB
+          .map((p) => p.timestamp)
+          .reduce((value, element) => value.isAfter(element) ? value : element);
+      return latestB.compareTo(latestA);
+    });
+
+    return GridView.builder(
+      controller: widget.scrollController,
+      padding: EdgeInsets.all(10),
+      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+        crossAxisCount: 3,
+        crossAxisSpacing: 10,
+        mainAxisSpacing: 10,
+      ),
+      itemCount: allTrajectories.length,
+      itemBuilder: (context, index) {
+        final trajectory = allTrajectories[index];
+        final List<Position> positions = trajectory['positions'];
+        final bool isGarmin = trajectory['isGarmin'];
+        final String date = trajectory['date'];
+
+        return GestureDetector(
+          onTap: () {
+            widget.onSelectTrajectory(positions);
+          },
+          child: Stack(
+            children: [
+              CustomPaint(
+                size: Size(60, 60),
+                painter: PolylinePainter(
+                  positions: positions,
+                  minLat: positions
+                      .map((p) => p.latitude)
+                      .reduce((a, b) => a < b ? a : b),
+                  maxLat: positions
+                      .map((p) => p.latitude)
+                      .reduce((a, b) => a > b ? a : b),
+                  minLon: positions
+                      .map((p) => p.longitude)
+                      .reduce((a, b) => a < b ? a : b),
+                  maxLon: positions
+                      .map((p) => p.longitude)
+                      .reduce((a, b) => a > b ? a : b),
+                ),
+              ),
+              // 日付ラベル
+              Positioned(
+                top: 0,
+                right: 0,
+                child: Container(
+                  padding: EdgeInsets.all(4),
+                  color: Colors.white.withOpacity(0.8),
+                  child: Text(date, style: TextStyle(fontSize: 12)),
+                ),
+              ),
+              // Garmin バッジ
+              if (isGarmin)
+                Positioned(
+                  bottom: 0,
+                  left: 0,
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: Colors.orange,
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    padding: EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.cloud_download,
+                            size: 10, color: Colors.white),
+                        SizedBox(width: 2),
+                        Text(
+                          'Garmin',
+                          style: TextStyle(
+                            fontSize: 10,
+                            color: Colors.white,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        );
+      },
+    );
+  }
 }
