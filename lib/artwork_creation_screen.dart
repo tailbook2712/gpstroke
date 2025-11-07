@@ -604,8 +604,8 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
     double screenWidth = MediaQuery.of(context).size.width;
     double screenHeight = MediaQuery.of(context).size.height;
 
-    final double expandedTouchArea = trajectorySize * 2.0; // タッチ領域の拡大
-    final double touchAreaOffset = (expandedTouchArea - trajectorySize) / 2;
+    final double expandedTouchArea = trajectorySize; // タップ領域を軌跡のサイズに限定
+    final double touchAreaOffset = 0; // オフセットなし
 
     return Scaffold(
       appBar: AppBar(
@@ -664,8 +664,8 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                       final isSelected = selectedItem == item;
 
                       return Positioned(
-                        left: item.position.dx - touchAreaOffset,
-                        top: item.position.dy - touchAreaOffset,
+                        left: item.position.dx - trajectorySize / 2,
+                        top: item.position.dy - trajectorySize / 2,
                         child: GestureDetector(
                           behavior: HitTestBehavior.opaque,
                           onTap: () {
@@ -765,16 +765,26 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                                     child: Transform.scale(
                                       scale: item.scale,
                                       alignment: Alignment.center,
-                                      child: CustomPaint(
-                                        size: Size(
-                                            trajectorySize, trajectorySize),
-                                        painter: PolylinePainter(
-                                          positions: item.polyline,
-                                          minLat: item.minLat,
-                                          maxLat: item.maxLat,
-                                          minLon: item.minLon,
-                                          maxLon: item.maxLon,
-                                        ),
+                                      child: Stack(
+                                        children: [
+                                          CustomPaint(
+                                            size: Size(
+                                                trajectorySize, trajectorySize),
+                                            painter: PolylinePainter(
+                                              positions: item.polyline,
+                                              minLat: item.minLat,
+                                              maxLat: item.maxLat,
+                                              minLon: item.minLon,
+                                              maxLon: item.maxLon,
+                                            ),
+                                          ),
+                                          // デバッグ: タップ領域を視覚化
+                                          Positioned.fill(
+                                            child: CustomPaint(
+                                            //  painter: DebugBoundsPainter(), // デバッグ用ペインター
+                                            ),
+                                          ),
+                                        ],
                                       ),
                                     ),
                                   ),
@@ -1059,4 +1069,58 @@ class _TrajectoryModalContentState extends State<_TrajectoryModalContent> {
       },
     );
   }
+}
+
+/// デバッグ用: 軌跡のタップ領域を視覚化するペインター
+class DebugBoundsPainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = Colors.cyan.withOpacity(0.3)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.0;
+
+    // 矩形の枠線を描画
+    canvas.drawRect(
+      Rect.fromLTWH(0, 0, size.width, size.height),
+      paint,
+    );
+
+    // コーナーに小さなマーカーを追加
+    final markerPaint = Paint()
+      ..color = Colors.cyan
+      ..style = PaintingStyle.fill;
+
+    final markerSize = 4.0;
+    // 左上
+    canvas.drawCircle(Offset(markerSize, markerSize), markerSize, markerPaint);
+    // 右上
+    canvas.drawCircle(
+        Offset(size.width - markerSize, markerSize), markerSize, markerPaint);
+    // 左下
+    canvas.drawCircle(
+        Offset(markerSize, size.height - markerSize), markerSize, markerPaint);
+    // 右下
+    canvas.drawCircle(Offset(size.width - markerSize, size.height - markerSize),
+        markerSize, markerPaint);
+
+    // 中心を示す十字線
+    final centerX = size.width / 2;
+    final centerY = size.height / 2;
+    const crossSize = 10.0;
+
+    canvas.drawLine(
+      Offset(centerX - crossSize, centerY),
+      Offset(centerX + crossSize, centerY),
+      paint,
+    );
+    canvas.drawLine(
+      Offset(centerX, centerY - crossSize),
+      Offset(centerX, centerY + crossSize),
+      paint,
+    );
+  }
+
+  @override
+  bool shouldRepaint(DebugBoundsPainter oldDelegate) => false;
 }
