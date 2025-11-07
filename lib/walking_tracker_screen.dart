@@ -425,7 +425,8 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
         newPosition.latitude,
         newPosition.longitude,
       );
-      _totalDistance += distance;
+      // メートル単位からkmに変換
+      _totalDistance += distance / 1000.0;
     }
 
     // ポリラインを更新
