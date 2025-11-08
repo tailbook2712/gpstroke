@@ -110,7 +110,18 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
 
     for (int i = 0; i < _trajectories.length; i++) {
       TransformablePolyline trajectory = _trajectories[i];
-      String groupId = generateGroupId(trajectory.polyline);
+
+      // メタデータから直接groupIdを取得（保存時に使用されたgroupIdと一致）
+      String? groupId;
+      if (i < _trajectoryMetadata.length &&
+          _trajectoryMetadata[i].containsKey('groupId')) {
+        groupId = _trajectoryMetadata[i]['groupId'] as String?;
+      }
+
+      // メタデータにgroupIdがない場合は、生成IDをフォールバックとして使用
+      if (groupId == null || groupId.isEmpty) {
+        groupId = generateGroupId(trajectory.polyline);
+      }
 
       try {
         Map<String, dynamic>? record =
@@ -119,9 +130,13 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
           DateTime recordTime =
               DateTime.tryParse(record['date']) ?? DateTime.now();
           trajectoriesWithTime.add(MapEntry(i, recordTime));
+          print("✅ 軌跡 $i (groupId: $groupId) の記録時間を取得: $recordTime");
+        } else {
+          print("⚠️  軌跡 $i (groupId: $groupId) のレコードが見つかりません");
+          trajectoriesWithTime.add(MapEntry(i, DateTime.now()));
         }
       } catch (e) {
-        print("軌跡 $i の記録時間の取得に失敗: $e");
+        print("❌ 軌跡 $i (groupId: $groupId) の記録時間の取得に失敗: $e");
         trajectoriesWithTime.add(MapEntry(i, DateTime.now()));
       }
     }

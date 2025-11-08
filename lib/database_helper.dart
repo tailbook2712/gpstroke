@@ -386,11 +386,20 @@ class DatabaseHelper {
 
   /// 使用済みGarmin軌跡のリストを取得（ローカルDB + Firebase統一スキーマ）
   Future<List<String>> getUsedGarminActivityGroupIds() async {
-    // ローカルDBから取得
+    // ローカルDBから使用済み軌跡をすべて取得
     Database db = await database;
-    final localResult = await db.query(usedTrajectoriesTable);
-    final localGroupIds = localResult
+    final localUsedResult = await db.query(usedTrajectoriesTable);
+    final localUsedGroupIds = localUsedResult
         .map((row) => row[columnUsedTrajectoryGroupId] as String)
+        .toList();
+
+    // そのうち、Garmin軌跡である is_from_garmin: true のものをフィルタリング
+    List<Map<String, dynamic>> allWalkingData = await getAllWalkingData();
+    final localGarminGroupIds = allWalkingData
+        .where((data) =>
+            localUsedGroupIds.contains(data['group_id']) &&
+            data['is_from_garmin'] == 1)
+        .map((data) => data['group_id'] as String)
         .toList();
 
     // Firebaseからも取得（統一スキーマの used_trajectories コレクションから is_from_garmin: true のみ取得）
@@ -402,9 +411,10 @@ class DatabaseHelper {
         .toList();
 
     // マージして重複を除去
-    final allGroupIds = {...localGroupIds, ...firestoreGarminGroupIds}.toList();
+    final allGroupIds =
+        {...localGarminGroupIds, ...firestoreGarminGroupIds}.toList();
     print(
-        '使用済みGarmin軌跡: ローカル=${localGroupIds.length}, Firebase=${firestoreGarminGroupIds.length}, マージ後=${allGroupIds.length}');
+        '使用済みGarmin軌跡: ローカル=${localGarminGroupIds.length}, Firebase=${firestoreGarminGroupIds.length}, マージ後=${allGroupIds.length}');
     return allGroupIds;
   }
 
