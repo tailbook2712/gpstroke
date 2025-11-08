@@ -80,7 +80,7 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
   }
 
   Future<void> _syncUsedTrajectories() async {
-    await _dbHelper.syncUsedTrajectories();
+    await _dbHelper.syncUsedTrajectoriesFromFirestore();
   }
 
   // Firestoreから保存されたアートワークを復元

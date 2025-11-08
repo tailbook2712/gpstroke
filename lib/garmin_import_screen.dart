@@ -214,13 +214,14 @@ class _GarminImportScreenState extends State<GarminImportScreen> {
           isFromGarmin: true,
         );
 
-        // Firestoreにも保存
+        // Firestoreにも保存（isFromGarmin: true を指定）
         await _firestoreService.saveWalkingData(
           groupId: groupId,
           positions: positions,
           date: date,
           steps: activity.steps,
           distance: activity.distance,
+          isFromGarmin: true, // 新スキーマ対応
         );
 
         savedCount++;

@@ -10,6 +10,7 @@ class DatabaseHelper {
 
   static final tableWalkingData = 'walking_data';
   static final usedTrajectoriesTable = 'used_trajectories';
+  static final usedGarminActivitiesTable = 'used_garmin_activities';
 
   // walking_data テーブルのカラム
   static final columnId = '_id';
@@ -21,7 +22,10 @@ class DatabaseHelper {
   static final columnIsFromGarmin = 'is_from_garmin'; // Garminからのインポート判定
 
   // used_trajectories テーブルのカラム
-  static final columnTrajectoryIndex = 'trajectory_index';
+  static final columnUsedTrajectoryGroupId = 'group_id';
+
+  // used_garmin_activities テーブルのカラム
+  static final columnUsedGarminGroupId = 'group_id';
 
   static Database? _database;
   final FirestoreService _firestoreService = FirestoreService();
@@ -56,7 +60,13 @@ class DatabaseHelper {
 
     await db.execute('''
       CREATE TABLE $usedTrajectoriesTable (
-        $columnTrajectoryIndex INTEGER PRIMARY KEY
+        $columnUsedTrajectoryGroupId TEXT PRIMARY KEY
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE $usedGarminActivitiesTable (
+        $columnUsedGarminGroupId TEXT PRIMARY KEY
       )
     ''');
   }
@@ -84,7 +94,7 @@ class DatabaseHelper {
       return 0; // 既存データがある場合は挿入をスキップ
     }
 
-    return await db.insert(
+    final result = await db.insert(
       tableWalkingData,
       {
         columnGroupId: groupId,
@@ -95,6 +105,18 @@ class DatabaseHelper {
         columnIsFromGarmin: isFromGarmin ? 1 : 0,
       },
     );
+
+    // すべての軌跡を walking_data コレクションに統一保存
+    await _firestoreService.saveWalkingData(
+      groupId: groupId,
+      date: date,
+      steps: steps,
+      distance: distance,
+      positions: positions,
+      isFromGarmin: isFromGarmin,
+    );
+
+    return result;
   }
 
   // 指定したグループIDのデータを取得
@@ -109,30 +131,51 @@ class DatabaseHelper {
   }
 
   // 使用済み軌跡インデックスを保存
-  Future<void> insertUsedTrajectory(int trajectoryIndex) async {
+  /// ローカル軌跡をgroupIdで使用済みマーク
+  /// 軌跡を使用済みとしてマーク（統一メソッド）
+  Future<void> markTrajectoryAsUsed(String groupId,
+      {bool isFromGarmin = false}) async {
     Database db = await database;
+
+    // ローカルDBに保存
     await db.insert(
       usedTrajectoriesTable,
-      {columnTrajectoryIndex: trajectoryIndex},
+      {columnUsedTrajectoryGroupId: groupId},
       conflictAlgorithm: ConflictAlgorithm.ignore,
     );
 
-    // Firestoreにも同期
-    List<int> indices = [trajectoryIndex];
-    await _firestoreService.saveUsedTrajectories(indices);
+    // Firestoreにも同期（新統一スキーマ）
+    await _firestoreService.markTrajectoryAsUsedInFirestore(groupId,
+        isFromGarmin: isFromGarmin);
+
+    final typeLabel = isFromGarmin ? "Garmin軌跡" : "ローカル軌跡";
+    print("✅ $typeLabel を使用済みとしてマーク: $groupId");
   }
 
-  // 複数の使用済み軌跡インデックスを一括で保存
-  Future<void> insertUsedTrajectories(List<int> indices) async {
-    if (indices.isEmpty) return;
+  /// レガシーメソッド（後方互換性のため）
+  @deprecated
+  Future<void> insertUsedTrajectory(String groupId) async {
+    await markTrajectoryAsUsed(groupId, isFromGarmin: false);
+  }
+
+  /// レガシーメソッド（後方互換性のため）
+  @deprecated
+  Future<void> markGarminActivityAsUsed(String groupId) async {
+    await markTrajectoryAsUsed(groupId, isFromGarmin: true);
+  }
+
+  /// 複数の使用済みローカル軌跡を一括で保存
+  @deprecated
+  Future<void> insertUsedTrajectories(List<String> groupIds) async {
+    if (groupIds.isEmpty) return;
 
     Database db = await database;
     Batch batch = db.batch();
 
-    for (int index in indices) {
+    for (String groupId in groupIds) {
       batch.insert(
         usedTrajectoriesTable,
-        {columnTrajectoryIndex: index},
+        {columnUsedTrajectoryGroupId: groupId},
         conflictAlgorithm: ConflictAlgorithm.ignore,
       );
     }
@@ -140,46 +183,69 @@ class DatabaseHelper {
     await batch.commit();
 
     // Firestoreにも同期
-    await _firestoreService.saveUsedTrajectories(indices);
-  }
-
-  // 使用済み軌跡インデックスの取得
-  Future<List<int>> getUsedTrajectories() async {
-    Database db = await database;
-    final result = await db.query(usedTrajectoriesTable);
-    return result.map((row) => row[columnTrajectoryIndex] as int).toList();
-  }
-
-  // 使用済み軌跡インデックスをFirestoreと同期
-  Future<void> syncUsedTrajectories() async {
-    try {
-      // ローカルDBから取得
-      List<int> localIndices = await getUsedTrajectories();
-
-      // Firestoreから取得
-      List<int> remoteIndices = await _firestoreService.getUsedTrajectories();
-
-      // マージして重複を削除
-      Set<int> mergedIndices = {...localIndices, ...remoteIndices};
-
-      // 新しく追加された項目があれば、ローカルDBに追加
-      Set<int> newIndices = mergedIndices.difference(localIndices.toSet());
-      if (newIndices.isNotEmpty) {
-        await insertUsedTrajectories(newIndices.toList());
-        print("Firestoreから新たに同期した使用済み軌跡: ${newIndices.length}件");
-      }
-
-      // Firestoreに更新
-      if (mergedIndices.length > remoteIndices.length) {
-        await _firestoreService.saveUsedTrajectories(mergedIndices.toList());
-        print("Firestoreへの同期が完了しました: ${mergedIndices.length}件");
-      }
-    } catch (e) {
-      print("使用済み軌跡の同期エラー: $e");
+    for (String groupId in groupIds) {
+      await _firestoreService.markTrajectoryAsUsedInFirestore(groupId,
+          isFromGarmin: false);
     }
   }
 
-  // すべての記録を取得するメソッド（日付の降順で並べ替え）
+  /// 使用済みローカル軌跡のgroupIdを取得
+  Future<List<String>> getUsedTrajectories() async {
+    Database db = await database;
+    final result = await db.query(usedTrajectoriesTable);
+    return result
+        .map((row) => row[columnUsedTrajectoryGroupId] as String)
+        .toList();
+  }
+
+  /// 使用済み軌跡をFirestoreと同期（統一スキーマ対応）
+  Future<void> syncUsedTrajectoriesFromFirestore() async {
+    try {
+      // Firestoreから使用済み軌跡をすべて取得（新統一スキーマ）
+      List<Map<String, dynamic>> remoteTrajectories =
+          await _firestoreService.getUsedTrajectoriesFromFirestore();
+
+      if (remoteTrajectories.isEmpty) {
+        print("📌 Firestore上に使用済み軌跡がありません");
+        return;
+      }
+
+      // ローカルDBから既存の使用済みgroupIdを取得
+      List<String> localGroupIds = await getUsedTrajectories();
+
+      // Firestoreから取得した新たなgroupIdをローカルDBに追加
+      Database db = await database;
+      Batch batch = db.batch();
+
+      for (final remote in remoteTrajectories) {
+        final groupId = remote['groupId'] as String;
+        if (!localGroupIds.contains(groupId)) {
+          batch.insert(
+            usedTrajectoriesTable,
+            {columnUsedTrajectoryGroupId: groupId},
+            conflictAlgorithm: ConflictAlgorithm.ignore,
+          );
+        }
+      }
+
+      await batch.commit();
+      print(
+          "✅ Firestoreから新たに同期した使用済み軌跡: ${remoteTrajectories.length - localGroupIds.length}件");
+    } catch (e) {
+      print("❌ 使用済みローカル軌跡の同期エラー: $e");
+    }
+  }
+
+  /// 指定インデックスのローカル軌跡のgroupIdを取得
+  Future<String?> getGroupIdByIndex(int index) async {
+    List<Map<String, dynamic>> allData = await getAllWalkingData();
+    if (index >= 0 && index < allData.length) {
+      return allData[index][columnGroupId] as String;
+    }
+    return null;
+  }
+
+  /// すべての記録を取得するメソッド（日付の降順で並べ替え）
   Future<List<Map<String, dynamic>>> getAllWalkingData() async {
     Database db = await database;
     return await db.query(
@@ -244,13 +310,54 @@ class DatabaseHelper {
   /// Garmin データソースのデータを取得
   Future<List<Map<String, dynamic>>> getGarminActivities() async {
     Database db = await database;
-    List<Map<String, dynamic>> result = await db.query(
+    // ローカルDBから取得
+    List<Map<String, dynamic>> localResult = await db.query(
       tableWalkingData,
       where: '$columnIsFromGarmin = ?',
       whereArgs: [1],
       orderBy: '$columnDate DESC',
     );
-    return result;
+
+    print('📌 ローカルDB Garmin軌跡: ${localResult.length}件');
+    for (final r in localResult) {
+      print('   - group_id: ${r['group_id']}, date: ${r['date']}');
+    }
+
+    // Firestoreからも取得（アプリ再インストール後の復元用）
+    // is_from_garmin: true の軌跡をすべて取得
+    List<Map<String, dynamic>> firestoreResult =
+        await _firestoreService.getAllWalkingData();
+    firestoreResult = firestoreResult
+        .where((activity) => activity['is_from_garmin'] == true)
+        .toList();
+
+    // ローカルDBのgroupIdセットを作成
+    final localGroupIds =
+        Set<String>.from(localResult.map((r) => r['group_id'] as String));
+
+    print('📌 Firestore merge処理開始');
+    // Firebaseにのみ存在するものを追加
+    for (final activity in firestoreResult) {
+      if (!localGroupIds.contains(activity['groupId'])) {
+        print('   ✅ Firebase only: ${activity['groupId']} を追加');
+        // Firebase形式からDB形式に変換
+        activity['group_id'] = activity['groupId'];
+        activity['is_from_garmin'] = 1;
+        localResult.add(activity);
+      } else {
+        print('   ⏭️  既存: ${activity['groupId']} はスキップ');
+      }
+    }
+
+    // 日付でソート（最新順）
+    localResult.sort((a, b) {
+      final dateA = DateTime.tryParse(a['date'] as String) ?? DateTime.now();
+      final dateB = DateTime.tryParse(b['date'] as String) ?? DateTime.now();
+      return dateB.compareTo(dateA);
+    });
+
+    print('📌 Garmin軌跡取得完了: 合計=${localResult.length}件');
+    return localResult;
   }
 
   /// 特定のデータソースを持つデータをすべて取得
@@ -266,30 +373,113 @@ class DatabaseHelper {
     return result;
   }
 
-  /// Garmin軌跡を使用済みにマーク
-  Future<void> markGarminActivityAsUsed(String groupId) async {
-    Database db = await database;
-    // is_from_garmin=1 のデータを used_trajectories テーブルに記録
-    final data = await db.query(
-      tableWalkingData,
-      where: '$columnGroupId = ? AND $columnIsFromGarmin = ?',
-      whereArgs: [groupId, 1],
-    );
-
-    if (data.isNotEmpty) {
-      // groupId の hash値をインデックスとして使用
-      final index = groupId.hashCode;
-      await insertUsedTrajectory(index);
-    }
-  }
-
   /// Garmin軌跡がまだ使用可能かチェック
   Future<bool> isGarminActivityAvailable(String groupId) async {
     Database db = await database;
-    final usedTrajectories = await db.query(usedTrajectoriesTable);
-    final usedIndices =
-        usedTrajectories.map((t) => t[columnTrajectoryIndex] as int).toSet();
+    final result = await db.query(
+      usedGarminActivitiesTable,
+      where: '$columnUsedGarminGroupId = ?',
+      whereArgs: [groupId],
+    );
+    return result.isEmpty; // 見つからなければ使用可能
+  }
 
-    return !usedIndices.contains(groupId.hashCode);
+  /// 使用済みGarmin軌跡のリストを取得（ローカルDB + Firebase統一スキーマ）
+  Future<List<String>> getUsedGarminActivityGroupIds() async {
+    // ローカルDBから取得
+    Database db = await database;
+    final localResult = await db.query(usedTrajectoriesTable);
+    final localGroupIds = localResult
+        .map((row) => row[columnUsedTrajectoryGroupId] as String)
+        .toList();
+
+    // Firebaseからも取得（統一スキーマの used_trajectories コレクションから is_from_garmin: true のみ取得）
+    final firestoreUsedTrajectories =
+        await _firestoreService.getUsedTrajectoriesFromFirestore();
+    final firestoreGarminGroupIds = firestoreUsedTrajectories
+        .where((t) => t['is_from_garmin'] == true)
+        .map((t) => t['groupId'] as String)
+        .toList();
+
+    // マージして重複を除去
+    final allGroupIds = {...localGroupIds, ...firestoreGarminGroupIds}.toList();
+    print(
+        '使用済みGarmin軌跡: ローカル=${localGroupIds.length}, Firebase=${firestoreGarminGroupIds.length}, マージ後=${allGroupIds.length}');
+    return allGroupIds;
+  }
+
+  /// Firebase復元時にローカルDBに同期（使用済みGarmin軌跡・統一スキーマ）
+  Future<void> syncUsedGarminActivitiesFromFirestore() async {
+    Database db = await database;
+    // 統一スキーマから使用済み軌跡を取得（is_from_garmin: true のみ）
+    final firestoreUsedTrajectories =
+        await _firestoreService.getUsedTrajectoriesFromFirestore();
+    final firestoreGarminGroupIds = firestoreUsedTrajectories
+        .where((t) => t['is_from_garmin'] == true)
+        .map((t) => t['groupId'] as String)
+        .toList();
+
+    print('📌 Firebase同期開始: 使用済みGarmin軌跡 ${firestoreGarminGroupIds.length}件');
+
+    for (final groupId in firestoreGarminGroupIds) {
+      // ローカルDBに既に存在するか確認
+      final result = await db.query(
+        usedTrajectoriesTable,
+        where: '$columnUsedTrajectoryGroupId = ?',
+        whereArgs: [groupId],
+      );
+
+      if (result.isEmpty) {
+        // ローカルDBに追加
+        await db.insert(
+          usedTrajectoriesTable,
+          {columnUsedTrajectoryGroupId: groupId},
+          conflictAlgorithm: ConflictAlgorithm.ignore,
+        );
+        print('  ✅ ローカルDB同期: $groupId');
+      }
+    }
+    print('📌 Firebase同期完了');
+  }
+
+  /// Firebase復元時にローカルDBに同期（Garmin軌跡本体）
+  Future<void> syncGarminActivitiesFromFirestore() async {
+    Database db = await database;
+    // Firestoreからすべてのwalking_dataを取得し、is_from_garmin: true のもののみフィルタリング
+    List<Map<String, dynamic>> allActivities =
+        await _firestoreService.getAllWalkingData();
+    final firestoreActivities = allActivities
+        .where((activity) => activity['is_from_garmin'] == true)
+        .toList();
+
+    print('📌 Garmin軌跡Firebase同期開始: ${firestoreActivities.length}件');
+
+    for (final activity in firestoreActivities) {
+      final groupId = activity['groupId'] as String;
+
+      // ローカルDBに既に存在するか確認
+      final result = await db.query(
+        tableWalkingData,
+        where: '$columnGroupId = ?',
+        whereArgs: [groupId],
+      );
+
+      if (result.isEmpty) {
+        // ローカルDBに追加
+        await db.insert(
+          tableWalkingData,
+          {
+            columnGroupId: groupId,
+            columnDate: activity['date'] ?? DateTime.now().toIso8601String(),
+            columnSteps: activity['steps'] ?? 0,
+            columnDistance: activity['distance'] ?? 0.0,
+            columnPositions: jsonEncode(activity['positions'] ?? []),
+            columnIsFromGarmin: 1,
+          },
+        );
+        print('  ✅ ローカルDB同期: $groupId');
+      }
+    }
+    print('📌 Garmin軌跡同期完了');
   }
 }
