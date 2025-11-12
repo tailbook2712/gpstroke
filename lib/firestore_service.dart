@@ -5,26 +5,30 @@ import 'dart:typed_data';
 class FirestoreService {
   final FirebaseFirestore _db = FirebaseFirestore.instance;
 
-  // 位置情報と歩行データをFirestoreに保存するメソッド
+  // 位置情報と歩行データをFirestoreに保存するメソッド（共通）
   Future<void> saveWalkingData({
     required String groupId,
     required List<Map<String, dynamic>> positions,
     required String date,
     required int steps,
     required double distance,
+    bool isFromGarmin = false,
   }) async {
     try {
-      // Firestoreにデータを保存
+      // Firestoreにデータを保存（walking_data コレクション）
       await _db.collection('walking_data').doc(groupId).set({
         'groupId': groupId,
-        'positions': positions, // リストとして保存
+        'positions': positions,
         'date': date,
         'steps': steps,
         'distance': distance,
+        'is_from_garmin': isFromGarmin,
+        'saved_at': FieldValue.serverTimestamp(),
       });
-      print("位置情報と歩行データをFirestoreに保存しました: GroupID $groupId");
+      final typeLabel = isFromGarmin ? "Garmin軌跡" : "ローカル軌跡";
+      print("✅ $typeLabel をFirestoreに保存しました: GroupID $groupId");
     } catch (e) {
-      print("Firestoreへの保存エラー: $e");
+      print("❌ Firestoreへの保存エラー: $e");
     }
   }
 
@@ -89,7 +93,7 @@ class FirestoreService {
     try {
       // Base64にエンコードして保存
       String base64Image = base64Encode(imageData);
-      
+
       // マップにデータを展開して直接保存する方法
       final Map<String, dynamic> saveData = {
         'artworkId': artworkId,
@@ -101,9 +105,9 @@ class FirestoreService {
         'trajectories': canvasState['trajectories'],
         'meta': canvasState['meta'],
       };
-      
+
       print('Firestoreに保存するデータのキー: ${saveData.keys.toList()}');
-      
+
       // Firestoreに作品データを保存
       await _db.collection('artworks').doc(artworkId).set(saveData);
       print("作品データをFirestoreに保存しました: ArtworkID $artworkId");
@@ -117,12 +121,12 @@ class FirestoreService {
     try {
       QuerySnapshot snapshot = await _db.collection('artworks').get();
       List<Map<String, dynamic>> result = [];
-      
+
       for (var doc in snapshot.docs) {
         try {
           Map<String, dynamic> data = doc.data() as Map<String, dynamic>;
           print('Firestoreから取得したデータのキー (${doc.id}): ${data.keys.toList()}');
-          
+
           // キャンバス状態を再構築
           Map<String, dynamic> canvasState = {
             'canvasWidth': data['canvasWidth'],
@@ -130,7 +134,7 @@ class FirestoreService {
             'trajectories': data['trajectories'],
             'meta': data['meta'],
           };
-          
+
           // アートワークデータの構造を整形
           Map<String, dynamic> artworkData = {
             'artworkId': data['artworkId'] ?? doc.id,
@@ -138,12 +142,12 @@ class FirestoreService {
             'imageData': data['imageData'],
             'timestamp': data['timestamp'] ?? DateTime.now().toIso8601String(),
           };
-          
+
           // 必須フィールドの存在確認
-          if (data.containsKey('imageData') && 
-              data.containsKey('canvasWidth') && 
-              data.containsKey('canvasHeight') && 
-              data.containsKey('trajectories') && 
+          if (data.containsKey('imageData') &&
+              data.containsKey('canvasWidth') &&
+              data.containsKey('canvasHeight') &&
+              data.containsKey('trajectories') &&
               data.containsKey('meta')) {
             result.add(artworkData);
             print('有効なアートワークデータ: ${doc.id}');
@@ -155,7 +159,7 @@ class FirestoreService {
           print("アートワークデータの処理中にエラー: ${doc.id}, $e");
         }
       }
-      
+
       print("取得したアートワーク数: ${result.length}件");
       return result;
     } catch (e) {
@@ -180,13 +184,15 @@ class FirestoreService {
   Future<void> saveUsedTrajectories(List<int> indices) async {
     try {
       // 既存のデータを取得
-      DocumentSnapshot doc = await _db.collection('app_data').doc('used_trajectories').get();
-      
+      DocumentSnapshot doc =
+          await _db.collection('app_data').doc('used_trajectories').get();
+
       // データをマージ
       if (doc.exists) {
-        List<dynamic> existingIndices = (doc.data() as Map<String, dynamic>)['indices'] ?? [];
+        List<dynamic> existingIndices =
+            (doc.data() as Map<String, dynamic>)['indices'] ?? [];
         Set<int> uniqueIndices = {...existingIndices.cast<int>(), ...indices};
-        
+
         await _db.collection('app_data').doc('used_trajectories').update({
           'indices': uniqueIndices.toList(),
           'updated_at': DateTime.now().toIso8601String(),
@@ -207,10 +213,12 @@ class FirestoreService {
   // Firestoreから使用済み軌跡インデックスを取得
   Future<List<int>> getUsedTrajectories() async {
     try {
-      DocumentSnapshot doc = await _db.collection('app_data').doc('used_trajectories').get();
-      
+      DocumentSnapshot doc =
+          await _db.collection('app_data').doc('used_trajectories').get();
+
       if (doc.exists) {
-        List<dynamic> indices = (doc.data() as Map<String, dynamic>)['indices'] ?? [];
+        List<dynamic> indices =
+            (doc.data() as Map<String, dynamic>)['indices'] ?? [];
         print("Firestoreから使用済み軌跡情報を取得: ${indices.length}件");
         return indices.cast<int>();
       }
@@ -218,6 +226,159 @@ class FirestoreService {
     } catch (e) {
       print("使用済み軌跡の取得エラー: $e");
       return [];
+    }
+  }
+
+  /// 使用済みGarmin軌跡をFirestoreに保存（永続化）
+  Future<void> markGarminActivityAsUsedInFirestore(String groupId) async {
+    try {
+      await _db.collection('app_data').doc('used_garmin_activities').update({
+        'groupIds': FieldValue.arrayUnion([groupId]),
+        'updatedAt': FieldValue.serverTimestamp(),
+      }).catchError((e) {
+        // ドキュメントが存在しない場合はsetで作成
+        if (e.code == 'not-found') {
+          return _db.collection('app_data').doc('used_garmin_activities').set({
+            'groupIds': [groupId],
+            'updatedAt': FieldValue.serverTimestamp(),
+          });
+        }
+        throw e;
+      });
+      print("Garmin軌跡の使用済み情報をFirestoreに保存: $groupId");
+    } catch (e) {
+      print("Firestore保存エラー: $e");
+    }
+  }
+
+  /// Firestoreから使用済みGarmin軌跡のリストを取得
+  Future<List<String>> getUsedGarminActivitiesFromFirestore() async {
+    try {
+      DocumentSnapshot doc =
+          await _db.collection('app_data').doc('used_garmin_activities').get();
+
+      if (doc.exists) {
+        final data = doc.data() as Map<String, dynamic>;
+        List<dynamic> groupIds = data['groupIds'] ?? [];
+        print("Firestoreから使用済みGarmin軌跡を取得: ${groupIds.length}件");
+        return groupIds.cast<String>();
+      }
+      return [];
+    } catch (e) {
+      print("Firestore取得エラー: $e");
+      return [];
+    }
+  }
+
+  /// Garmin軌跡をFirestoreに保存（アプリ再インストール対策）
+  /// ※ 注: このメソッドは廃止されました。saveWalkingData() を使用してください（isFromGarmin: true）
+
+  /// Firestoreからすべてのガーミン軌跡を取得
+  /// ※ 注: このメソッドは廃止されました。getAllWalkingData() で is_from_garmin でフィルタリングしてください
+
+  /// ============================================
+  /// 統一された使用済み軌跡管理（新スキーマ）
+  /// ============================================
+
+  /// 軌跡を使用済みとしてマーク（統一メソッド）
+  /// @param groupId: 軌跡のグループID
+  /// @param isFromGarmin: Garmin軌跡かどうか
+  Future<void> markTrajectoryAsUsedInFirestore(
+    String groupId, {
+    bool isFromGarmin = false,
+  }) async {
+    try {
+      await _db.collection('used_trajectories').doc(groupId).set({
+        'groupId': groupId,
+        'is_from_garmin': isFromGarmin,
+        'marked_at': FieldValue.serverTimestamp(),
+      });
+      final typeLabel = isFromGarmin ? "Garmin軌跡" : "ローカル軌跡";
+      print("✅ $typeLabel を使用済みとしてマーク: $groupId");
+    } catch (e) {
+      print("❌ 使用済み軌跡の保存エラー: $e");
+    }
+  }
+
+  /// Firestoreから使用済み軌跡をすべて取得（統一メソッド）
+  /// @return Map<String, dynamic>: { 'groupId': String, 'is_from_garmin': bool }
+  Future<List<Map<String, dynamic>>> getUsedTrajectoriesFromFirestore() async {
+    try {
+      QuerySnapshot snapshot = await _db.collection('used_trajectories').get();
+      final result = snapshot.docs.map((doc) {
+        final data = doc.data() as Map<String, dynamic>;
+        return {
+          'groupId': data['groupId'] as String,
+          'is_from_garmin': (data['is_from_garmin'] as bool?) ?? false,
+        };
+      }).toList();
+
+      final garminCount =
+          result.where((e) => e['is_from_garmin'] == true).length;
+      final localCount = result.length - garminCount;
+      print(
+          "📌 使用済み軌跡取得: ${result.length}件 (Garmin: $garminCount, ローカル: $localCount)");
+      return result;
+    } catch (e) {
+      print("❌ 使用済み軌跡取得エラー: $e");
+      return [];
+    }
+  }
+
+  /// 既存の walking_data コレクション内のドキュメントに is_from_garmin フラグを追加
+  /// ローカル軌跡として記録されているすべてのドキュメントに is_from_garmin: false を設定します
+  Future<void> migrateWalkingDataAddIsFromGarminFlag() async {
+    try {
+      print("🔄 walking_data コレクションのマイグレーション開始...");
+
+      // walking_data コレクション内のすべてのドキュメントを取得
+      final snapshot = await _db.collection('walking_data').get();
+
+      print("📌 マイグレーション対象: ${snapshot.docs.length}件");
+
+      int updatedCount = 0;
+      int skippedCount = 0;
+
+      // バッチ処理で更新
+      WriteBatch batch = _db.batch();
+
+      for (final doc in snapshot.docs) {
+        final data = doc.data();
+
+        // すでに is_from_garmin フラグがある場合はスキップ
+        if (data.containsKey('is_from_garmin')) {
+          print("⏭️  スキップ: ${doc.id} (すでにフラグ有)");
+          skippedCount++;
+          continue;
+        }
+
+        // is_from_garmin: false (ローカル軌跡) を追加
+        batch.update(doc.reference, {
+          'is_from_garmin': false,
+          'migrated_at': FieldValue.serverTimestamp(),
+        });
+
+        updatedCount++;
+        print("✅ 更新: ${doc.id}");
+
+        // バッチは最大 500 操作まで
+        if (updatedCount % 500 == 0) {
+          await batch.commit();
+          batch = _db.batch();
+          print("💾 バッチ コミット: $updatedCount件");
+        }
+      }
+
+      // 残りのバッチをコミット
+      if (updatedCount % 500 != 0) {
+        await batch.commit();
+      }
+
+      print("✅ マイグレーション完了!");
+      print("   更新: $updatedCount件");
+      print("   スキップ: $skippedCount件");
+    } catch (e) {
+      print("❌ マイグレーション エラー: $e");
     }
   }
 }

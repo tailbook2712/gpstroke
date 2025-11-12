@@ -80,7 +80,7 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
   }
 
   Future<void> _syncUsedTrajectories() async {
-    await _dbHelper.syncUsedTrajectories();
+    await _dbHelper.syncUsedTrajectoriesFromFirestore();
   }
 
   // Firestoreから保存されたアートワークを復元
@@ -425,7 +425,8 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
         newPosition.latitude,
         newPosition.longitude,
       );
-      _totalDistance += distance;
+      // メートル単位からkmに変換
+      _totalDistance += distance / 1000.0;
     }
 
     // ポリラインを更新
