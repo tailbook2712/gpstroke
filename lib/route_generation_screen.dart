@@ -5,12 +5,12 @@ import 'route_service.dart';
 class RouteGenerationScreen extends StatefulWidget {
   final LatLng startingPoint;
   final LatLng destination;
-  final List<List<Offset>> designShape;
+  final List<LatLng> tracedPath;
 
   RouteGenerationScreen({
     required this.startingPoint,
     required this.destination,
-    required this.designShape,
+    required this.tracedPath,
   });
 
   @override
@@ -39,44 +39,25 @@ class _RouteGenerationScreenState extends State<RouteGenerationScreen> {
   /// ルート生成処理
   Future<void> _generateRoute() async {
     try {
-      // 設計パスをLatLngに変換
-      List<LatLng> designPath = RouteService.convertDesignShapeToLatLngs(
-        widget.designShape,
-        widget.startingPoint,
-        widget.destination,
-      );
-
-      // デフォルト距離を5kmに設定
-      const double defaultTargetDistance = 5000.0;
-
-      // ルート候補を生成
-      List<LatLng> candidateRoute = await RouteService.generateRouteCandidates(
-        widget.startingPoint,
-        widget.destination,
-        designPath,
-        defaultTargetDistance,
-      );
-
-      // ルートを評価
-      Map<String, dynamic> evaluation = RouteService.evaluateRoute(
-        route: candidateRoute,
-        designPath: designPath,
-        targetDistance: defaultTargetDistance,
+      // Roads API でスケッチを道路にスナップ
+      print('📍 Roads API でスケッチをスナップ中...');
+      List<LatLng> snappedRoute = await RouteService.snapSketchToRoads(
+        designPath: widget.tracedPath,
+        startingPoint: widget.startingPoint,
+        destination: widget.destination,
       );
 
       setState(() {
-        _generatedRoute = evaluation['route'];
-        _routeMetadata = evaluation;
+        _generatedRoute = snappedRoute;
         _isLoading = false;
       });
 
-      print('ルート生成完了:');
-      print('  - 距離: ${(evaluation["distance"] / 1000).toStringAsFixed(2)}km');
-      print(
-          '  - 形状類似度: ${(evaluation["shapeSimilarity"] * 100).toStringAsFixed(1)}%');
-      print('  - スコア: ${(evaluation["totalScore"] * 100).toStringAsFixed(1)}%');
+      print('✅ ルート生成完了');
+      print('  - ルート上のポイント数: ${snappedRoute.length}');
+      double routeDistance = RouteService.calculatePathDistance(snappedRoute);
+      print('  - ルート距離: ${(routeDistance / 1000).toStringAsFixed(2)}km');
     } catch (e) {
-      print('ルート生成エラー: $e');
+      print('❌ ルート生成エラー: $e');
       setState(() {
         _isLoading = false;
       });
@@ -151,7 +132,7 @@ class _RouteGenerationScreenState extends State<RouteGenerationScreen> {
                   ),
 
                   // 上部: ルート情報パネル
-                  if (_routeMetadata != null)
+                  if (_generatedRoute != null)
                     Positioned(
                       top: 12,
                       left: 12,
@@ -173,7 +154,7 @@ class _RouteGenerationScreenState extends State<RouteGenerationScreen> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              '提案ルート',
+                              '✅ ルート生成完了',
                               style: TextStyle(
                                 fontSize: 16,
                                 fontWeight: FontWeight.bold,
@@ -189,7 +170,7 @@ class _RouteGenerationScreenState extends State<RouteGenerationScreen> {
                                     Text('距離', style: TextStyle(fontSize: 12)),
                                     SizedBox(height: 4),
                                     Text(
-                                      '${(_routeMetadata!["distance"] / 1000).toStringAsFixed(2)} km',
+                                      '${(RouteService.calculatePathDistance(_generatedRoute!) / 1000).toStringAsFixed(2)} km',
                                       style: TextStyle(
                                         fontSize: 18,
                                         fontWeight: FontWeight.bold,
@@ -201,11 +182,11 @@ class _RouteGenerationScreenState extends State<RouteGenerationScreen> {
                                 Column(
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
-                                    Text('形状類似度',
+                                    Text('ポイント数',
                                         style: TextStyle(fontSize: 12)),
                                     SizedBox(height: 4),
                                     Text(
-                                      '${(_routeMetadata!["shapeSimilarity"] * 100).toStringAsFixed(0)}%',
+                                      '${_generatedRoute!.length}',
                                       style: TextStyle(
                                         fontSize: 18,
                                         fontWeight: FontWeight.bold,

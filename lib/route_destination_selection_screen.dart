@@ -48,11 +48,12 @@ class _RouteDestinationSelectionScreenState
       );
 
       setState(() {
-        // 出発地はデフォルト値なし、目的地も無し
-        // ただし、カメラはユーザーの現在位置に移動
-        _centerPoint = LatLng(position.latitude, position.longitude);
+        // 出発地を現在地に設定
+        _startingPoint = LatLng(position.latitude, position.longitude);
+        // カメラも現在地に移動
+        _centerPoint = _startingPoint!;
         _isLoading = false;
-        _selectionStep = 1; // 出発地選択モード開始
+        _selectionStep = 2; // いきなり目的地選択モードから開始
         _updateMarkers();
       });
 
@@ -69,6 +70,8 @@ class _RouteDestinationSelectionScreenState
         _isLoading = false;
         // エラー時はデフォルト位置を使用
         _centerPoint = LatLng(35.0, 135.0);
+        // エラーでもとりあえず目的地選択へ
+        _selectionStep = 2;
       });
     }
   }
@@ -115,14 +118,7 @@ class _RouteDestinationSelectionScreenState
 
   /// FAB が押された時、現在のステップに応じて処理
   void _registerCenterPoint() {
-    if (_selectionStep == 1) {
-      // 出発地選択モード
-      setState(() {
-        _startingPoint = _centerPoint;
-        _selectionStep = 2; // 目的地選択モードに移行
-        _updateMarkers();
-      });
-    } else if (_selectionStep == 2) {
+    if (_selectionStep == 2) {
       // 目的地選択モード
       setState(() {
         _destination = _centerPoint;
@@ -158,14 +154,10 @@ class _RouteDestinationSelectionScreenState
 
   /// ステップ説明テキストを取得
   String _getStepText() {
-    if (_selectionStep == 1) {
-      return _destination != null
-          ? '地図を動かして、中央のピンを新しい出発地に合わせてください'
-          : '地図を動かして、中央のピンを出発地に合わせてください';
-    } else if (_selectionStep == 2) {
+    if (_selectionStep == 2) {
       return '地図を動かして、中央のピンを目的地に合わせてください';
     }
-    return '出発地・目的地が設定されました';
+    return '目的地が設定されました';
   }
 
   /// 出発地・目的地情報パネル
@@ -178,38 +170,28 @@ class _RouteDestinationSelectionScreenState
         mainAxisSize: MainAxisSize.min,
         children: [
           if (_startingPoint != null)
-            GestureDetector(
-              onTap: () {
-                // 出発地を変更するモードに戻す
-                setState(() {
-                  _selectionStep = 1;
-                  // 目的地は保持したまま、出発地のみを変更可能にする
-                  _updateMarkers();
-                });
-              },
-              child: Row(
-                children: [
-                  Icon(Icons.location_on, color: Colors.blue, size: 20),
-                  SizedBox(width: 8),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text('出発地（タップで変更）',
-                            style: TextStyle(
-                                fontSize: 12,
-                                fontWeight: FontWeight.bold,
-                                color: Colors.blue)),
-                        Text(
-                          '${_startingPoint!.latitude.toStringAsFixed(6)}, ${_startingPoint!.longitude.toStringAsFixed(6)}',
-                          style: TextStyle(fontSize: 11),
-                        ),
-                      ],
-                    ),
+          if (_startingPoint != null)
+            Row(
+              children: [
+                Icon(Icons.my_location, color: Colors.blue, size: 20),
+                SizedBox(width: 8),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('出発地（現在位置）',
+                          style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.blue)),
+                      Text(
+                        '${_startingPoint!.latitude.toStringAsFixed(6)}, ${_startingPoint!.longitude.toStringAsFixed(6)}',
+                        style: TextStyle(fontSize: 11),
+                      ),
+                    ],
                   ),
-                  Icon(Icons.edit, color: Colors.blue, size: 16),
-                ],
-              ),
+                ),
+              ],
             ),
           if (_startingPoint != null && _destination != null)
             SizedBox(height: 8),
@@ -260,11 +242,9 @@ class _RouteDestinationSelectionScreenState
       },
       child: Scaffold(
         appBar: AppBar(
-          title: Text(_selectionStep == 1
-              ? (_destination != null ? '出発地を変更' : '出発地を選択')
-              : _selectionStep == 2
+          title: Text(_selectionStep == 2
                   ? '目的地を選択'
-                  : '出発地・目的地を選択'),
+                  : '目的地を確認'),
           centerTitle: true,
           elevation: 0,
         ),
@@ -349,11 +329,7 @@ class _RouteDestinationSelectionScreenState
                               child: ElevatedButton.icon(
                                 onPressed: _registerCenterPoint,
                                 icon: Icon(Icons.check),
-                                label: Text(_selectionStep == 1
-                                    ? (_destination != null
-                                        ? '出発地を変更'
-                                        : '出発地を設定')
-                                    : '目的地を設定'),
+                                label: Text('目的地を設定'),
                                 style: ElevatedButton.styleFrom(
                                   backgroundColor: Colors.blue,
                                   padding: EdgeInsets.symmetric(vertical: 12),

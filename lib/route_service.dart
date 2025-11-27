@@ -565,4 +565,152 @@ class RouteService {
 
     return (v1Lat * v2Lng - v1Lng * v2Lat).abs();
   }
+
+  // ============================================================
+  // Roads API を使用したスナップ処理
+  // ============================================================
+
+  /// スケッチのポイントを Roads API でスナップして道路に沿わせる
+  ///
+  /// [designPath]: スケッチの全ポイント
+  /// [startingPoint]: 出発地（スケッチの始点）
+  /// [destination]: 到着地（スケッチの終点）
+  ///
+  /// Returns: 道路にスナップされたポイント
+  static Future<List<LatLng>> snapSketchToRoads({
+    required List<LatLng> designPath,
+    required LatLng startingPoint,
+    required LatLng destination,
+  }) async {
+    try {
+      if (designPath.isEmpty) {
+        return [startingPoint, destination];
+      }
+
+      print('🔄 Roads API でスケッチをスナップ中...');
+
+      // API キーのチェック
+      if (_apiKey.isEmpty) {
+        print('❌ エラー: Google Maps API Key が空です');
+        return designPath;
+      }
+
+      // スケッチのすべてのポイントをスナップ
+      List<LatLng> snappedPoints = await _snapPointsToRoads(designPath);
+
+      // 始点を出発地に、終点を到着地に強制
+      if (snappedPoints.isNotEmpty) {
+        snappedPoints[0] = startingPoint;
+        if (snappedPoints.length > 1) {
+          snappedPoints[snappedPoints.length - 1] = destination;
+        }
+      }
+
+      print('✅ スナップ完了: ${snappedPoints.length}個のポイント');
+      return snappedPoints;
+    } catch (e) {
+      print('❌ スナップ処理エラー: $e');
+      return designPath;
+    }
+  }
+
+  /// 複数のポイントを Roads API でスナップ
+  static Future<List<LatLng>> _snapPointsToRoads(
+    List<LatLng> points,
+  ) async {
+    if (points.isEmpty) return [];
+
+    try {
+      // Roads API の URL
+      const String roadsApiUrl = 'https://roads.googleapis.com/v1/snapToRoads';
+
+      // ポイントを間引いて100個以内に収める
+      List<LatLng> chunkedPoints = _samplePoints(points, 100);
+
+      // API リクエストの構築
+      final Uri uri = Uri.parse(roadsApiUrl).replace(
+        queryParameters: {
+          'path': chunkedPoints
+              .map((p) => '${p.latitude},${p.longitude}')
+              .join('|'),
+          'interpolate': 'true',
+          'key': _apiKey,
+        },
+      );
+
+      print('📍 API リクエスト送信: ${chunkedPoints.length}個のポイント');
+
+      final response = await http.get(uri).timeout(Duration(seconds: 15));
+
+      if (response.statusCode == 200) {
+        final json = jsonDecode(response.body);
+        final snappedPoints = _parseSnappedPoints(json, points);
+        print('✅ Roads API レスポンス受信: ${snappedPoints.length}個のスナップ済みポイント');
+        return snappedPoints;
+      } else {
+        print('❌ Roads API エラー (${response.statusCode}): ${response.body}');
+        return points; // スナップ失敗時は元のポイントを返す
+      }
+    } catch (e) {
+      print('❌ Roads API リクエスト失敗: $e');
+      return points;
+    }
+  }
+
+  /// Roads API のレスポンスをパース
+  static List<LatLng> _parseSnappedPoints(
+    Map<String, dynamic> json,
+    List<LatLng> originalPoints,
+  ) {
+    try {
+      final snappedPoints = json['snappedPoints'] as List?;
+      if (snappedPoints == null || snappedPoints.isEmpty) {
+        print('⚠️ スナップされたポイントが見つかりません');
+        return originalPoints;
+      }
+
+      List<LatLng> result = [];
+      for (var point in snappedPoints) {
+        final location = point['location'] as Map<String, dynamic>?;
+        if (location != null) {
+          double lat = (location['latitude'] as num).toDouble();
+          double lng = (location['longitude'] as num).toDouble();
+          result.add(LatLng(lat, lng));
+        }
+      }
+
+      if (result.isEmpty) {
+        return originalPoints;
+      }
+
+      return result;
+    } catch (e) {
+      print('❌ レスポンスパースエラー: $e');
+      return originalPoints;
+    }
+  }
+
+  /// ポイントリストを指定された最大数に間引く
+  static List<LatLng> _samplePoints(List<LatLng> points, int maxCount) {
+    if (points.length <= maxCount) return points;
+
+    List<LatLng> sampled = [];
+    // 始点は必ず含める
+    sampled.add(points.first);
+
+    // 中間ポイントを均等に間引く
+    // (points.length - 1) / (maxCount - 1) の間隔で取得
+    double step = (points.length - 1) / (maxCount - 1);
+    for (int i = 1; i < maxCount - 1; i++) {
+      int index = (i * step).round();
+      if (index > 0 && index < points.length - 1) {
+        sampled.add(points[index]);
+      }
+    }
+
+    // 終点は必ず含める
+    sampled.add(points.last);
+
+    return sampled;
+  }
 }

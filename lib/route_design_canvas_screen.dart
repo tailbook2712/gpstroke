@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'dart:io'; // Platform check
 import 'route_generation_screen.dart';
 
 class RouteDesignCanvasScreen extends StatefulWidget {
@@ -17,8 +18,33 @@ class RouteDesignCanvasScreen extends StatefulWidget {
 }
 
 class _RouteDesignCanvasScreenState extends State<RouteDesignCanvasScreen> {
+  late GoogleMapController _mapController;
+
   // 描画データ: List<Offset> のリスト（複数ストロークを管理）
   List<List<Offset>> _strokes = [];
+
+  // マップの初期位置計算用
+  late LatLng _initialCenter;
+  late double _initialZoom;
+
+  // 描画モードかどうか（trueならマップ操作無効・描画有効）
+  bool _isDrawingMode = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _calculateInitialMapState();
+  }
+
+  /// 出発地と目的地から初期マップ表示位置を計算
+  void _calculateInitialMapState() {
+    double lat =
+        (widget.startingPoint.latitude + widget.destination.latitude) / 2;
+    double lng =
+        (widget.startingPoint.longitude + widget.destination.longitude) / 2;
+    _initialCenter = LatLng(lat, lng);
+    _initialZoom = 14.0; // 適当なズームレベル
+  }
 
   /// キャンバスをクリア
   void _clearCanvas() {
@@ -36,22 +62,54 @@ class _RouteDesignCanvasScreenState extends State<RouteDesignCanvasScreen> {
       return;
     }
 
-    // ルート生成画面へナビゲート（距離選択をスキップ）
+    // スクリーン座標(Offset)をLatLngに変換
+    List<LatLng> tracedPath = await _convertStrokesToLatLngs();
+
+    if (tracedPath.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('ルート変換に失敗しました')),
+      );
+      return;
+    }
+
+    // ルート生成画面へナビゲート
     final result = await Navigator.push(
       context,
       MaterialPageRoute(
         builder: (context) => RouteGenerationScreen(
           startingPoint: widget.startingPoint,
           destination: widget.destination,
-          designShape: _strokes,
+          tracedPath: tracedPath, // 変換後のパスを渡す
         ),
       ),
     );
 
     if (result != null) {
-      // ルート生成結果が返ってくる
       Navigator.pop(context, result);
     }
+  }
+
+  /// スクリーン座標をLatLngに変換
+  Future<List<LatLng>> _convertStrokesToLatLngs() async {
+    List<LatLng> allPoints = [];
+
+    // 画面のピクセル比率を取得（Retinaディスプレイ対応など）
+    // GoogleMapController.getLatLng は論理ピクセル(Offset)を受け取るはずだが、
+    // 実装によってはデバイスピクセル比を考慮する必要がある場合がある。
+    // 通常、FlutterのOffsetは論理ピクセルなのでそのままで良いはず。
+
+    for (final stroke in _strokes) {
+      for (final offset in stroke) {
+        ScreenCoordinate screenCoordinate = ScreenCoordinate(
+          x: offset.dx.round(),
+          y: offset.dy.round(),
+        );
+        LatLng latLng = await _mapController.getLatLng(screenCoordinate);
+        allPoints.add(latLng);
+      }
+    }
+
+    return allPoints;
   }
 
   /// 最後のストロークを削除
@@ -72,45 +130,107 @@ class _RouteDesignCanvasScreenState extends State<RouteDesignCanvasScreen> {
       },
       child: Scaffold(
         appBar: AppBar(
-          title: Text('形を描く'),
+          title: Text('地図をなぞる'),
           centerTitle: true,
           elevation: 0,
+          actions: [
+            // 描画モード切り替えボタン
+            IconButton(
+              icon: Icon(_isDrawingMode ? Icons.map : Icons.edit),
+              onPressed: () {
+                setState(() {
+                  _isDrawingMode = !_isDrawingMode;
+                });
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(_isDrawingMode
+                        ? '描画モード: 地図をなぞってください'
+                        : 'マップ操作モード: 地図を動かせます'),
+                    duration: Duration(seconds: 1),
+                  ),
+                );
+              },
+            ),
+          ],
         ),
         body: Column(
           children: [
-            // 描画キャンバス
+            // 描画キャンバス (Map + CustomPaint)
             Expanded(
-              child: GestureDetector(
-                onPanStart: (details) {
-                  setState(() {
-                    // 新しいストロークを開始
-                    _strokes.add([details.localPosition]);
-                  });
-                },
-                onPanUpdate: (details) {
-                  setState(() {
-                    // 現在のストロークにポイントを追加
-                    if (_strokes.isNotEmpty) {
-                      _strokes.last.add(details.localPosition);
-                    }
-                  });
-                },
-                onPanEnd: (details) {
-                  // ストローク終了
-                },
-                child: Container(
-                  color: Colors.white,
-                  child: CustomPaint(
-                    painter: CanvasPainter(_strokes),
-                    size: Size.infinite,
+              child: Stack(
+                children: [
+                  // Google Map
+                  GoogleMap(
+                    initialCameraPosition: CameraPosition(
+                      target: _initialCenter,
+                      zoom: _initialZoom,
+                    ),
+                    onMapCreated: (GoogleMapController controller) {
+                      _mapController = controller;
+                    },
+                    markers: {
+                      Marker(
+                        markerId: MarkerId('start'),
+                        position: widget.startingPoint,
+                        icon: BitmapDescriptor.defaultMarkerWithHue(
+                            BitmapDescriptor.hueBlue),
+                      ),
+                      Marker(
+                        markerId: MarkerId('dest'),
+                        position: widget.destination,
+                        icon: BitmapDescriptor.defaultMarkerWithHue(
+                            BitmapDescriptor.hueRed),
+                      ),
+                    },
+                    // 描画モード中はマップ操作を無効化
+                    scrollGesturesEnabled: !_isDrawingMode,
+                    zoomGesturesEnabled: !_isDrawingMode,
+                    rotateGesturesEnabled: !_isDrawingMode,
+                    tiltGesturesEnabled: !_isDrawingMode,
                   ),
-                ),
+
+                  // 描画レイヤー
+                  if (_isDrawingMode)
+                    GestureDetector(
+                      onPanStart: (details) {
+                        setState(() {
+                          _strokes.add([details.localPosition]);
+                        });
+                      },
+                      onPanUpdate: (details) {
+                        setState(() {
+                          if (_strokes.isNotEmpty) {
+                            _strokes.last.add(details.localPosition);
+                          }
+                        });
+                      },
+                      onPanEnd: (details) {
+                        // ストローク終了
+                      },
+                      child: Container(
+                        color: Colors.transparent, // タッチイベントを受け取るために透明
+                        child: CustomPaint(
+                          painter: CanvasPainter(_strokes),
+                          size: Size.infinite,
+                        ),
+                      ),
+                    )
+                  else
+                    // マップ操作モードでも描画内容は表示し続ける（タッチは透過）
+                    IgnorePointer(
+                      child: CustomPaint(
+                        painter: CanvasPainter(_strokes),
+                        size: Size.infinite,
+                      ),
+                    ),
+                ],
               ),
             ),
 
             // 下部: 操作ボタン
             Container(
               padding: EdgeInsets.all(16),
+              color: Colors.white,
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
@@ -155,11 +275,14 @@ class _RouteDesignCanvasScreenState extends State<RouteDesignCanvasScreen> {
                   ),
                   SizedBox(height: 12),
                   Text(
-                    '※ キャンバス上の線は実際のルート生成の参考になります',
+                    _isDrawingMode
+                        ? '地図をなぞってルートを描いてください（右上のボタンでマップ移動切替）'
+                        : '地図を動かして位置を調整してください（右上のボタンで描画再開）',
                     style: TextStyle(
                       fontSize: 11,
                       color: Colors.grey[600],
                     ),
+                    textAlign: TextAlign.center,
                   ),
                 ],
               ),
@@ -179,9 +302,6 @@ class CanvasPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    // 背景グリッドを描画（オプション）
-    _drawGrid(canvas, size);
-
     // ストロークを描画
     for (int strokeIndex = 0; strokeIndex < strokes.length; strokeIndex++) {
       final stroke = strokes[strokeIndex];
@@ -190,22 +310,12 @@ class CanvasPainter extends CustomPainter {
       // ストロークの線を描画
       final linePaint = Paint()
         ..color = Colors.blue
-        ..strokeWidth = 3.0
+        ..strokeWidth = 4.0 // 少し太く
         ..strokeCap = StrokeCap.round
         ..strokeJoin = StrokeJoin.round;
 
       for (int i = 0; i < stroke.length - 1; i++) {
         canvas.drawLine(stroke[i], stroke[i + 1], linePaint);
-      }
-
-      // ポイントを描画（リアルタイム軌跡の視認性向上）
-      final pointPaint = Paint()
-        ..color = Colors.blue.withOpacity(0.7)
-        ..strokeWidth = 1.5;
-
-      for (int i = 0; i < stroke.length; i++) {
-        final radius = (i == 0 || i == stroke.length - 1) ? 4.0 : 2.0;
-        canvas.drawCircle(stroke[i], radius, pointPaint);
       }
 
       // 開始点と終了点を強調表示
@@ -223,54 +333,10 @@ class CanvasPainter extends CustomPainter {
         canvas.drawCircle(stroke.last, 5.0, endPaint);
       }
     }
-
-    // ストロークカウントを描画
-    _drawStrokeCount(canvas, size);
-  }
-
-  /// グリッドを描画
-  void _drawGrid(Canvas canvas, Size size) {
-    final gridPaint = Paint()
-      ..color = Colors.grey.withOpacity(0.1)
-      ..strokeWidth = 0.5;
-
-    const gridSize = 20.0;
-
-    // 縦線
-    for (double x = 0; x < size.width; x += gridSize) {
-      canvas.drawLine(Offset(x, 0), Offset(x, size.height), gridPaint);
-    }
-
-    // 横線
-    for (double y = 0; y < size.height; y += gridSize) {
-      canvas.drawLine(Offset(0, y), Offset(size.width, y), gridPaint);
-    }
-  }
-
-  /// ストロークカウントを描画
-  void _drawStrokeCount(Canvas canvas, Size size) {
-    final completedStrokes = strokes.where((s) => s.isNotEmpty).length;
-    final textPainter = TextPainter(
-      text: TextSpan(
-        text: 'ストローク: $completedStrokes',
-        style: TextStyle(
-          color: Colors.grey[700],
-          fontSize: 14,
-          fontWeight: FontWeight.bold,
-        ),
-      ),
-      textDirection: TextDirection.ltr,
-    );
-    textPainter.layout();
-    textPainter.paint(
-      canvas,
-      Offset(size.width - textPainter.width - 12, 12),
-    );
   }
 
   @override
   bool shouldRepaint(CanvasPainter oldDelegate) {
-    // 常に再描画（状態が変わる度に描画）
     return true;
   }
 }
