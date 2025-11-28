@@ -502,6 +502,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                 );
                 newTrajectory.scale = 0.8;
                 selectedTrajectories.add(newTrajectory);
+                // 新しく追加した軌跡を選択状態にする
                 selectedItem = newTrajectory;
               });
             },
@@ -654,8 +655,8 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
     double screenWidth = MediaQuery.of(context).size.width;
     double screenHeight = MediaQuery.of(context).size.height;
 
-    final double expandedTouchArea = trajectorySize; // タップ領域を軌跡のサイズに限定
-    final double touchAreaOffset = 0; // オフセットなし
+    final double expandedTouchArea = trajectorySize * 1.5; // 回転時の角もカバーできるように拡大
+    final double touchAreaOffset = (expandedTouchArea - trajectorySize) / 2; // 中央に配置するためのオフセット
 
     return Scaffold(
       appBar: AppBar(
@@ -714,8 +715,8 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                       final isSelected = selectedItem == item;
 
                       return Positioned(
-                        left: item.position.dx - trajectorySize / 2,
-                        top: item.position.dy - trajectorySize / 2,
+                        left: item.position.dx - expandedTouchArea / 2,
+                        top: item.position.dy - expandedTouchArea / 2,
                         child: GestureDetector(
                           behavior: HitTestBehavior.opaque,
                           onTap: () {
@@ -787,148 +788,61 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                             }
                           },
                           child: Stack(
-                                clipBehavior: Clip.none,
-                                children: [
-                                  Container(
-                                    width: expandedTouchArea,
-                                    height: expandedTouchArea,
-                                    color: Colors.transparent,
-                                  ),
-                                  Positioned(
-                                    left: touchAreaOffset,
-                                    top: touchAreaOffset,
-                                    child: Transform.rotate(
-                                      angle: item.rotation,
+                            children: [
+                              Container(
+                                width: expandedTouchArea,
+                                height: expandedTouchArea,
+                                color: Colors.transparent,
+                              ),
+                              Positioned(
+                                left: touchAreaOffset,
+                                top: touchAreaOffset,
+                                child: Transform.rotate(
+                                  angle: item.rotation,
+                                  alignment: Alignment.center,
+                                  child: Container(
+                                    width: trajectorySize,
+                                    height: trajectorySize,
+                                    decoration: BoxDecoration(
+                                      border: selectedItem == item
+                                          ? Border.all(
+                                              color: isRotating
+                                                  ? Colors.orange
+                                                  : Colors.red,
+                                              width: 2.0,
+                                            )
+                                          : null,
+                                    ),
+                                    child: Transform.scale(
+                                      scale: item.scale,
                                       alignment: Alignment.center,
                                       child: Stack(
-                                        clipBehavior: Clip.none,
                                         children: [
-                                          // 軌跡コンテンツ（スケーリング適用）
-                                          Transform.scale(
-                                            scale: item.scale,
-                                            alignment: Alignment.center,
-                                            child: Container(
-                                              width: trajectorySize,
-                                              height: trajectorySize,
-                                              decoration: BoxDecoration(
-                                                border: selectedItem == item
-                                                    ? Border.all(
-                                                        color: Colors.white,
-                                                        width: 1.0,
-                                                      )
-                                                    : null,
-                                              ),
-                                              child: Stack(
-                                                children: [
-                                                  CustomPaint(
-                                                    size: Size(trajectorySize,
-                                                        trajectorySize),
-                                                    painter: PolylinePainter(
-                                                      positions: item.polyline,
-                                                      minLat: item.minLat,
-                                                      maxLat: item.maxLat,
-                                                      minLon: item.minLon,
-                                                      maxLon: item.maxLon,
-                                                    ),
-                                                  ),
-                                                  // 選択時の青枠（内側）
-                                                  if (selectedItem == item)
-                                                    Container(
-                                                      decoration: BoxDecoration(
-                                                        border: Border.all(
-                                                          color: Colors.blue,
-                                                          width: 1.0,
-                                                        ),
-                                                      ),
-                                                    ),
-                                                ],
-                                              ),
+                                          CustomPaint(
+                                            size: Size(
+                                                trajectorySize, trajectorySize),
+                                            painter: PolylinePainter(
+                                              positions: item.polyline,
+                                              minLat: item.minLat,
+                                              maxLat: item.maxLat,
+                                              minLon: item.minLon,
+                                              maxLon: item.maxLon,
                                             ),
                                           ),
-                                          // 回転ハンドル（選択時のみ表示）
-                                          if (selectedItem == item)
-                                            Positioned(
-                                              left: trajectorySize / 2 +
-                                                  (trajectorySize / 2 *
-                                                      item.scale),
-                                              top: trajectorySize / 2 +
-                                                  (trajectorySize / 2 *
-                                                      item.scale),
-                                              child: FractionalTranslation(
-                                                translation:
-                                                    Offset(-0.5, -0.5),
-                                                child: GestureDetector(
-                                                  onPanStart: (_) {
-                                                    setState(() {
-                                                      isRotating = true;
-                                                    });
-                                                  },
-                                                  onPanUpdate: (details) {
-                                                    // 画面上部のオフセット（ステータスバー + AppBar）
-                                                    final double topOffset =
-                                                        MediaQuery.of(context)
-                                                                .padding
-                                                                .top +
-                                                            kToolbarHeight;
-                                                    
-                                                    // 軌跡の中心座標（グローバル）
-                                                    final double centerX =
-                                                        item.position.dx;
-                                                    final double centerY =
-                                                        item.position.dy +
-                                                            topOffset;
-
-                                                    // タップ位置と中心の角度を計算
-                                                    final double angle =
-                                                        math.atan2(
-                                                      details.globalPosition.dy -
-                                                          centerY,
-                                                      details.globalPosition.dx -
-                                                          centerX,
-                                                    );
-
-                                                    setState(() {
-                                                      // ハンドルは右下（45度）にあるため、その分を補正
-                                                      item.rotation =
-                                                          angle - (math.pi / 4);
-                                                    });
-                                                  },
-                                                  onPanEnd: (_) {
-                                                    setState(() {
-                                                      isRotating = false;
-                                                      item.lastRotation =
-                                                          item.rotation;
-                                                    });
-                                                  },
-                                                  child: Container(
-                                                    width: 36,
-                                                    height: 36,
-                                                    decoration: BoxDecoration(
-                                                      color: Colors.white,
-                                                      shape: BoxShape.circle,
-                                                      boxShadow: [
-                                                        BoxShadow(
-                                                          color: Colors.black26,
-                                                          blurRadius: 2,
-                                                          offset: Offset(0, 1),
-                                                        ),
-                                                      ],
-                                                    ),
-                                                    child: Icon(
-                                                      Icons.rotate_right,
-                                                      size: 24,
-                                                      color: Colors.black87,
-                                                    ),
-                                                  ),
+                                          // デバッグ: タップ領域を視覚化
+                                          Positioned.fill(
+                                            child: CustomPaint(
+                                                //  painter: DebugBoundsPainter(), // デバッグ用ペインター
                                                 ),
-                                              ),
-                                            ),
+                                          ),
                                         ],
                                       ),
                                     ),
                                   ),
-                                ],
+                                ),
                               ),
+                            ],
+                          ),
                         ),
                       );
                     }).toList(),
