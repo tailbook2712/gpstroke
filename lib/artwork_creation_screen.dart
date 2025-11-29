@@ -442,6 +442,20 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
     }
   }
 
+  /// 指定された位置にある軌跡のリストを取得する
+  List<TransformablePolyline> _getTrajectoriesAt(Offset position) {
+    final double expandedTouchArea = trajectorySize * 1.5;
+    final double halfSize = expandedTouchArea / 2;
+
+    // 逆順で検索（上にあるものが先にヒットするように）
+    // ただし、全てのヒットするものを取得したいので filter を使う
+    return selectedTrajectories.where((item) {
+      final double dx = (item.position.dx - position.dx).abs();
+      final double dy = (item.position.dy - position.dy).abs();
+      return dx <= halfSize && dy <= halfSize;
+    }).toList();
+  }
+
   // 使用可能な軌跡を表示するモーダルを表示する
   void _showTrajectoryModal(BuildContext context) {
     showModalBottomSheet(
@@ -724,6 +738,26 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                               // タップした軌跡を選択状態にする
                               selectedItem = item;
                             });
+                          },
+                          onLongPress: () {
+                            // 長押しで重なっている軌跡を循環選択
+                            final hitTrajectories = _getTrajectoriesAt(item.position);
+                            if (hitTrajectories.length > 1) {
+                              setState(() {
+                                final candidates = hitTrajectories.reversed.toList();
+                                final currentIndex = candidates.indexOf(item);
+                                if (currentIndex != -1) {
+                                  final nextIndex = (currentIndex + 1) % candidates.length;
+                                  selectedItem = candidates[nextIndex];
+                                  
+                                  // 選択した軌跡を最前面に移動
+                                  selectedTrajectories.remove(selectedItem);
+                                  selectedTrajectories.add(selectedItem!);
+                                  
+                                  print("Long press cycled to: ${selectedTrajectories.indexOf(selectedItem!)} and brought to front");
+                                }
+                              });
+                            }
                           },
                           onScaleStart: (details) {
                             // 選択された軌跡のみ回転操作を受け入れる
@@ -1065,7 +1099,7 @@ class _TrajectoryModalContentState extends State<_TrajectoryModalContent> {
       recordedWithMetadata.add({
         'positions': trajectory,
         'isGarmin': false,
-        'date': DateFormat('MM/dd').format(trajectory.first.timestamp),
+        'date': DateFormat('yyyy/MM/dd').format(trajectory.first.timestamp),
         'groupId': groupId, // groupIdを含める
       });
     }
@@ -1155,35 +1189,6 @@ class _TrajectoryModalContentState extends State<_TrajectoryModalContent> {
                   child: Text(date, style: TextStyle(fontSize: 12)),
                 ),
               ),
-              // Garmin バッジ
-              if (isGarmin)
-                Positioned(
-                  bottom: 0,
-                  left: 0,
-                  child: Container(
-                    decoration: BoxDecoration(
-                      color: Colors.orange,
-                      borderRadius: BorderRadius.circular(4),
-                    ),
-                    padding: EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(Icons.cloud_download,
-                            size: 10, color: Colors.white),
-                        SizedBox(width: 2),
-                        Text(
-                          'Garmin',
-                          style: TextStyle(
-                            fontSize: 10,
-                            color: Colors.white,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
             ],
           ),
         );
