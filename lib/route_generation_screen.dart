@@ -30,6 +30,9 @@ class _RouteGenerationScreenState extends State<RouteGenerationScreen> {
   // ローディング状態
   bool _isLoading = true;
 
+  // スケッチ表示状態
+  bool _showSketch = false;
+
   @override
   void initState() {
     super.initState();
@@ -95,6 +98,20 @@ class _RouteGenerationScreenState extends State<RouteGenerationScreen> {
           title: Text('ルート提案'),
           centerTitle: true,
           elevation: 0,
+          actions: [
+            IconButton(
+              icon: Icon(
+                _showSketch ? Icons.visibility : Icons.visibility_off,
+                color: Colors.black,
+              ),
+              onPressed: () {
+                setState(() {
+                  _showSketch = !_showSketch;
+                });
+              },
+              tooltip: 'スケッチの表示/非表示',
+            ),
+          ],
         ),
         body: _isLoading
             ? Center(
@@ -239,6 +256,19 @@ class _RouteGenerationScreenState extends State<RouteGenerationScreen> {
           color: Colors.blue,
           width: 5,
           geodesic: true,
+        ),
+      );
+    }
+
+    // スケッチの表示
+    if (_showSketch) {
+      polylines.add(
+        Polyline(
+          polylineId: PolylineId('sketch_route'),
+          points: widget.tracedPath,
+          color: Colors.red.withOpacity(0.5),
+          width: 3,
+          zIndex: -1, // 生成されたルートの下に表示
         ),
       );
     }
