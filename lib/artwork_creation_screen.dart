@@ -502,6 +502,8 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                 );
                 newTrajectory.scale = 0.8;
                 selectedTrajectories.add(newTrajectory);
+                // 新しく追加した軌跡を選択状態にする
+                selectedItem = newTrajectory;
               });
             },
           ),
@@ -653,8 +655,8 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
     double screenWidth = MediaQuery.of(context).size.width;
     double screenHeight = MediaQuery.of(context).size.height;
 
-    final double expandedTouchArea = trajectorySize; // タップ領域を軌跡のサイズに限定
-    final double touchAreaOffset = 0; // オフセットなし
+    final double expandedTouchArea = trajectorySize * 1.5; // 回転時の角もカバーできるように拡大
+    final double touchAreaOffset = (expandedTouchArea - trajectorySize) / 2; // 中央に配置するためのオフセット
 
     return Scaffold(
       appBar: AppBar(
@@ -713,8 +715,8 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                       final isSelected = selectedItem == item;
 
                       return Positioned(
-                        left: item.position.dx - trajectorySize / 2,
-                        top: item.position.dy - trajectorySize / 2,
+                        left: item.position.dx - expandedTouchArea / 2,
+                        top: item.position.dy - expandedTouchArea / 2,
                         child: GestureDetector(
                           behavior: HitTestBehavior.opaque,
                           onTap: () {

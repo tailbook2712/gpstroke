@@ -13,9 +13,16 @@ import 'package:walk_tracker_app/artwork_creation_screen.dart';
 import 'database_helper.dart';
 import 'firestore_service.dart';
 import 'garmin_import_screen.dart';
+import 'route_destination_selection_screen.dart';
 import 'package:pedometer/pedometer.dart';
 
 import 'utils/utils.dart';
+
+// 記録モードの定義
+enum RecordingMode {
+  freeMode, // フリー記録モード（現在の軌跡を自由に記録）
+  routeFollowMode, // ルート追従モード（ルート提案のルートをなぞって記録）
+}
 
 class WalkingTrackerScreen extends StatefulWidget {
   @override
@@ -23,6 +30,15 @@ class WalkingTrackerScreen extends StatefulWidget {
 }
 
 class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
+  // 記録モード（デフォルト: フリーモード）
+  RecordingMode _recordingMode = RecordingMode.freeMode;
+
+  // ルート追従モード用のデータ
+  // ignore: unused_field
+  List<LatLng>? _suggestedRoutePath; // 提案ルート（Polyline用）
+  // ignore: unused_field
+  Map<String, dynamic>? _routeMetadata; // ルート情報（距離など）
+
   // ignore: unused_field
   Position? _currentPosition;
   Position? _previousPosition;
@@ -290,6 +306,18 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
     // generateGroupId を使って groupId を生成
     String groupId = generateGroupId(_positions);
 
+    // 記録モードの情報をメタデータとして保存
+    Map<String, dynamic> metadata = {
+      'recordingMode': _recordingMode.toString(),
+    };
+
+    // ルート追従モードの場合、ルート情報も保存
+    if (_recordingMode == RecordingMode.routeFollowMode &&
+        _routeMetadata != null) {
+      metadata['routeMetadata'] = _routeMetadata;
+      metadata['suggestedRouteDistance'] = _routeMetadata?['distance'];
+    }
+
     await _dbHelper.insertWalkingData(
       groupId: groupId,
       date: currentDate,
@@ -298,7 +326,7 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
       positions: positionData,
     );
 
-    // Firestore に保存
+    // Firestore に保存（メタデータ付き）
     await _firestoreService.saveWalkingData(
       groupId: groupId,
       date: currentDate,
@@ -564,6 +592,70 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
     }
   }
 
+  // ルート提案画面に遷移
+  Future<void> _navigateToRouteSuggestionScreen() async {
+    final result = await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => RouteDestinationSelectionScreen(),
+      ),
+    );
+
+    // ルート選択画面から戻った場合、トグルをフリーモードにリセット
+    setState(() {
+      _recordingMode = RecordingMode.freeMode;
+    });
+
+    if (result != null && result is Map<String, dynamic>) {
+      setState(() {
+        _suggestedRoutePath = result['routePath'] as List<LatLng>;
+        _routeMetadata = result['metadata'] as Map<String, dynamic>;
+      });
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'ルートが設定されました: ${(_routeMetadata?['distance'] / 1000).toStringAsFixed(2)}km',
+          ),
+        ),
+      );
+    }
+  }
+
+  /// Polylineを構築（モードに応じて表示内容を分岐）
+  Set<Polyline> _buildPolylines() {
+    Set<Polyline> polylines = {};
+
+    // 現在記録中の軌跡（青色）
+    polylines.add(
+      Polyline(
+        polylineId: PolylineId("current_route"),
+        points: _positions
+            .map((pos) => LatLng(pos.latitude, pos.longitude))
+            .toList(),
+        color: Colors.blue,
+        width: 5,
+      ),
+    );
+
+    // ルート追従モード時、提案ルートを表示（緑色）
+    if (_recordingMode == RecordingMode.routeFollowMode &&
+        _suggestedRoutePath != null &&
+        _suggestedRoutePath!.isNotEmpty) {
+      polylines.add(
+        Polyline(
+          polylineId: PolylineId("suggested_route"),
+          points: _suggestedRoutePath!,
+          color: Colors.green,
+          width: 4,
+          geodesic: true,
+        ),
+      );
+    }
+
+    return polylines;
+  }
+
   @override
   void dispose() {
     bg.BackgroundGeolocation.stop();
@@ -597,18 +689,96 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
               _mapController = controller;
               _setInitialCameraPosition();
             },
-            polylines: _polylines,
+            polylines: _buildPolylines(),
             myLocationEnabled: true,
             myLocationButtonEnabled: true,
           ),
+          // モード選択パネルとボタン（BottomNavigationBar の上）
+          Positioned(
+            bottom: 60,
+            left: 16,
+            right: 16,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // トグルボタン（小さく、白背景）
+                SegmentedButton<RecordingMode>(
+                  segments: <ButtonSegment<RecordingMode>>[
+                    ButtonSegment<RecordingMode>(
+                      value: RecordingMode.freeMode,
+                      label: Text('フリー'),
+                      icon: Icon(Icons.location_on),
+                    ),
+                    ButtonSegment<RecordingMode>(
+                      value: RecordingMode.routeFollowMode,
+                      label: Text('ルート'),
+                      icon: Icon(Icons.route),
+                    ),
+                  ],
+                  selected: <RecordingMode>{_recordingMode},
+                  style: SegmentedButton.styleFrom(
+                    backgroundColor: Colors.white,
+                    selectedBackgroundColor: Colors.blue,
+                    selectedForegroundColor: Colors.white,
+                  ),
+                  onSelectionChanged: (Set<RecordingMode> newSelection) {
+                    setState(() {
+                      _recordingMode = newSelection.first;
+                      // ルート提案モードに切り替えた時、自動的にルート提案画面に移動
+                      if (_recordingMode == RecordingMode.routeFollowMode &&
+                          (_suggestedRoutePath == null ||
+                              _suggestedRoutePath!.isEmpty)) {
+                        _navigateToRouteSuggestionScreen();
+                      }
+                    });
+                  },
+                ),
+                SizedBox(height: 12),
+                // アクションボタン
+                SizedBox(
+                  width: 200,
+                  child: ElevatedButton.icon(
+                    onPressed: _isRecording
+                        ? _stopRecording
+                        : (_recordingMode == RecordingMode.routeFollowMode &&
+                                (_suggestedRoutePath == null ||
+                                    _suggestedRoutePath!.isEmpty))
+                            ? _navigateToRouteSuggestionScreen
+                            : _startRecording,
+                    icon: Icon(
+                      _isRecording
+                          ? Icons.stop
+                          : (_recordingMode == RecordingMode.routeFollowMode &&
+                                  (_suggestedRoutePath == null ||
+                                      _suggestedRoutePath!.isEmpty))
+                              ? Icons.add_location
+                              : Icons.play_arrow,
+                    ),
+                    label: Text(
+                      _isRecording
+                          ? '記録停止'
+                          : (_recordingMode == RecordingMode.routeFollowMode &&
+                                  (_suggestedRoutePath == null ||
+                                      _suggestedRoutePath!.isEmpty))
+                              ? 'ルート提案'
+                              : '記録開始',
+                    ),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: _isRecording
+                          ? Colors.red
+                          : (_recordingMode == RecordingMode.routeFollowMode &&
+                                  (_suggestedRoutePath == null ||
+                                      _suggestedRoutePath!.isEmpty))
+                              ? Colors.orange
+                              : Colors.blue,
+                      padding: EdgeInsets.symmetric(vertical: 12),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
         ],
-      ),
-      floatingActionButton: Padding(
-        padding: const EdgeInsets.only(bottom: 80.0),
-        child: FloatingActionButton(
-          onPressed: _isRecording ? _stopRecording : _startRecording,
-          child: Icon(_isRecording ? Icons.stop : Icons.play_arrow),
-        ),
       ),
       bottomNavigationBar: BottomNavigationBar(
         type: BottomNavigationBarType.fixed,

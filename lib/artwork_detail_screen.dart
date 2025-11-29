@@ -694,10 +694,10 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
       }
 
       // F) 最終画面座標
-      double screenX =
-          trajectory.position.dx + containerCenterX + rotatedRelativeX;
-      double screenY =
-          trajectory.position.dy + containerCenterY + rotatedRelativeY;
+      // trajectory.position はコンテナの中心座標を表すため、
+      // コンテナ中心からの相対座標（rotatedRelativeX/Y）を加算するだけでよい
+      double screenX = trajectory.position.dx + rotatedRelativeX;
+      double screenY = trajectory.position.dy + rotatedRelativeY;
 
       return Offset(screenX, screenY);
     }
@@ -1184,8 +1184,8 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
               }
 
               return Positioned(
-                left: item.position.dx,
-                top: item.position.dy,
+                left: item.position.dx - trajectorySize / 2,
+                top: item.position.dy - trajectorySize / 2,
                 child: GestureDetector(
                   onTap: _isSlideshowPlaying
                       ? null
@@ -1495,10 +1495,10 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
       }
 
       // F) 最終画面座標
-      double screenX =
-          trajectory.position.dx + containerCenterX + rotatedRelativeX;
-      double screenY =
-          trajectory.position.dy + containerCenterY + rotatedRelativeY;
+      // trajectory.position はコンテナの中心座標を表すため、
+      // コンテナ中心からの相対座標（rotatedRelativeX/Y）を加算するだけでよい
+      double screenX = trajectory.position.dx + rotatedRelativeX;
+      double screenY = trajectory.position.dy + rotatedRelativeY;
 
       return Offset(screenX, screenY);
     }
@@ -1694,10 +1694,10 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
       }
 
       // F) 最終画面座標
-      double screenX =
-          trajectory.position.dx + containerCenterX + rotatedRelativeX;
-      double screenY =
-          trajectory.position.dy + containerCenterY + rotatedRelativeY;
+      // trajectory.position はコンテナの中心座標を表すため、
+      // コンテナ中心からの相対座標（rotatedRelativeX/Y）を加算するだけでよい
+      double screenX = trajectory.position.dx + rotatedRelativeX;
+      double screenY = trajectory.position.dy + rotatedRelativeY;
 
       return Offset(screenX, screenY);
     }
@@ -1850,8 +1850,9 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
         }
 
         // 現在のオーバーレイ始点座標（画面上の絶対位置）
-        double overlayStartRelativeX = containerCenterX + rotatedRelativeX;
-        double overlayStartRelativeY = containerCenterY + rotatedRelativeY;
+        // trajectory.position はコンテナの中心座標
+        double overlayStartRelativeX = rotatedRelativeX;
+        double overlayStartRelativeY = rotatedRelativeY;
         double overlayStartAbsX =
             trajectory.position.dx + overlayStartRelativeX;
         double overlayStartAbsY =
@@ -2091,8 +2092,8 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
         rotatedRelativeY = scaledRelativeY;
       }
 
-      double overlayStartRelativeX = containerCenterX + rotatedRelativeX;
-      double overlayStartRelativeY = containerCenterY + rotatedRelativeY;
+      double overlayStartRelativeX = rotatedRelativeX;
+      double overlayStartRelativeY = rotatedRelativeY;
 
       double overlayStartAbsX = trajectory.position.dx + overlayStartRelativeX;
       double overlayStartAbsY = trajectory.position.dy + overlayStartRelativeY;
