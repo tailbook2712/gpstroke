@@ -431,12 +431,26 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
   // 選択された軌跡を削除する
   void _removeSelectedTrajectory() {
     if (selectedItem != null) {
-      int indexToRemove = recordedTrajectories.indexOf(selectedItem!.polyline);
       setState(() {
         selectedTrajectories.remove(selectedItem);
-        if (temporarilyUsedIndices.contains(indexToRemove)) {
-          temporarilyUsedIndices.remove(indexToRemove);
+        
+        // 保存されたgroupIdを使用して一時使用中リストから削除
+        if (selectedItem!.groupId != null) {
+          print("🗑️ 軌跡を削除: groupId=${selectedItem!.groupId}");
+          
+          // groupIdベースの管理から削除（モーダルに再表示されるようにする）
+          if (temporarilyUsedGroupIds.contains(selectedItem!.groupId)) {
+            temporarilyUsedGroupIds.remove(selectedItem!.groupId);
+            print("✅ temporarilyUsedGroupIdsから削除しました");
+          }
+          
+          // legacy インデックスベースの管理からも削除
+          int indexToRemove = recordedTrajectories.indexOf(selectedItem!.polyline);
+          if (indexToRemove != -1 && temporarilyUsedIndices.contains(indexToRemove)) {
+            temporarilyUsedIndices.remove(indexToRemove);
+          }
         }
+        
         selectedItem = null;
       });
     }
@@ -457,73 +471,135 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
   }
 
   // 使用可能な軌跡を表示するモーダルを表示する
-  void _showTrajectoryModal(BuildContext context) {
-    showModalBottomSheet(
+  void _showTrajectoryModal(BuildContext context) async {
+    // ローディングインジケーターを表示
+    showDialog(
       context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (context) => DraggableScrollableSheet(
-        initialChildSize: 0.5,
-        minChildSize: 0.3,
-        maxChildSize: 0.9,
-        builder: (context, scrollController) => Container(
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.only(
-              topLeft: Radius.circular(20),
-              topRight: Radius.circular(20),
-            ),
-          ),
-          child: _TrajectoryModalContent(
-            recordedTrajectories: recordedTrajectories,
-            usedTrajectoryIndices: usedTrajectoryIndices,
-            usedLocalTrajectoryGroupIds: usedLocalTrajectoryGroupIds,
-            temporarilyUsedIndices: temporarilyUsedIndices,
-            temporarilyUsedGroupIds: temporarilyUsedGroupIds,
-            dbHelper: _dbHelper,
-            scrollController: scrollController,
-            onSelectTrajectory: (trajectory, isGarmin, groupId) {
-              Navigator.pop(context);
-
-              setState(() {
-                final trajectoryIndex =
-                    recordedTrajectories.indexOf(trajectory);
-
-                if (isGarmin) {
-                  // Garmin軌跡の場合、groupIdを一時的に記録
-                  // ※ 使用済みマークは _saveArtwork() 時に行う
-                  if (groupId != null) {
-                    temporarilyUsedIndices.add(groupId.hashCode); // legacy
-                    temporarilyUsedGroupIds.add(groupId); // 新方式
-                  }
-                } else {
-                  // ローカル軌跡の場合、インデックスとgroupIdをマーク
-                  if (trajectoryIndex != -1) {
-                    temporarilyUsedIndices.add(trajectoryIndex); // legacy
-                    // groupIdを取得して追加（非同期なので別途処理）
-                    if (groupId != null) {
-                      temporarilyUsedGroupIds.add(groupId);
-                    }
-                  }
-                }
-
-                final newTrajectory = TransformablePolyline(
-                  trajectory,
-                  Offset(
-                    MediaQuery.of(context).size.width / 2 - 50,
-                    MediaQuery.of(context).size.height / 2 - 50,
-                  ),
-                );
-                newTrajectory.scale = 0.8;
-                selectedTrajectories.add(newTrajectory);
-                // 新しく追加した軌跡を選択状態にする
-                selectedItem = newTrajectory;
-              });
-            },
-          ),
-        ),
+      barrierDismissible: false,
+      builder: (context) => const Center(
+        child: CircularProgressIndicator(),
       ),
     );
+    
+    try {
+      // モーダルを開く前に最新のデータを読み込む
+      print("🔄 モーダル表示前にデータを読み込み中...");
+      
+      // Firebase から使用済み情報を同期
+      await _dbHelper.syncUsedGarminActivitiesFromFirestore();
+      await _dbHelper.syncUsedTrajectoriesFromFirestore();
+      
+      // Garmin軌跡を読み込む
+      final garminActivities = await _dbHelper.getGarminActivities();
+      final usedGarminGroupIds = await _dbHelper.getUsedGarminActivityGroupIds();
+      final usedLocalGroupIds = await _dbHelper.getUsedTrajectories();
+      
+      // ローカル軌跡のgroupIdマッピングを作成
+      final allData = await _dbHelper.getAllWalkingData();
+      Map<int, String> localTrajectoryGroupIds = {};
+      for (int i = 0; i < allData.length; i++) {
+        if ((allData[i]['is_from_garmin'] ?? 0) == 0) {
+          localTrajectoryGroupIds[i] = allData[i]['group_id'] as String;
+        }
+      }
+      
+      print("📊 Garmin軌跡: ${garminActivities.length}件");
+      print("✅ 使用済みGarmin軌跡: ${usedGarminGroupIds.length}件");
+      print("✅ 使用済みローカル軌跡: ${usedLocalGroupIds.length}件");
+      print("🔧 一時使用中のgroupId: ${temporarilyUsedGroupIds.length}件 - $temporarilyUsedGroupIds");
+      
+      // ローディングを閉じる
+      if (mounted) {
+        Navigator.pop(context);
+      }
+      
+      // モーダルを表示
+      if (mounted) {
+        showModalBottomSheet(
+          context: context,
+          isScrollControlled: true,
+          backgroundColor: Colors.transparent,
+          builder: (context) => DraggableScrollableSheet(
+            initialChildSize: 0.5,
+            minChildSize: 0.3,
+            maxChildSize: 0.9,
+            builder: (context, scrollController) => Container(
+              decoration: const BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.only(
+                  topLeft: Radius.circular(20),
+                  topRight: Radius.circular(20),
+                ),
+              ),
+              child: _TrajectoryModalContent(
+                recordedTrajectories: recordedTrajectories,
+                usedTrajectoryIndices: usedTrajectoryIndices,
+                usedLocalTrajectoryGroupIds: usedLocalGroupIds.toSet(),
+                temporarilyUsedIndices: temporarilyUsedIndices,
+                temporarilyUsedGroupIds: temporarilyUsedGroupIds,
+                garminActivities: garminActivities,
+                usedGarminGroupIds: usedGarminGroupIds.toSet(),
+                localTrajectoryGroupIds: localTrajectoryGroupIds,
+                dbHelper: _dbHelper,
+                scrollController: scrollController,
+                onSelectTrajectory: (trajectory, isGarmin, groupId) {
+                  Navigator.pop(context);
+
+                  setState(() {
+                    final trajectoryIndex =
+                        recordedTrajectories.indexOf(trajectory);
+
+                    if (isGarmin) {
+                      // Garmin軌跡の場合、groupIdを一時的に記録
+                      // ※ 使用済みマークは _saveArtwork() 時に行う
+                      if (groupId != null) {
+                        temporarilyUsedIndices.add(groupId.hashCode); // legacy
+                        temporarilyUsedGroupIds.add(groupId); // 新方式
+                        print("📌 Garmin軌跡を一時使用中に追加: $groupId");
+                      }
+                    } else {
+                      // ローカル軌跡の場合、インデックスとgroupIdをマーク
+                      if (trajectoryIndex != -1) {
+                        temporarilyUsedIndices.add(trajectoryIndex); // legacy
+                        // groupIdを取得して追加（非同期なので別途処理）
+                        if (groupId != null) {
+                          temporarilyUsedGroupIds.add(groupId);
+                          print("📌 ローカル軌跡を一時使用中に追加: $groupId");
+                        }
+                      }
+                    }
+
+                    final newTrajectory = TransformablePolyline(
+                      trajectory,
+                      Offset(
+                        MediaQuery.of(context).size.width / 2 - 50,
+                        MediaQuery.of(context).size.height / 2 - 50,
+                      ),
+                      groupId: groupId, // groupIdを保存
+                    );
+                    newTrajectory.scale = 0.8;
+                    selectedTrajectories.add(newTrajectory);
+                    // 新しく追加した軌跡を選択状態にする
+                    selectedItem = newTrajectory;
+                  });
+                },
+              ),
+            ),
+          ),
+        );
+      }
+    } catch (e) {
+      // エラーが発生した場合、ローディングを閉じる
+      if (mounted) {
+        Navigator.pop(context);
+      }
+      print("❌ モーダル表示エラー: $e");
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('軌跡の読み込みに失敗しました: $e')),
+        );
+      }
+    }
   }
 
   // 作品の途中保存
@@ -910,13 +986,14 @@ class TransformablePolyline {
   double lastRotation;
   double scale;
   double lastScale;
+  String? groupId; // 軌跡のgroupIdを保存
 
   double minLat;
   double maxLat;
   double minLon;
   double maxLon;
 
-  TransformablePolyline(this.polyline, this.position)
+  TransformablePolyline(this.polyline, this.position, {this.groupId})
       : rotation = 0.0,
         lastRotation = 0.0,
         scale = 1.0, // デフォルト値を設定
@@ -932,96 +1009,42 @@ class TransformablePolyline {
 }
 
 /// 軌跡選択モーダルのコンテンツ
-class _TrajectoryModalContent extends StatefulWidget {
+class _TrajectoryModalContent extends StatelessWidget {
   final List<List<Position>> recordedTrajectories;
   final Set<int> usedTrajectoryIndices;
   final Set<String> usedLocalTrajectoryGroupIds;
   final Set<int> temporarilyUsedIndices;
   final Set<String> temporarilyUsedGroupIds;
+  final List<Map<String, dynamic>> garminActivities;
+  final Set<String> usedGarminGroupIds;
+  final Map<int, String> localTrajectoryGroupIds;
   final DatabaseHelper dbHelper;
   final Function(List<Position>, bool isGarmin, String? groupId)
       onSelectTrajectory;
   final ScrollController? scrollController;
 
-  _TrajectoryModalContent({
+  const _TrajectoryModalContent({
     required this.recordedTrajectories,
     required this.usedTrajectoryIndices,
     required this.usedLocalTrajectoryGroupIds,
     required this.temporarilyUsedIndices,
     required this.temporarilyUsedGroupIds,
+    required this.garminActivities,
+    required this.usedGarminGroupIds,
+    required this.localTrajectoryGroupIds,
     required this.dbHelper,
     required this.onSelectTrajectory,
     this.scrollController,
   });
 
   @override
-  _TrajectoryModalContentState createState() => _TrajectoryModalContentState();
-}
-
-class _TrajectoryModalContentState extends State<_TrajectoryModalContent> {
-  List<Map<String, dynamic>> _garminActivities = [];
-  Set<String> _usedGarminGroupIds = {};
-  Map<int, String> _localTrajectoryGroupIds =
-      {}; // ローカル軌跡のインデックス -> groupId マッピング
-
-  @override
-  void initState() {
-    super.initState();
-    _loadGarminActivities();
-    _loadLocalTrajectoryGroupIds();
-  }
-
-  /// ローカル軌跡のgroupIdマッピングをロード
-  Future<void> _loadLocalTrajectoryGroupIds() async {
-    final allData = await widget.dbHelper.getAllWalkingData();
-    Map<int, String> mapping = {};
-
-    for (int i = 0; i < allData.length; i++) {
-      if ((allData[i]['is_from_garmin'] ?? 0) == 0) {
-        mapping[i] = allData[i]['group_id'] as String;
-      }
-    }
-
-    setState(() {
-      _localTrajectoryGroupIds = mapping;
-    });
-  }
-
-  Future<void> _loadGarminActivities() async {
-    // Firebase復元時にローカルDBに同期
-    print("🔄 Garmin軌跡と使用済み情報を同期開始...");
-    await widget.dbHelper.syncGarminActivitiesFromFirestore();
-    await widget.dbHelper.syncUsedGarminActivitiesFromFirestore();
-    await widget.dbHelper
-        .syncUsedTrajectoriesFromFirestore(); // ローカル軌跡の使用済み情報も同期
-
-    final activities = await widget.dbHelper.getGarminActivities();
-    final usedGarminGroupIds =
-        await widget.dbHelper.getUsedGarminActivityGroupIds();
-    final usedLocalGroupIds =
-        await widget.dbHelper.getUsedTrajectories(); // ローカル軌跡の使用済みgroupId
-
-    print("📊 Garmin軌跡: ${activities.length}件");
-    print(
-        "✅ 使用済みGarmin軌跡: ${usedGarminGroupIds.length}件 - $usedGarminGroupIds");
-    print("✅ 使用済みローカル軌跡: ${usedLocalGroupIds.length}件 - $usedLocalGroupIds");
-
-    setState(() {
-      _garminActivities = activities;
-      _usedGarminGroupIds = usedGarminGroupIds.toSet();
-      widget.usedLocalTrajectoryGroupIds.clear();
-      widget.usedLocalTrajectoryGroupIds.addAll(usedLocalGroupIds);
-    });
-  }
-
-  @override
   Widget build(BuildContext context) {
     // ローカル軌跡のインデックスから対応するgroupIdを取得しながらフィルタリング
     List<List<Position>> availableTrajectories = [];
-    for (int index = 0; index < widget.recordedTrajectories.length; index++) {
+    for (int index = 0; index < recordedTrajectories.length; index++) {
       // 軌跡がまだ使用されていない場合のみ追加
-      if (!widget.temporarilyUsedIndices.contains(index)) {
-        availableTrajectories.add(widget.recordedTrajectories[index]);
+      if (!temporarilyUsedIndices.contains(index)) {
+        availableTrajectories.add(recordedTrajectories[index]);
       }
     }
 
@@ -1037,17 +1060,17 @@ class _TrajectoryModalContentState extends State<_TrajectoryModalContent> {
     });
 
     // 使用可能なGarmin軌跡をフィルタリング（使用済みマークされていないもの）
-    final availableGarminActivities = _garminActivities.where((activity) {
+    final availableGarminActivities = garminActivities.where((activity) {
       final groupId = activity['group_id'] as String;
       // groupIdが使用済み集合に含まれていないかチェック
-      return !_usedGarminGroupIds.contains(groupId) &&
-          !widget.temporarilyUsedIndices.contains(groupId.hashCode) &&
-          !widget.temporarilyUsedGroupIds.contains(groupId);
+      return !usedGarminGroupIds.contains(groupId) &&
+          !temporarilyUsedIndices.contains(groupId.hashCode) &&
+          !temporarilyUsedGroupIds.contains(groupId);
     }).toList();
 
     // 記録した軌跡とGarmin軌跡を統合
     return _buildCombinedTrajectories(availableTrajectories,
-        availableGarminActivities, _localTrajectoryGroupIds);
+        availableGarminActivities, localTrajectoryGroupIds);
   }
 
   // 記録した軌跡とGarmin軌跡を統合表示
@@ -1131,16 +1154,16 @@ class _TrajectoryModalContentState extends State<_TrajectoryModalContent> {
 
       if (isGarmin) {
         // Garmin軌跡：使用中なら除外
-        return !widget.temporarilyUsedGroupIds.contains(groupId);
+        return !temporarilyUsedGroupIds.contains(groupId);
       } else {
         // ローカル軌跡：使用済みまたは使用中なら除外
-        return !widget.usedLocalTrajectoryGroupIds.contains(groupId) &&
-            !widget.temporarilyUsedGroupIds.contains(groupId);
+        return !usedLocalTrajectoryGroupIds.contains(groupId) &&
+            !temporarilyUsedGroupIds.contains(groupId);
       }
     }).toList();
 
     return GridView.builder(
-      controller: widget.scrollController,
+      controller: scrollController,
       padding: EdgeInsets.all(10),
       gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
         crossAxisCount: 3,
@@ -1157,7 +1180,7 @@ class _TrajectoryModalContentState extends State<_TrajectoryModalContent> {
 
         return GestureDetector(
           onTap: () {
-            widget.onSelectTrajectory(positions, isGarmin, groupId);
+            onSelectTrajectory(positions, isGarmin, groupId);
           },
           child: Stack(
             children: [
