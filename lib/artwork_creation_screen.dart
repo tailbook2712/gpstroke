@@ -145,10 +145,19 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
     String artworkName = await _promptForArtworkName(); // 作品名を入力
     if (artworkName.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('作品名を入力してください。')),
+        const SnackBar(content: Text('作品名を入力してください。')),
       );
       return;
     }
+
+    // ローディングインジケーターを表示
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => const Center(
+        child: CircularProgressIndicator(),
+      ),
+    );
 
     try {
       RenderRepaintBoundary boundary = _boundaryKey.currentContext!
@@ -383,14 +392,28 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
         _currentDraftFilePath = null; // 現在の途中保存ファイルパスをクリア
       }
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('アートワークが保存されました!')),
-      );
-      Navigator.pop(context, {'imageFile': imgFile, 'canvasFile': canvasFile});
+      // ローディングを閉じる
+      if (mounted) {
+        Navigator.pop(context);
+      }
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('アートワークが保存されました!')),
+        );
+        Navigator.pop(context, {'imageFile': imgFile, 'canvasFile': canvasFile});
+      }
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('アートワークの保存に失敗しました: $e')),
-      );
+      // ローディングを閉じる
+      if (mounted) {
+        Navigator.pop(context);
+      }
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('アートワークの保存に失敗しました: $e')),
+        );
+      }
     }
   }
 
