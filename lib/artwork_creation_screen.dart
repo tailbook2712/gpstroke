@@ -203,72 +203,34 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
       List<Map<String, dynamic>> trajectoryDetailsCache = [];
 
       for (var item in selectedTrajectories) {
-        final groupId = generateGroupId(item.polyline);
+        // モーダルで選択時に保存されたgroupIdを使用（Garmin軌跡対応）
+        final groupId = item.groupId ?? generateGroupId(item.polyline);
         var trajectoryDetails =
             await _dbHelper.getWalkingDataByGroupId(groupId);
 
-        // デバッグ: Garmin軌跡の場合、複数のgroupIdを試す
+        // Garmin軌跡の場合、ローカルDBにデータがないため、Garmin軌跡データを取得
         String actualGroupId = groupId;
         if (trajectoryDetails == null) {
-          print('⚠️ groupId "$groupId" でデータが見つかりません。Garmin軌跡か確認中...');
-          // DB内に保存されているすべてのGarmin軌跡を確認
-          final garminActivities = await _dbHelper.getGarminActivities();
-          print('  利用可能なGarmin軌跡数: ${garminActivities.length}');
+          print('⚠️ ローカル軌跡が見つかりません: groupId="$groupId"。Garmin軌跡か確認中...');
 
-          if (garminActivities.isNotEmpty) {
-            // 座標の境界から最も近いGarmin軌跡を見つける
-            double minLat =
-                item.polyline.map((p) => p.latitude).reduce(math.min);
-            double maxLat =
-                item.polyline.map((p) => p.latitude).reduce(math.max);
-            double minLng =
-                item.polyline.map((p) => p.longitude).reduce(math.min);
-            double maxLng =
-                item.polyline.map((p) => p.longitude).reduce(math.max);
+          // 最初にgroupIdで直接Garmin軌跡を検索
+          trajectoryDetails =
+              await _dbHelper.getGarminActivityByGroupId(groupId);
 
-            double centerLat = (minLat + maxLat) / 2;
-            double centerLng = (minLng + maxLng) / 2;
-
-            print('  軌跡の中心座標: ($centerLat, $centerLng)');
-
-            // すべてのGarmin軌跡を確認
-            for (final activity in garminActivities) {
-              print(
-                  '    - groupId: ${activity['group_id']}, distance: ${activity['distance']}, steps: ${activity['steps']}');
-
-              // 座標を復元してチェック
-              final positions = jsonDecode(activity['positions']) as List;
-              if (positions.isNotEmpty) {
-                final firstPos = positions.first as Map<String, dynamic>;
-                final lastPos = positions.last as Map<String, dynamic>;
-
-                final minLatDB = math.min(
-                    (firstPos['latitude'] as num).toDouble(),
-                    (lastPos['latitude'] as num).toDouble());
-                final maxLatDB = math.max(
-                    (firstPos['latitude'] as num).toDouble(),
-                    (lastPos['latitude'] as num).toDouble());
-                final minLngDB = math.min(
-                    (firstPos['longitude'] as num).toDouble(),
-                    (lastPos['longitude'] as num).toDouble());
-                final maxLngDB = math.max(
-                    (firstPos['longitude'] as num).toDouble(),
-                    (lastPos['longitude'] as num).toDouble());
-
-                print(
-                    '      DB座標範囲: lat($minLatDB, $maxLatDB), lng($minLngDB, $maxLngDB)');
-
-                // 座標範囲が重なっているか確認
-                if (minLat <= maxLatDB &&
-                    maxLat >= minLatDB &&
-                    minLng <= maxLngDB &&
-                    maxLng >= minLngDB) {
-                  print('      ✅ 座標が一致！このgroupIdを使用します');
-                  actualGroupId = activity['group_id'] as String;
-                  trajectoryDetails =
-                      await _dbHelper.getWalkingDataByGroupId(actualGroupId);
-                  break;
-                }
+          if (trajectoryDetails != null) {
+            print('✅ Garmin軌跡が見つかりました: $groupId');
+            actualGroupId = groupId;
+          } else {
+            print('  Firestore経由でGarmin軌跡の確認を試みます...');
+            // Firestoreから直接取得を試みる
+            final firestoreActivities =
+                await _firestoreService.getAllWalkingData();
+            for (final activity in firestoreActivities) {
+              if (activity['groupId'] == groupId) {
+                print('✅ FirestoreからGarmin軌跡が見つかりました: $groupId');
+                trajectoryDetails = activity;
+                actualGroupId = groupId;
+                break;
               }
             }
           }

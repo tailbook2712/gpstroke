@@ -358,6 +358,19 @@ class DatabaseHelper {
     return result;
   }
 
+  /// 特定のgroupIdでGarmin軌跡を取得
+  Future<Map<String, dynamic>?> getGarminActivityByGroupId(
+      String groupId) async {
+    Database db = await database;
+    List<Map<String, dynamic>> result = await db.query(
+      tableWalkingData,
+      where: '$columnGroupId = ? AND $columnIsFromGarmin = ?',
+      whereArgs: [groupId, 1],
+      limit: 1,
+    );
+    return result.isNotEmpty ? result.first : null;
+  }
+
   /// Garmin軌跡がまだ使用可能かチェック
   Future<bool> isGarminActivityAvailable(String groupId) async {
     Database db = await database;
