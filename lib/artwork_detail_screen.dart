@@ -126,6 +126,12 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
       try {
         Map<String, dynamic>? record =
             await _dbHelper.getWalkingDataByGroupId(groupId);
+
+        // ローカル軌跡が見つからない場合、Garmin軌跡を確認
+        if (record == null) {
+          record = await _dbHelper.getGarminActivityByGroupId(groupId);
+        }
+
         if (record != null) {
           DateTime recordTime =
               DateTime.tryParse(record['date']) ?? DateTime.now();
@@ -462,64 +468,96 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
       Map<String, dynamic>? record =
           await _dbHelper.getWalkingDataByGroupId(groupId);
 
-      // Garmin軌跡の場合、座標から検索を試みる
+      // ローカル軌跡が見つからない場合、Garmin軌跡を確認
       String actualGroupId = groupId;
-      if (positions.isEmpty || record == null) {
-        print("位置情報または記録が見つかりません: $groupId。Garmin軌跡か確認中...");
+      if ((positions.isEmpty || record == null)) {
+        print("ローカル軌跡が見つかりません: $groupId。Garmin軌跡を確認中...");
 
-        // 座標の境界から最も近いGarmin軌跡を見つける
-        final garminActivities = await _dbHelper.getGarminActivities();
+        // Garmin軌跡を取得してみる
+        Map<String, dynamic>? garminRecord =
+            await _dbHelper.getGarminActivityByGroupId(groupId);
 
-        if (garminActivities.isNotEmpty) {
-          double minLat =
-              trajectory.polyline.map((p) => p.latitude).reduce(math.min);
-          double maxLat =
-              trajectory.polyline.map((p) => p.latitude).reduce(math.max);
-          double minLng =
-              trajectory.polyline.map((p) => p.longitude).reduce(math.min);
-          double maxLng =
-              trajectory.polyline.map((p) => p.longitude).reduce(math.max);
+        if (garminRecord != null) {
+          print("✅ Garmin軌跡が見つかりました: $groupId");
+          actualGroupId = groupId;
+          record = garminRecord;
 
-          // すべてのGarmin軌跡を確認
-          for (final activity in garminActivities) {
-            final positions_garmin = jsonDecode(activity['positions']) as List;
-            if (positions_garmin.isNotEmpty) {
-              final firstPos = positions_garmin.first as Map<String, dynamic>;
-              final lastPos = positions_garmin.last as Map<String, dynamic>;
+          // Garmin軌跡の座標を復元
+          try {
+            final positionsJson = jsonDecode(garminRecord['positions']) as List;
+            positions = positionsJson
+                .map((pos) {
+                  return {
+                    'latitude': pos['latitude'],
+                    'longitude': pos['longitude'],
+                    'timestamp':
+                        pos['timestamp'] ?? DateTime.now().toIso8601String(),
+                  };
+                })
+                .cast<Map<String, dynamic>>()
+                .toList();
+          } catch (e) {
+            print("❌ Garmin軌跡の座標復元エラー: $e");
+          }
+        } else {
+          print("Garmin軌跡も見つかりません。座標検索を試みます...");
 
-              final minLatDB = math.min(
-                  (firstPos['latitude'] as num).toDouble(),
-                  (lastPos['latitude'] as num).toDouble());
-              final maxLatDB = math.max(
-                  (firstPos['latitude'] as num).toDouble(),
-                  (lastPos['latitude'] as num).toDouble());
-              final minLngDB = math.min(
-                  (firstPos['longitude'] as num).toDouble(),
-                  (lastPos['longitude'] as num).toDouble());
-              final maxLngDB = math.max(
-                  (firstPos['longitude'] as num).toDouble(),
-                  (lastPos['longitude'] as num).toDouble());
+          // 座標の境界から最も近いGarmin軌跡を見つける
+          final garminActivities = await _dbHelper.getGarminActivities();
 
-              // 座標範囲が重なっているか確認
-              if (minLat <= maxLatDB &&
-                  maxLat >= minLatDB &&
-                  minLng <= maxLngDB &&
-                  maxLng >= minLngDB) {
-                print('✅ Garmin軌跡が一致しました: ${activity['group_id']}');
-                actualGroupId = activity['group_id'] as String;
-                positions = positions_garmin
-                    .map((pos) {
-                      return {
-                        'latitude': pos['latitude'],
-                        'longitude': pos['longitude'],
-                        'timestamp': pos['timestamp'] ??
-                            DateTime.now().toIso8601String(),
-                      };
-                    })
-                    .cast<Map<String, dynamic>>()
-                    .toList();
-                record = await _dbHelper.getWalkingDataByGroupId(actualGroupId);
-                break;
+          if (garminActivities.isNotEmpty) {
+            double minLat =
+                trajectory.polyline.map((p) => p.latitude).reduce(math.min);
+            double maxLat =
+                trajectory.polyline.map((p) => p.latitude).reduce(math.max);
+            double minLng =
+                trajectory.polyline.map((p) => p.longitude).reduce(math.min);
+            double maxLng =
+                trajectory.polyline.map((p) => p.longitude).reduce(math.max);
+
+            // すべてのGarmin軌跡を確認
+            for (final activity in garminActivities) {
+              final positions_garmin =
+                  jsonDecode(activity['positions']) as List;
+              if (positions_garmin.isNotEmpty) {
+                final firstPos = positions_garmin.first as Map<String, dynamic>;
+                final lastPos = positions_garmin.last as Map<String, dynamic>;
+
+                final minLatDB = math.min(
+                    (firstPos['latitude'] as num).toDouble(),
+                    (lastPos['latitude'] as num).toDouble());
+                final maxLatDB = math.max(
+                    (firstPos['latitude'] as num).toDouble(),
+                    (lastPos['latitude'] as num).toDouble());
+                final minLngDB = math.min(
+                    (firstPos['longitude'] as num).toDouble(),
+                    (lastPos['longitude'] as num).toDouble());
+                final maxLngDB = math.max(
+                    (firstPos['longitude'] as num).toDouble(),
+                    (lastPos['longitude'] as num).toDouble());
+
+                // 座標範囲が重なっているか確認
+                if (minLat <= maxLatDB &&
+                    maxLat >= minLatDB &&
+                    minLng <= maxLngDB &&
+                    maxLng >= minLngDB) {
+                  print('✅ 座標が一致しました。Garmin軌跡を使用: ${activity['group_id']}');
+                  actualGroupId = activity['group_id'] as String;
+                  positions = positions_garmin
+                      .map((pos) {
+                        return {
+                          'latitude': pos['latitude'],
+                          'longitude': pos['longitude'],
+                          'timestamp': pos['timestamp'] ??
+                              DateTime.now().toIso8601String(),
+                        };
+                      })
+                      .cast<Map<String, dynamic>>()
+                      .toList();
+                  record =
+                      await _dbHelper.getWalkingDataByGroupId(actualGroupId);
+                  break;
+                }
               }
             }
           }
