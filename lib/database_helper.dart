@@ -78,7 +78,6 @@ class DatabaseHelper {
     required int steps,
     required double distance,
     required List<Map<String, dynamic>> positions,
-    bool isFromGarmin = false,
   }) async {
     Database db = await database;
 
@@ -102,18 +101,8 @@ class DatabaseHelper {
         columnSteps: steps,
         columnDistance: distance,
         columnPositions: jsonEncode(positions),
-        columnIsFromGarmin: isFromGarmin ? 1 : 0,
+        columnIsFromGarmin: 0,
       },
-    );
-
-    // すべての軌跡を walking_data コレクションに統一保存
-    await _firestoreService.saveWalkingData(
-      groupId: groupId,
-      date: date,
-      steps: steps,
-      distance: distance,
-      positions: positions,
-      isFromGarmin: isFromGarmin,
     );
 
     return result;
@@ -133,8 +122,7 @@ class DatabaseHelper {
   // 使用済み軌跡インデックスを保存
   /// ローカル軌跡をgroupIdで使用済みマーク
   /// 軌跡を使用済みとしてマーク（統一メソッド）
-  Future<void> markTrajectoryAsUsed(String groupId,
-      {bool isFromGarmin = false}) async {
+  Future<void> markTrajectoryAsUsed(String groupId) async {
     Database db = await database;
 
     // ローカルDBに保存
@@ -144,24 +132,22 @@ class DatabaseHelper {
       conflictAlgorithm: ConflictAlgorithm.ignore,
     );
 
-    // Firestoreにも同期（新統一スキーマ）
-    await _firestoreService.markTrajectoryAsUsedInFirestore(groupId,
-        isFromGarmin: isFromGarmin);
+    // Firestoreにも同期
+    await _firestoreService.markTrajectoryAsUsedInFirestore(groupId);
 
-    final typeLabel = isFromGarmin ? "Garmin軌跡" : "ローカル軌跡";
-    print("✅ $typeLabel を使用済みとしてマーク: $groupId");
+    print("✅ 軌跡を使用済みとしてマーク: $groupId");
   }
 
   /// レガシーメソッド（後方互換性のため）
   @deprecated
   Future<void> insertUsedTrajectory(String groupId) async {
-    await markTrajectoryAsUsed(groupId, isFromGarmin: false);
+    await markTrajectoryAsUsed(groupId);
   }
 
   /// レガシーメソッド（後方互換性のため）
   @deprecated
   Future<void> markGarminActivityAsUsed(String groupId) async {
-    await markTrajectoryAsUsed(groupId, isFromGarmin: true);
+    await markTrajectoryAsUsed(groupId);
   }
 
   /// 複数の使用済みローカル軌跡を一括で保存
@@ -184,8 +170,7 @@ class DatabaseHelper {
 
     // Firestoreにも同期
     for (String groupId in groupIds) {
-      await _firestoreService.markTrajectoryAsUsedInFirestore(groupId,
-          isFromGarmin: false);
+      await _firestoreService.markTrajectoryAsUsedInFirestore(groupId);
     }
   }
 

@@ -302,9 +302,11 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
       };
     }).toList();
 
-    final currentDate = DateTime.now().toIso8601String();
     // generateGroupId を使って groupId を生成
     String groupId = generateGroupId(_positions);
+
+    // positions[0]のtimestampをdateとして使用
+    final currentDate = _positions[0].timestamp.toIso8601String();
 
     // 記録モードの情報をメタデータとして保存
     Map<String, dynamic> metadata = {
@@ -326,10 +328,9 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
       positions: positionData,
     );
 
-    // Firestore に保存（メタデータ付き）
+    // Firestore に保存
     await _firestoreService.saveWalkingData(
       groupId: groupId,
-      date: currentDate,
       steps: _stepCount,
       distance: _totalDistance,
       positions: positionData,

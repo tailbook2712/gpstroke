@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
-import 'dart:io'; // Platform check
 import 'route_generation_screen.dart';
 
 class RouteDesignCanvasScreen extends StatefulWidget {

@@ -204,24 +204,21 @@ class _GarminImportScreenState extends State<GarminImportScreen> {
         final groupId = activity.generateGroupId();
         final date = activity.getFormattedDate();
 
-        // ローカルDBに保存（isFromGarmin: true を指定）
+        // ローカルDBに保存
         await _dbHelper.insertWalkingData(
           groupId: groupId,
           date: date,
           steps: activity.steps,
           distance: activity.distance,
           positions: positions,
-          isFromGarmin: true,
         );
 
-        // Firestoreにも保存（isFromGarmin: true を指定）
+        // Firestoreにも保存
         await _firestoreService.saveWalkingData(
           groupId: groupId,
           positions: positions,
-          date: date,
           steps: activity.steps,
           distance: activity.distance,
-          isFromGarmin: true, // 新スキーマ対応
         );
 
         savedCount++;
