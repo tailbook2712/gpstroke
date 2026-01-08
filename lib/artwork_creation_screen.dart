@@ -8,6 +8,7 @@ import 'package:path_provider/path_provider.dart';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart' as gmaps;
 import 'package:intl/intl.dart';
 import 'database_helper.dart';
 import 'draft_list_screen.dart';
@@ -1231,6 +1232,10 @@ class _TrajectoryModalContentState extends State<_TrajectoryModalContent> {
           onTap: () {
             widget.onSelectTrajectory(positions, isGarmin, groupId);
           },
+          onLongPress: () {
+            _showTrajectoryMapDialog(
+                context, positions, date, isGarmin, groupId);
+          },
           child: Stack(
             children: [
               CustomPaint(
@@ -1265,6 +1270,167 @@ class _TrajectoryModalContentState extends State<_TrajectoryModalContent> {
           ),
         );
       },
+    );
+  }
+
+  /// 軌跡の地図情報をポップアップで表示するダイアログ
+  void _showTrajectoryMapDialog(
+    BuildContext context,
+    List<Position> positions,
+    String date,
+    bool isGarmin,
+    String? groupId,
+  ) {
+    if (positions.isEmpty) return;
+
+    // 軌跡の境界を計算
+    final double minLat =
+        positions.map((p) => p.latitude).reduce((a, b) => a < b ? a : b);
+    final double maxLat =
+        positions.map((p) => p.latitude).reduce((a, b) => a > b ? a : b);
+    final double minLng =
+        positions.map((p) => p.longitude).reduce((a, b) => a < b ? a : b);
+    final double maxLng =
+        positions.map((p) => p.longitude).reduce((a, b) => a > b ? a : b);
+
+    // 中心座標を計算
+    final double centerLat = (minLat + maxLat) / 2;
+    final double centerLng = (minLng + maxLng) / 2;
+
+    // 適切なズームレベルを計算
+    final double latDelta = maxLat - minLat;
+    final double lngDelta = maxLng - minLng;
+    final double maxDelta = math.max(latDelta, lngDelta);
+
+    // ズームレベルの計算（大まかな目安）
+    double zoomLevel = 15.0;
+    if (maxDelta > 0.1) {
+      zoomLevel = 10.0;
+    } else if (maxDelta > 0.05) {
+      zoomLevel = 12.0;
+    } else if (maxDelta > 0.01) {
+      zoomLevel = 14.0;
+    } else if (maxDelta > 0.005) {
+      zoomLevel = 15.0;
+    } else {
+      zoomLevel = 16.0;
+    }
+
+    // ポリラインを作成
+    final polyline = gmaps.Polyline(
+      polylineId: const gmaps.PolylineId('trajectory'),
+      points:
+          positions.map((p) => gmaps.LatLng(p.latitude, p.longitude)).toList(),
+      color: Colors.blue,
+      width: 4,
+    );
+
+    // 総距離を計算
+    double totalDistance = 0.0;
+    for (int i = 0; i < positions.length - 1; i++) {
+      totalDistance += Geolocator.distanceBetween(
+        positions[i].latitude,
+        positions[i].longitude,
+        positions[i + 1].latitude,
+        positions[i + 1].longitude,
+      );
+    }
+
+    showDialog(
+      context: context,
+      builder: (dialogContext) => Dialog(
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+        ),
+        child: Container(
+          width: MediaQuery.of(context).size.width * 0.9,
+          height: MediaQuery.of(context).size.height * 0.5,
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // 地図
+              Expanded(
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(12),
+                  child: gmaps.GoogleMap(
+                    initialCameraPosition: gmaps.CameraPosition(
+                      target: gmaps.LatLng(centerLat, centerLng),
+                      zoom: zoomLevel,
+                    ),
+                    polylines: {polyline},
+                    myLocationEnabled: false,
+                    zoomControlsEnabled: false,
+                    mapToolbarEnabled: false,
+                    compassEnabled: false,
+                    rotateGesturesEnabled: false,
+                    scrollGesturesEnabled: false,
+                    zoomGesturesEnabled: false,
+                    tiltGesturesEnabled: false,
+                    mapType: gmaps.MapType.normal,
+                    onMapCreated: (controller) {
+                      // 地図が作成されたらポリラインが見えるようにカメラを調整
+                      Future.delayed(const Duration(milliseconds: 300), () {
+                        if (positions.length >= 2) {
+                          controller.moveCamera(
+                            gmaps.CameraUpdate.newLatLngBounds(
+                              gmaps.LatLngBounds(
+                                southwest: gmaps.LatLng(
+                                    minLat - 0.001, minLng - 0.001),
+                                northeast: gmaps.LatLng(
+                                    maxLat + 0.001, maxLng + 0.001),
+                              ),
+                              50, // padding
+                            ),
+                          );
+                        }
+                      });
+                    },
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              // 情報表示
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  // 総距離
+                  Row(
+                    children: [
+                      Icon(Icons.straighten, size: 16, color: Colors.grey[700]),
+                      const SizedBox(width: 4),
+                      Text(
+                        totalDistance >= 1000
+                            ? '${(totalDistance / 1000).toStringAsFixed(2)} km'
+                            : '${totalDistance.toStringAsFixed(0)} m',
+                        style: TextStyle(
+                          fontSize: 14,
+                          color: Colors.grey[700],
+                        ),
+                      ),
+                    ],
+                  ),
+                  // 記録日時
+                  Row(
+                    children: [
+                      Icon(Icons.calendar_today,
+                          size: 16, color: Colors.grey[700]),
+                      const SizedBox(width: 4),
+                      Text(
+                        date,
+                        style: TextStyle(
+                          fontSize: 14,
+                          color: Colors.grey[700],
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }
