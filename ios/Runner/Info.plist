@@ -35,6 +35,8 @@
 	<string>アプリがフォアグラウンドで位置情報を使用します。</string>
 	<key>NSMotionUsageDescription</key>
 	<string>アプリがモーションデータを使用して歩行軌跡を記録します。</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>ガイド画像として使用する写真を選択するために、写真ライブラリへのアクセスが必要です。</string>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
 	<key>UIBackgroundModes</key>

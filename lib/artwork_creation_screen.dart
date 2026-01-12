@@ -10,6 +10,7 @@ import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart' as gmaps;
 import 'package:intl/intl.dart';
+import 'package:image_picker/image_picker.dart';
 import 'database_helper.dart';
 import 'draft_list_screen.dart';
 import 'polyline_painter.dart';
@@ -46,6 +47,17 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
 
   // 軌跡のサイズ定義
   final double trajectorySize = 100.0;
+
+  // ガイド画像機能用の状態変数
+  File? _guideImage;
+  double _guideImageOpacity = 0.5;
+  bool _showGuideImagePanel = false; // コントロールパネルの表示・非表示
+  bool _showGuideImageControl = false; // 画面左上のコントロールボタン表示・非表示
+  bool _guideImageVisible = true; // ガイド画像の表示・非表示
+  Offset _guideImagePosition = Offset.zero; // ガイド画像の位置
+  double _guideImageScale = 1.0; // ガイド画像のスケール
+  double _guideImageLastScale = 1.0; // スケール操作用
+  bool _guideImageLocked = false; // ガイド画像の位置・サイズ固定
 
   @override
   void initState() {
@@ -121,6 +133,54 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
     }
   }
 
+  /// ガイド画像を選択するメソッド
+  Future<void> _pickGuideImage() async {
+    try {
+      final ImagePicker picker = ImagePicker();
+      final XFile? image = await picker.pickImage(
+        source: ImageSource.gallery,
+      );
+
+      if (image != null) {
+        setState(() {
+          _guideImage = File(image.path);
+          _showGuideImagePanel = true;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('ガイド画像を設定しました')),
+        );
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('画像の選択に失敗しました: $e')),
+      );
+    }
+  }
+
+  /// ガイド画像をリセットするメソッド（画像を削除し、設定を初期化）
+  void _resetGuideImage() {
+    setState(() {
+      _guideImage = null;
+      _showGuideImagePanel = false;
+      _guideImageVisible = true;
+      _guideImageOpacity = 0.5;
+      _guideImagePosition = Offset.zero;
+      _guideImageScale = 1.0;
+      _guideImageLastScale = 1.0;
+      _guideImageLocked = false;
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('ガイド画像をリセットしました')),
+    );
+  }
+
+  /// ガイド画像の表示・非表示を切り替えるメソッド
+  void _toggleGuideImageVisibility() {
+    setState(() {
+      _guideImageVisible = !_guideImageVisible;
+    });
+  }
+
   /// Firebase から使用済みローカル軌跡のgroupIdを同期して読み込む
   Future<void> _loadUsedTrajectories() async {
     try {
@@ -161,11 +221,28 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
     );
 
     try {
+      // ガイド画像が表示されている場合は一時的に非表示にする
+      final bool wasGuideImageVisible = _guideImageVisible;
+      if (_guideImage != null && _guideImageVisible) {
+        setState(() {
+          _guideImageVisible = false;
+        });
+        // UIの更新を待つ
+        await Future.delayed(const Duration(milliseconds: 100));
+      }
+
       RenderRepaintBoundary boundary = _boundaryKey.currentContext!
           .findRenderObject() as RenderRepaintBoundary;
       var image = await boundary.toImage();
       ByteData? byteData = await image.toByteData(format: ImageByteFormat.png);
       Uint8List pngBytes = byteData!.buffer.asUint8List();
+
+      // ガイド画像の表示状態を復元
+      if (_guideImage != null && wasGuideImageVisible) {
+        setState(() {
+          _guideImageVisible = true;
+        });
+      }
 
       final directory = await getApplicationDocumentsDirectory();
       final artworksDirectory = Directory('${directory.path}/artworks');
@@ -743,6 +820,13 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                 _saveDraft(draftFilePath: _currentDraftFilePath); // 上書き保存
               } else if (value == 'load_draft') {
                 _showDraftListScreen(); // 途中保存一覧
+              } else if (value == 'guide_image') {
+                setState(() {
+                  _showGuideImageControl = !_showGuideImageControl;
+                  if (_showGuideImageControl) {
+                    _showGuideImagePanel = true;
+                  }
+                });
               }
             },
             itemBuilder: (context) => [
@@ -757,6 +841,22 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
               PopupMenuItem(
                 value: 'load_draft',
                 child: Text('下書き一覧'),
+              ),
+              PopupMenuItem(
+                value: 'guide_image',
+                child: Row(
+                  children: [
+                    Icon(
+                      _showGuideImageControl
+                          ? Icons.check_box
+                          : Icons.check_box_outline_blank,
+                      size: 20,
+                      color: _showGuideImageControl ? Colors.blue : Colors.grey,
+                    ),
+                    const SizedBox(width: 8),
+                    const Text('ガイド画像設定'),
+                  ],
+                ),
               ),
             ],
           ),
@@ -784,6 +884,52 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                 key: _boundaryKey,
                 child: Stack(
                   children: [
+                    // ガイド画像レイヤー（移動・拡大縮小可能、固定可能、表示・非表示切り替え可能）
+                    if (_guideImage != null && _guideImageVisible)
+                      Positioned.fill(
+                        child: GestureDetector(
+                          behavior: _guideImageLocked
+                              ? HitTestBehavior.translucent
+                              : HitTestBehavior.translucent,
+                          onScaleStart: _guideImageLocked
+                              ? null
+                              : (details) {
+                                  _guideImageLastScale = _guideImageScale;
+                                },
+                          onScaleUpdate: _guideImageLocked
+                              ? null
+                              : (details) {
+                                  setState(() {
+                                    // 移動処理
+                                    _guideImagePosition +=
+                                        details.focalPointDelta;
+                                    // スケール処理（ピンチ操作）
+                                    if ((details.scale - 1.0).abs() > 0.01) {
+                                      final newScale =
+                                          _guideImageLastScale * details.scale;
+                                      _guideImageScale =
+                                          newScale.clamp(0.2, 3.0);
+                                    }
+                                  });
+                                },
+                          child: ClipRect(
+                            child: Transform.translate(
+                              offset: _guideImagePosition,
+                              child: Transform.scale(
+                                scale: _guideImageScale,
+                                child: Opacity(
+                                  opacity: _guideImageOpacity,
+                                  child: Image.file(
+                                    _guideImage!,
+                                    width: MediaQuery.of(context).size.width,
+                                    fit: BoxFit.fitWidth,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
                     ...selectedTrajectories.map((item) {
                       final isSelected = selectedItem == item;
 
@@ -958,6 +1104,152 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                   icon: Icon(Icons.delete, size: 30, color: Colors.red),
                   onPressed: _removeSelectedTrajectory,
                 ),
+              ),
+            ),
+          // ガイド画像コントロールUI（画面左上）- メニューから有効化された場合のみ表示
+          if (_showGuideImageControl)
+            Positioned(
+              top: 8,
+              left: 8,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // トグルボタン
+                  Container(
+                    decoration: BoxDecoration(
+                      color: Colors.white.withOpacity(0.9),
+                      borderRadius: BorderRadius.circular(8),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withOpacity(0.1),
+                          blurRadius: 4,
+                          offset: const Offset(0, 2),
+                        ),
+                      ],
+                    ),
+                    child: IconButton(
+                      icon: Icon(
+                        _showGuideImagePanel
+                            ? Icons.expand_less
+                            : Icons.add_photo_alternate,
+                        color: _guideImage != null
+                            ? Colors.blue
+                            : Colors.grey[700],
+                      ),
+                      tooltip: _showGuideImagePanel ? 'パネルを閉じる' : 'ガイド画像設定',
+                      onPressed: () {
+                        setState(() {
+                          _showGuideImagePanel = !_showGuideImagePanel;
+                        });
+                      },
+                    ),
+                  ),
+                  // コントロールパネル（トグルで表示・非表示）
+                  if (_showGuideImagePanel)
+                    Container(
+                      margin: const EdgeInsets.only(top: 8),
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withOpacity(0.9),
+                        borderRadius: BorderRadius.circular(8),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withOpacity(0.1),
+                            blurRadius: 4,
+                            offset: const Offset(0, 2),
+                          ),
+                        ],
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          // ガイド画像選択ボタン
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              TextButton.icon(
+                                icon: Icon(
+                                  _guideImage != null
+                                      ? Icons.image
+                                      : Icons.add_photo_alternate,
+                                  size: 20,
+                                ),
+                                label:
+                                    Text(_guideImage != null ? '変更' : '画像を選択'),
+                                onPressed: _pickGuideImage,
+                              ),
+                              // 表示・非表示切り替えボタン（画像が設定されている場合のみ）
+                              if (_guideImage != null)
+                                IconButton(
+                                  icon: Icon(
+                                    _guideImageVisible
+                                        ? Icons.visibility
+                                        : Icons.visibility_off,
+                                    size: 20,
+                                    color: _guideImageVisible
+                                        ? Colors.blue
+                                        : Colors.grey,
+                                  ),
+                                  tooltip:
+                                      _guideImageVisible ? '非表示にする' : '表示する',
+                                  onPressed: _toggleGuideImageVisibility,
+                                ),
+                            ],
+                          ),
+                          // 不透明度スライダー（ガイド画像が設定されている場合のみ表示）
+                          if (_guideImage != null) ...[
+                            const SizedBox(height: 8),
+                            const Text(
+                              '不透明度',
+                              style:
+                                  TextStyle(fontSize: 12, color: Colors.grey),
+                            ),
+                            SizedBox(
+                              width: 150,
+                              child: Slider(
+                                value: _guideImageOpacity,
+                                min: 0.1,
+                                max: 1.0,
+                                divisions: 9,
+                                label: '${(_guideImageOpacity * 100).toInt()}%',
+                                onChanged: (value) {
+                                  setState(() {
+                                    _guideImageOpacity = value;
+                                  });
+                                },
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            // 位置・サイズ固定トグルボタン
+                            Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(
+                                  _guideImageLocked
+                                      ? Icons.lock
+                                      : Icons.lock_open,
+                                  size: 18,
+                                  color: _guideImageLocked
+                                      ? Colors.orange
+                                      : Colors.grey,
+                                ),
+                                const SizedBox(width: 4),
+                                const Text('位置・サイズ固定'),
+                                Switch(
+                                  value: _guideImageLocked,
+                                  onChanged: (value) {
+                                    setState(() {
+                                      _guideImageLocked = value;
+                                    });
+                                  },
+                                ),
+                              ],
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                ],
               ),
             ),
         ],
