@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'route_design_canvas_screen.dart';
+import 'route_service.dart';
 
 class RouteDestinationSelectionScreen extends StatefulWidget {
   @override
@@ -47,9 +48,18 @@ class _RouteDestinationSelectionScreenState
         ),
       );
 
+      // 現在地を最寄りの道路にスナップ
+      final rawLocation = LatLng(position.latitude, position.longitude);
+      final snappedLocation =
+          await RouteService.snapPointToNearestRoad(rawLocation);
+      print('📍 出発地を道路にスナップしました');
+      print('   元の位置: ${rawLocation.latitude}, ${rawLocation.longitude}');
+      print(
+          '   スナップ後: ${snappedLocation.latitude}, ${snappedLocation.longitude}');
+
       setState(() {
-        // 出発地を現在地に設定
-        _startingPoint = LatLng(position.latitude, position.longitude);
+        // 出発地をスナップ後の位置に設定
+        _startingPoint = snappedLocation;
         // カメラも現在地に移動
         _centerPoint = _startingPoint!;
         _isLoading = false;
@@ -116,15 +126,16 @@ class _RouteDestinationSelectionScreenState
     }
   }
 
-  /// FAB が押された時、現在のステップに応じて処理
+  /// FAB が押された時、目的地を設定してキャンバス画面へ遷移
   void _registerCenterPoint() {
     if (_selectionStep == 2) {
-      // 目的地選択モード
+      // 目的地を設定
       setState(() {
         _destination = _centerPoint;
-        _selectionStep = 3; // 完了
         _updateMarkers();
       });
+      // すぐにキャンバス画面へ遷移
+      _proceedToCanvasScreen();
     }
   }
 
@@ -170,29 +181,29 @@ class _RouteDestinationSelectionScreenState
         mainAxisSize: MainAxisSize.min,
         children: [
           if (_startingPoint != null)
-          if (_startingPoint != null)
-            Row(
-              children: [
-                Icon(Icons.my_location, color: Colors.blue, size: 20),
-                SizedBox(width: 8),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text('出発地（現在位置）',
-                          style: TextStyle(
-                              fontSize: 12,
-                              fontWeight: FontWeight.bold,
-                              color: Colors.blue)),
-                      Text(
-                        '${_startingPoint!.latitude.toStringAsFixed(6)}, ${_startingPoint!.longitude.toStringAsFixed(6)}',
-                        style: TextStyle(fontSize: 11),
-                      ),
-                    ],
+            if (_startingPoint != null)
+              Row(
+                children: [
+                  Icon(Icons.my_location, color: Colors.blue, size: 20),
+                  SizedBox(width: 8),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('出発地（現在位置）',
+                            style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.blue)),
+                        Text(
+                          '${_startingPoint!.latitude.toStringAsFixed(6)}, ${_startingPoint!.longitude.toStringAsFixed(6)}',
+                          style: TextStyle(fontSize: 11),
+                        ),
+                      ],
+                    ),
                   ),
-                ),
-              ],
-            ),
+                ],
+              ),
           if (_startingPoint != null && _destination != null)
             SizedBox(height: 8),
           if (_destination != null)
@@ -242,9 +253,7 @@ class _RouteDestinationSelectionScreenState
       },
       child: Scaffold(
         appBar: AppBar(
-          title: Text(_selectionStep == 2
-                  ? '目的地を選択'
-                  : '目的地を確認'),
+          title: Text('目的地を選択'),
           centerTitle: true,
           elevation: 0,
         ),
@@ -318,52 +327,25 @@ class _RouteDestinationSelectionScreenState
                           ),
                         ),
 
-                        // 下部: ステータスと設置ボタン
-                        if (_selectionStep < 3)
-                          Positioned(
-                            bottom: 80,
-                            left: 16,
-                            right: 16,
-                            child: SizedBox(
-                              width: double.infinity,
-                              child: ElevatedButton.icon(
-                                onPressed: _registerCenterPoint,
-                                icon: Icon(Icons.check),
-                                label: Text('目的地を設定'),
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: Colors.blue,
-                                  padding: EdgeInsets.symmetric(vertical: 12),
-                                  foregroundColor: Colors.white,
-                                ),
+                        // 下部: 目的地設定ボタン
+                        Positioned(
+                          bottom: 80,
+                          left: 16,
+                          right: 16,
+                          child: SizedBox(
+                            width: double.infinity,
+                            child: ElevatedButton.icon(
+                              onPressed: _registerCenterPoint,
+                              icon: Icon(Icons.arrow_forward),
+                              label: Text('この場所を目的地にする'),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: Colors.blue,
+                                padding: EdgeInsets.symmetric(vertical: 12),
+                                foregroundColor: Colors.white,
                               ),
                             ),
                           ),
-
-                        // 下部: ステータスと次へボタン
-                        if (_selectionStep == 3)
-                          Positioned(
-                            bottom: 80,
-                            left: 16,
-                            right: 16,
-                            child: Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                SizedBox(
-                                  width: double.infinity,
-                                  child: ElevatedButton.icon(
-                                    onPressed: _proceedToCanvasScreen,
-                                    icon: Icon(Icons.arrow_forward),
-                                    label: Text('次へ：形を描く'),
-                                    style: ElevatedButton.styleFrom(
-                                      backgroundColor: Colors.blue,
-                                      padding:
-                                          EdgeInsets.symmetric(vertical: 12),
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
+                        ),
                       ],
                     ),
                   ),

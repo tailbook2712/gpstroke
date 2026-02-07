@@ -179,38 +179,18 @@ class _RouteGenerationScreenState extends State<RouteGenerationScreen> {
                             ),
                             SizedBox(height: 12),
                             Row(
-                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
                               children: [
-                                Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text('距離', style: TextStyle(fontSize: 12)),
-                                    SizedBox(height: 4),
-                                    Text(
-                                      '${(RouteService.calculatePathDistance(_generatedRoute!) / 1000).toStringAsFixed(2)} km',
-                                      style: TextStyle(
-                                        fontSize: 18,
-                                        fontWeight: FontWeight.bold,
-                                        color: Colors.blue,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                                Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text('ポイント数',
-                                        style: TextStyle(fontSize: 12)),
-                                    SizedBox(height: 4),
-                                    Text(
-                                      '${_generatedRoute!.length}',
-                                      style: TextStyle(
-                                        fontSize: 18,
-                                        fontWeight: FontWeight.bold,
-                                        color: Colors.green,
-                                      ),
-                                    ),
-                                  ],
+                                Icon(Icons.straighten,
+                                    size: 16, color: Colors.grey),
+                                SizedBox(width: 8),
+                                Text('距離: ', style: TextStyle(fontSize: 14)),
+                                Text(
+                                  '${(RouteService.calculatePathDistance(_generatedRoute!) / 1000).toStringAsFixed(2)} km',
+                                  style: TextStyle(
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.bold,
+                                    color: Colors.blue,
+                                  ),
                                 ),
                               ],
                             ),
