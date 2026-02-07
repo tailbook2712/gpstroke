@@ -1,5 +1,6 @@
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:flutter/material.dart';
+import 'dart:ui' show Offset;
 import 'dart:math';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
@@ -712,5 +713,48 @@ class RouteService {
     sampled.add(points.last);
 
     return sampled;
+  }
+
+  /// 単一ポイントを最寄りの道路にスナップ（公開メソッド）
+  ///
+  /// Google Roads API の nearestRoads を使用して、
+  /// 指定した地点を最も近い道路上の地点に変換します。
+  static Future<LatLng> snapPointToNearestRoad(LatLng point) async {
+    if (_apiKey.isEmpty) {
+      print('⚠️ APIキーが設定されていません。元のポイントを返します。');
+      return point;
+    }
+
+    try {
+      final url = Uri.parse(
+        'https://roads.googleapis.com/v1/nearestRoads'
+        '?points=${point.latitude},${point.longitude}'
+        '&key=$_apiKey',
+      );
+
+      final response = await http.get(url);
+
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        final snappedPoints = data['snappedPoints'] as List<dynamic>?;
+
+        if (snappedPoints != null && snappedPoints.isNotEmpty) {
+          final location = snappedPoints[0]['location'];
+          final snappedLat = location['latitude'] as double;
+          final snappedLng = location['longitude'] as double;
+          print('✅ ポイントを道路にスナップしました');
+          return LatLng(snappedLat, snappedLng);
+        }
+      } else {
+        print('⚠️ Roads API エラー: ${response.statusCode}');
+        print('   レスポンス: ${response.body}');
+      }
+    } catch (e) {
+      print('⚠️ 道路スナップ中にエラーが発生: $e');
+    }
+
+    // エラー時は元のポイントを返す
+    print('⚠️ スナップに失敗しました。元のポイントを使用します。');
+    return point;
   }
 }

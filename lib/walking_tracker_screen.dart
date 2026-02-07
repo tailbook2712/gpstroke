@@ -25,6 +25,18 @@ enum RecordingMode {
 }
 
 class WalkingTrackerScreen extends StatefulWidget {
+  /// 初期ルートパス（ルート追従モードで開始する場合）
+  final List<LatLng>? initialRoutePath;
+
+  /// ルートメタデータ（距離、類似度など）
+  final Map<String, dynamic>? initialRouteMetadata;
+
+  const WalkingTrackerScreen({
+    Key? key,
+    this.initialRoutePath,
+    this.initialRouteMetadata,
+  }) : super(key: key);
+
   @override
   _WalkingTrackerScreenState createState() => _WalkingTrackerScreenState();
 }
@@ -71,6 +83,14 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
     super.initState();
     _dbHelper = DatabaseHelper();
     _firestoreService = FirestoreService();
+
+    // 初期ルートが渡された場合はルート追従モードで開始
+    if (widget.initialRoutePath != null &&
+        widget.initialRoutePath!.isNotEmpty) {
+      _suggestedRoutePath = widget.initialRoutePath;
+      _routeMetadata = widget.initialRouteMetadata;
+      _recordingMode = RecordingMode.routeFollowMode;
+    }
 
     _initializeScreen(); // 非同期初期化処理をまとめたメソッド
     _loadSavedArtworks();

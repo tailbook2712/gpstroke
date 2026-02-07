@@ -15,6 +15,7 @@ import 'database_helper.dart';
 import 'draft_list_screen.dart';
 import 'polyline_painter.dart';
 import 'firestore_service.dart';
+import 'route_destination_selection_screen.dart';
 
 import 'utils/utils.dart';
 
@@ -155,23 +156,6 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
         SnackBar(content: Text('画像の選択に失敗しました: $e')),
       );
     }
-  }
-
-  /// ガイド画像をリセットするメソッド（画像を削除し、設定を初期化）
-  void _resetGuideImage() {
-    setState(() {
-      _guideImage = null;
-      _showGuideImagePanel = false;
-      _guideImageVisible = true;
-      _guideImageOpacity = 0.5;
-      _guideImagePosition = Offset.zero;
-      _guideImageScale = 1.0;
-      _guideImageLastScale = 1.0;
-      _guideImageLocked = false;
-    });
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('ガイド画像をリセットしました')),
-    );
   }
 
   /// ガイド画像の表示・非表示を切り替えるメソッド
@@ -799,6 +783,32 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
     }
   }
 
+  /// ルート提案画面へ遷移
+  ///
+  /// 既存のルート提案フロー（出発地・目的地選択 → キャンバス描画 → ルート生成）を使用
+  Future<void> _navigateToRouteSuggestion() async {
+    final routeResult = await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => RouteDestinationSelectionScreen(),
+      ),
+    );
+
+    // 歩行終了後、新しい軌跡が記録されていれば再読み込み
+    if (mounted) {
+      await _loadRecordTrajectories();
+
+      if (routeResult != null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('ルートが選択されました。'),
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     double screenWidth = MediaQuery.of(context).size.width;
@@ -862,9 +872,26 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
           ),
         ],
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: () => _showTrajectoryModal(context),
-        child: Icon(Icons.add),
+      floatingActionButton: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // ルート提案ボタン
+          FloatingActionButton.small(
+            heroTag: 'route_suggestion',
+            onPressed: () => _navigateToRouteSuggestion(),
+            backgroundColor: Colors.orange,
+            child: const Icon(Icons.route, size: 20),
+            tooltip: 'ルート提案',
+          ),
+          const SizedBox(height: 8),
+          // 軌跡追加ボタン
+          FloatingActionButton(
+            heroTag: 'add_trajectory',
+            onPressed: () => _showTrajectoryModal(context),
+            child: const Icon(Icons.add),
+            tooltip: '軌跡を追加',
+          ),
+        ],
       ),
       body: Stack(
         children: [
