@@ -46,6 +46,10 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
   bool isScaling = false;
   final double canvasPadding = 20.0;
 
+  // 回転ハンドル用の状態変数
+  double? _rotationStartAngle; // ドラッグ開始時の基準角度
+  bool _isRotationHandleDragging = false; // 回転ハンドルドラッグ中フラグ
+
   // 軌跡のサイズ定義
   final double trajectorySize = 100.0;
 
@@ -1007,42 +1011,15 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                             }
                           },
                           onScaleUpdate: (details) {
-                            // 選択された軌跡のみ更新する
+                            // 選択された軌跡のみ更新する（移動のみ）
                             if (isSelected) {
-                              // 前回のフレームから変化があった場合のみ更新
-                              final bool hasRotationChange =
-                                  details.rotation.abs() > 0.001;
-                              final bool hasScaleChange =
-                                  (details.scale - 1.0).abs() > 0.001;
                               final bool hasPositionChange =
                                   details.focalPointDelta.distance > 0.5;
 
-                              if (hasRotationChange ||
-                                  hasScaleChange ||
-                                  hasPositionChange) {
+                              if (hasPositionChange) {
                                 setState(() {
-                                  // 回転操作中かどうかを状態として保持
-                                  isRotating = hasRotationChange;
-                                  isScaling = hasScaleChange;
-
-                                  // 回転処理 - 回転中はスケールを変更しない
-                                  if (isRotating) {
-                                    item.rotation =
-                                        item.lastRotation + details.rotation;
-                                  }
-                                  // スケール処理 - 回転中でない場合のみ
-                                  else if (isScaling) {
-                                    // 最小・最大のスケール制限を設定
-                                    final newScale =
-                                        item.lastScale * details.scale;
-                                    item.scale = newScale.clamp(
-                                        0.3, 3.0); // 最小0.3倍、最大3倍に制限
-                                  }
-
-                                  // 移動処理 - どの向きでも自然に動くように
-                                  if (hasPositionChange) {
-                                    item.position += details.focalPointDelta;
-                                  }
+                                  // 移動処理のみ
+                                  item.position += details.focalPointDelta;
                                 });
                               }
                             }
@@ -1058,6 +1035,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                             }
                           },
                           child: Stack(
+                            clipBehavior: Clip.none,
                             children: [
                               Container(
                                 width: expandedTouchArea,
@@ -1111,6 +1089,153 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                                   ),
                                 ),
                               ),
+                              // 回転ハンドル（選択時のみ表示）
+                              if (isSelected)
+                                Builder(
+                                  builder: (context) {
+                                    // 赤枠の右上角の位置を計算
+                                    // 中心からの距離（対角線の半分）
+                                    final double radius =
+                                        trajectorySize / 2 * math.sqrt(2);
+                                    // 右上は-45度（-π/4）、回転角度を加算
+                                    final double handleAngle =
+                                        -math.pi / 4 + item.rotation;
+                                    // 中心位置
+                                    final double centerX =
+                                        expandedTouchArea / 2;
+                                    final double centerY =
+                                        expandedTouchArea / 2;
+                                    // ハンドル位置（アイコンサイズを考慮してオフセット）
+                                    final double handleSize = 28.0;
+                                    final double handleX = centerX +
+                                        radius * math.cos(handleAngle) -
+                                        handleSize / 2;
+                                    final double handleY = centerY +
+                                        radius * math.sin(handleAngle) -
+                                        handleSize / 2;
+
+                                    return Positioned(
+                                      left: handleX,
+                                      top: handleY,
+                                      child: GestureDetector(
+                                        behavior: HitTestBehavior.opaque,
+                                        onPanStart: (details) {
+                                          // ドラッグ開始時の角度を記録
+                                          final Offset center =
+                                              Offset(centerX, centerY);
+                                          final Offset touchOffset = Offset(
+                                            handleX +
+                                                handleSize / 2 +
+                                                details.localPosition.dx -
+                                                handleSize / 2,
+                                            handleY +
+                                                handleSize / 2 +
+                                                details.localPosition.dy -
+                                                handleSize / 2,
+                                          );
+                                          _rotationStartAngle = math.atan2(
+                                            touchOffset.dy - center.dy,
+                                            touchOffset.dx - center.dx,
+                                          );
+                                          item.lastRotation = item.rotation;
+                                          setState(() {
+                                            _isRotationHandleDragging = true;
+                                            isRotating = true;
+                                          });
+                                        },
+                                        onPanUpdate: (details) {
+                                          if (_isRotationHandleDragging &&
+                                              _rotationStartAngle != null) {
+                                            // グローバル座標で計算
+                                            final RenderBox? renderBox =
+                                                context.findRenderObject()
+                                                    as RenderBox?;
+                                            if (renderBox != null) {
+                                              // 軌跡の中心をグローバル座標で取得
+                                              final Offset itemGlobalCenter =
+                                                  Offset(
+                                                item.position.dx,
+                                                item.position.dy,
+                                              );
+                                              // 現在のタッチ位置のグローバル座標
+                                              final Offset touchGlobal =
+                                                  details.globalPosition;
+                                              // キャンバスのオフセットを考慮（Positioned内での相対位置調整）
+                                              final RenderBox? stackBox =
+                                                  _boundaryKey.currentContext
+                                                          ?.findRenderObject()
+                                                      as RenderBox?;
+                                              if (stackBox != null) {
+                                                final Offset stackGlobal =
+                                                    stackBox.localToGlobal(
+                                                        Offset.zero);
+                                                final Offset adjustedTouch =
+                                                    touchGlobal - stackGlobal;
+                                                final Offset adjustedCenter =
+                                                    itemGlobalCenter;
+
+                                                // 現在の角度を計算
+                                                final double currentAngle =
+                                                    math.atan2(
+                                                  adjustedTouch.dy -
+                                                      adjustedCenter.dy,
+                                                  adjustedTouch.dx -
+                                                      adjustedCenter.dx,
+                                                );
+                                                // 角度の差分を計算
+                                                final double deltaAngle =
+                                                    currentAngle -
+                                                        _rotationStartAngle!;
+                                                setState(() {
+                                                  item.rotation =
+                                                      item.lastRotation +
+                                                          deltaAngle;
+                                                });
+                                              }
+                                            }
+                                          }
+                                        },
+                                        onPanEnd: (details) {
+                                          setState(() {
+                                            _isRotationHandleDragging = false;
+                                            isRotating = false;
+                                            _rotationStartAngle = null;
+                                            item.lastRotation = item.rotation;
+                                          });
+                                        },
+                                        child: Container(
+                                          width: handleSize,
+                                          height: handleSize,
+                                          decoration: BoxDecoration(
+                                            color: Colors.white,
+                                            shape: BoxShape.circle,
+                                            border: Border.all(
+                                              color: isRotating
+                                                  ? Colors.orange
+                                                  : Colors.red,
+                                              width: 2.0,
+                                            ),
+                                            boxShadow: [
+                                              BoxShadow(
+                                                color: Colors.black
+                                                    .withOpacity(0.3),
+                                                blurRadius: 4,
+                                                offset: const Offset(0, 2),
+                                              ),
+                                            ],
+                                          ),
+                                          child: Icon(
+                                            Icons.rotate_right,
+                                            size: 18,
+                                            color: isRotating
+                                                ? Colors.orange
+                                                : Colors.red,
+                                          ),
+                                        ),
+                                      ),
+                                    );
+                                  },
+                                ),
                             ],
                           ),
                         ),
