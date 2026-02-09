@@ -267,6 +267,14 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
     );
 
     try {
+      // 選択状態の軌跡があれば解除する（保存画像に選択枠が表示されないように）
+      if (selectedItem != null) {
+        setState(() {
+          selectedItem = null;
+        });
+        await Future.delayed(const Duration(milliseconds: 50));
+      }
+
       // ガイド画像が表示されている場合は一時的に非表示にする
       final bool wasGuideImageVisible = _guideImageVisible;
       if (_guideImage != null && _guideImageVisible) {
