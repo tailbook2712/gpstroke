@@ -64,6 +64,13 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
   double _guideImageLastScale = 1.0; // スケール操作用
   bool _guideImageLocked = false; // ガイド画像の位置・サイズ固定
 
+  // 軌跡リスト用のデータ（画面下部に常時表示）
+  List<Map<String, dynamic>> _garminActivities = [];
+  Set<String> _usedGarminGroupIds = {};
+  Map<int, String> _localTrajectoryGroupIds = {};
+  Set<String> _recentlyUsedGroupIds = {};
+  bool _isTrajectoryListLoading = true;
+
   @override
   void initState() {
     super.initState();
@@ -133,8 +140,59 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
 
       print("一意な軌跡数: ${recordedTrajectories.length}件");
       await _loadUsedTrajectories();
+      await _loadTrajectoryListData();
     } catch (e) {
       print("軌跡の読み込みエラー: $e");
+    }
+  }
+
+  /// 軌跡リスト用のデータを読み込む（画面下部に常時表示用）
+  Future<void> _loadTrajectoryListData() async {
+    try {
+      setState(() {
+        _isTrajectoryListLoading = true;
+      });
+
+      // Garmin軌跡を読み込む
+      final garminActivities = await _dbHelper.getGarminActivities();
+      final usedGarminGroupIds =
+          await _dbHelper.getUsedGarminActivityGroupIds();
+
+      // ローカル軌跡のgroupIdマッピングを作成
+      final allData = await _dbHelper.getAllWalkingData();
+      Map<int, String> localTrajectoryGroupIds = {};
+      int localIndex = 0;
+      for (var data in allData) {
+        if ((data['is_from_garmin'] ?? 0) == 0) {
+          localTrajectoryGroupIds[localIndex] = data['group_id'] as String;
+          localIndex++;
+        }
+      }
+
+      // Firestoreから最新の使用済み軌跡を取得（作品サブコレクションから集計）
+      final trajectories =
+          await _firestoreService.getAllUsedTrajectoriesFromArtworks();
+      final recentlyUsedGroupIds =
+          trajectories.map((t) => t['groupId'] as String).toSet();
+
+      print("📊 軌跡リスト用データ読み込み完了:");
+      print("  - Garmin軌跡: ${garminActivities.length}件");
+      print("  - 使用済みGarmin軌跡: ${usedGarminGroupIds.length}件");
+      print("  - ローカル軌跡groupIdマッピング: ${localTrajectoryGroupIds.length}件");
+      print("  - 使用済み軌跡: ${recentlyUsedGroupIds.length}件");
+
+      setState(() {
+        _garminActivities = garminActivities;
+        _usedGarminGroupIds = usedGarminGroupIds.toSet();
+        _localTrajectoryGroupIds = localTrajectoryGroupIds;
+        _recentlyUsedGroupIds = recentlyUsedGroupIds;
+        _isTrajectoryListLoading = false;
+      });
+    } catch (e) {
+      print("❌ 軌跡リスト用データの読み込みエラー: $e");
+      setState(() {
+        _isTrajectoryListLoading = false;
+      });
     }
   }
 
@@ -209,6 +267,14 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
     );
 
     try {
+      // 選択状態の軌跡があれば解除する（保存画像に選択枠が表示されないように）
+      if (selectedItem != null) {
+        setState(() {
+          selectedItem = null;
+        });
+        await Future.delayed(const Duration(milliseconds: 50));
+      }
+
       // ガイド画像が表示されている場合は一時的に非表示にする
       final bool wasGuideImageVisible = _guideImageVisible;
       if (_guideImage != null && _guideImageVisible) {
@@ -396,12 +462,20 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
       print(
           "Firestoreに保存した作品データ: artworkId=$artworkId, canvasStateのキー=${canvasState.keys.toList()}");
 
-      // 使用済みの軌跡を保存
+      // 使用済みの軌跡を作品のサブコレクションに保存
       print(
           "📌 使用済みとしてマークする軌跡: ${temporarilyUsedGroupIds.length}件 - $temporarilyUsedGroupIds");
+
+      // 作品ごとのサブコレクションに保存
+      await _firestoreService.saveUsedTrajectoriesForArtwork(
+        artworkId,
+        temporarilyUsedGroupIds.toList(),
+      );
+
+      // ローカルDBにも保存（オフライン時の参照用）
       for (final groupId in temporarilyUsedGroupIds) {
         print('🔹 軌跡をマーク済みにしました: $groupId');
-        await _dbHelper.markTrajectoryAsUsed(groupId);
+        await _dbHelper.markTrajectoryAsUsedLocally(groupId);
       }
       print("✅ 全軌跡のマーク処理完了");
 
@@ -520,134 +594,6 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
       final double dy = (item.position.dy - position.dy).abs();
       return dx <= halfSize && dy <= halfSize;
     }).toList();
-  }
-
-  // 使用可能な軌跡を表示するモーダルを表示する
-  void _showTrajectoryModal(BuildContext context) async {
-    // ローディングインジケーターを表示
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => const Center(
-        child: CircularProgressIndicator(),
-      ),
-    );
-
-    try {
-      // モーダルを開く前に基本データを読み込む
-      print("🔄 モーダル表示前にデータを読み込み中...");
-
-      // Garmin軌跡を読み込む
-      final garminActivities = await _dbHelper.getGarminActivities();
-      final usedGarminGroupIds =
-          await _dbHelper.getUsedGarminActivityGroupIds();
-
-      // ローカル軌跡のgroupIdマッピングを作成
-      final allData = await _dbHelper.getAllWalkingData();
-      Map<int, String> localTrajectoryGroupIds = {};
-      for (int i = 0; i < allData.length; i++) {
-        if ((allData[i]['is_from_garmin'] ?? 0) == 0) {
-          localTrajectoryGroupIds[i] = allData[i]['group_id'] as String;
-        }
-      }
-
-      print("📊 Garmin軌跡: ${garminActivities.length}件");
-      print("✅ 使用済みGarmin軌跡: ${usedGarminGroupIds.length}件");
-      print(
-          "🔧 一時使用中のgroupId: ${temporarilyUsedGroupIds.length}件 - $temporarilyUsedGroupIds");
-
-      // ローディングを閉じる
-      if (mounted) {
-        Navigator.pop(context);
-      }
-
-      // モーダルを表示
-      if (mounted) {
-        showModalBottomSheet(
-          context: context,
-          isScrollControlled: true,
-          backgroundColor: Colors.transparent,
-          builder: (context) => DraggableScrollableSheet(
-            initialChildSize: 0.5,
-            minChildSize: 0.3,
-            maxChildSize: 0.9,
-            builder: (context, scrollController) => Container(
-              decoration: const BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.only(
-                  topLeft: Radius.circular(20),
-                  topRight: Radius.circular(20),
-                ),
-              ),
-              child: _TrajectoryModalContent(
-                recordedTrajectories: recordedTrajectories,
-                usedTrajectoryIndices: usedTrajectoryIndices,
-                usedLocalTrajectoryGroupIds: <String>{}, // モーダルのinitStateで最新データを取得
-                temporarilyUsedIndices: temporarilyUsedIndices,
-                temporarilyUsedGroupIds: temporarilyUsedGroupIds,
-                garminActivities: garminActivities,
-                usedGarminGroupIds: usedGarminGroupIds.toSet(),
-                localTrajectoryGroupIds: localTrajectoryGroupIds,
-                dbHelper: _dbHelper,
-                scrollController: scrollController,
-                onSelectTrajectory: (trajectory, isGarmin, groupId) {
-                  Navigator.pop(context);
-
-                  setState(() {
-                    final trajectoryIndex =
-                        recordedTrajectories.indexOf(trajectory);
-
-                    if (isGarmin) {
-                      // Garmin軌跡の場合、groupIdを一時的に記録
-                      // ※ 使用済みマークは _saveArtwork() 時に行う
-                      if (groupId != null) {
-                        temporarilyUsedIndices.add(groupId.hashCode); // legacy
-                        temporarilyUsedGroupIds.add(groupId); // 新方式
-                        print("📌 Garmin軌跡を一時使用中に追加: $groupId");
-                      }
-                    } else {
-                      // ローカル軌跡の場合、インデックスとgroupIdをマーク
-                      if (trajectoryIndex != -1) {
-                        temporarilyUsedIndices.add(trajectoryIndex); // legacy
-                        // groupIdを取得して追加（非同期なので別途処理）
-                        if (groupId != null) {
-                          temporarilyUsedGroupIds.add(groupId);
-                          print("📌 ローカル軌跡を一時使用中に追加: $groupId");
-                        }
-                      }
-                    }
-
-                    final newTrajectory = TransformablePolyline(
-                      trajectory,
-                      Offset(
-                        MediaQuery.of(context).size.width / 2 - 50,
-                        MediaQuery.of(context).size.height / 2 - 50,
-                      ),
-                      groupId: groupId, // groupIdを保存
-                    );
-                    newTrajectory.scale = 0.8;
-                    selectedTrajectories.add(newTrajectory);
-                    // 新しく追加した軌跡を選択状態にする
-                    selectedItem = newTrajectory;
-                  });
-                },
-              ),
-            ),
-          ),
-        );
-      }
-    } catch (e) {
-      // エラーが発生した場合、ローディングを閉じる
-      if (mounted) {
-        Navigator.pop(context);
-      }
-      print("❌ モーダル表示エラー: $e");
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('軌跡の読み込みに失敗しました: $e')),
-        );
-      }
-    }
   }
 
   // 作品の途中保存
@@ -816,7 +762,6 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
   @override
   Widget build(BuildContext context) {
     double screenWidth = MediaQuery.of(context).size.width;
-    double screenHeight = MediaQuery.of(context).size.height;
 
     final double expandedTouchArea = trajectorySize * 1.5; // 回転時の角もカバーできるように拡大
     final double touchAreaOffset =
@@ -876,535 +821,1048 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
           ),
         ],
       ),
-      floatingActionButton: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          // ルート提案ボタン
-          FloatingActionButton.small(
-            heroTag: 'route_suggestion',
-            onPressed: () => _navigateToRouteSuggestion(),
-            backgroundColor: Colors.orange,
-            child: const Icon(Icons.route, size: 20),
-            tooltip: 'ルート提案',
-          ),
-          const SizedBox(height: 8),
-          // 軌跡追加ボタン
-          FloatingActionButton(
-            heroTag: 'add_trajectory',
-            onPressed: () => _showTrajectoryModal(context),
-            child: const Icon(Icons.add),
-            tooltip: '軌跡を追加',
-          ),
-        ],
+      floatingActionButton: Padding(
+        padding: EdgeInsets.only(
+            bottom: 130 + MediaQuery.of(context).padding.bottom),
+        child: FloatingActionButton.small(
+          heroTag: 'route_suggestion',
+          onPressed: () => _navigateToRouteSuggestion(),
+          backgroundColor: Colors.orange,
+          child: const Icon(Icons.route, size: 20),
+          tooltip: 'ルート提案',
+        ),
       ),
-      body: Stack(
+      body: Column(
         children: [
-          Container(
-            width: screenWidth,
-            height: screenHeight,
-            color: Colors.grey[200],
-            child: GestureDetector(
-              behavior: HitTestBehavior.translucent,
-              onTap: () {
-                // キャンバスの白い部分をタップした場合、選択状態を解除
-                setState(() {
-                  selectedItem = null;
-                });
-              },
-              child: RepaintBoundary(
-                key: _boundaryKey,
-                child: Stack(
-                  children: [
-                    // ガイド画像レイヤー（移動・拡大縮小可能、固定可能、表示・非表示切り替え可能）
-                    if (_guideImage != null && _guideImageVisible)
-                      Positioned.fill(
-                        child: GestureDetector(
-                          behavior: _guideImageLocked
-                              ? HitTestBehavior.translucent
-                              : HitTestBehavior.translucent,
-                          onScaleStart: _guideImageLocked
-                              ? null
-                              : (details) {
-                                  _guideImageLastScale = _guideImageScale;
-                                },
-                          onScaleUpdate: _guideImageLocked
-                              ? null
-                              : (details) {
-                                  setState(() {
-                                    // 移動処理
-                                    _guideImagePosition +=
-                                        details.focalPointDelta;
-                                    // スケール処理（ピンチ操作）
-                                    if ((details.scale - 1.0).abs() > 0.01) {
-                                      final newScale =
-                                          _guideImageLastScale * details.scale;
-                                      _guideImageScale =
-                                          newScale.clamp(0.2, 3.0);
-                                    }
-                                  });
-                                },
-                          child: ClipRect(
-                            child: Transform.translate(
-                              offset: _guideImagePosition,
-                              child: Transform.scale(
-                                scale: _guideImageScale,
-                                child: Opacity(
-                                  opacity: _guideImageOpacity,
-                                  child: Image.file(
-                                    _guideImage!,
-                                    width: MediaQuery.of(context).size.width,
-                                    fit: BoxFit.fitWidth,
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                    ...selectedTrajectories.map((item) {
-                      final isSelected = selectedItem == item;
+          // \u4e0a\u90e8: \u30ad\u30e3\u30f3\u30d0\u30b9\u90e8\u5206
+          Expanded(
+            child: Stack(
+              children: [
+                Container(
+                  width: screenWidth,
+                  color: Colors.grey[200],
+                  child: DragTarget<Map<String, dynamic>>(
+                    onAcceptWithDetails: (details) {
+                      // ドロップされた軌跡データを受け取る
+                      final trajectoryData = details.data;
+                      final positions =
+                          trajectoryData['positions'] as List<Position>;
+                      final isGarmin = trajectoryData['isGarmin'] as bool;
+                      final groupId = trajectoryData['groupId'] as String?;
 
-                      return Positioned(
-                        left: item.position.dx - expandedTouchArea / 2,
-                        top: item.position.dy - expandedTouchArea / 2,
-                        child: GestureDetector(
-                          behavior: HitTestBehavior.opaque,
-                          onTap: () {
-                            setState(() {
-                              // タップした軌跡を選択状態にする
-                              selectedItem = item;
-                            });
-                          },
-                          onLongPress: () {
-                            // 長押しで重なっている軌跡を循環選択
-                            final hitTrajectories =
-                                _getTrajectoriesAt(item.position);
-                            if (hitTrajectories.length > 1) {
-                              setState(() {
-                                final candidates =
-                                    hitTrajectories.reversed.toList();
-                                final currentIndex = candidates.indexOf(item);
-                                if (currentIndex != -1) {
-                                  final nextIndex =
-                                      (currentIndex + 1) % candidates.length;
-                                  selectedItem = candidates[nextIndex];
+                      // ドロップ位置を計算（キャンバス上の位置）
+                      final RenderBox? renderBox = _boundaryKey.currentContext
+                          ?.findRenderObject() as RenderBox?;
+                      if (renderBox != null) {
+                        final localPosition =
+                            renderBox.globalToLocal(details.offset);
 
-                                  // 選択した軌跡を最前面に移動
-                                  selectedTrajectories.remove(selectedItem);
-                                  selectedTrajectories.add(selectedItem!);
+                        setState(() {
+                          final trajectoryIndex =
+                              recordedTrajectories.indexOf(positions);
 
-                                  print(
-                                      "Long press cycled to: ${selectedTrajectories.indexOf(selectedItem!)} and brought to front");
-                                }
-                              });
+                          if (isGarmin) {
+                            // Garmin軌跡の場合、groupIdを一時的に記録
+                            if (groupId != null) {
+                              temporarilyUsedIndices
+                                  .add(groupId.hashCode); // legacy
+                              temporarilyUsedGroupIds.add(groupId); // 新方式
+                              print("📌 Garmin軌跡を一時使用中に追加: $groupId");
                             }
-                          },
-                          onScaleStart: (details) {
-                            // 選択された軌跡のみ回転操作を受け入れる
-                            if (isSelected) {
-                              setState(() {
-                                item.lastRotation = item.rotation;
-                                item.lastScale = item.scale;
-                                isRotating = false;
-                                isScaling = false;
-                              });
-                            }
-                          },
-                          onScaleUpdate: (details) {
-                            // 選択された軌跡のみ更新する（移動のみ）
-                            if (isSelected) {
-                              final bool hasPositionChange =
-                                  details.focalPointDelta.distance > 0.5;
-
-                              if (hasPositionChange) {
-                                setState(() {
-                                  // 移動処理のみ
-                                  item.position += details.focalPointDelta;
-                                });
+                          } else {
+                            // ローカル軌跡の場合、インデックスとgroupIdをマーク
+                            if (trajectoryIndex != -1) {
+                              temporarilyUsedIndices
+                                  .add(trajectoryIndex); // legacy
+                              if (groupId != null) {
+                                temporarilyUsedGroupIds.add(groupId);
+                                print("📌 ローカル軌跡を一時使用中に追加: $groupId");
                               }
                             }
-                          },
-                          onScaleEnd: (_) {
-                            if (isSelected) {
-                              setState(() {
-                                isRotating = false;
-                                isScaling = false;
-                                item.lastRotation = item.rotation;
-                                item.lastScale = item.scale;
-                              });
-                            }
-                          },
+                          }
+
+                          final newTrajectory = TransformablePolyline(
+                            positions,
+                            localPosition, // ドロップ位置に配置
+                            groupId: groupId,
+                          );
+                          newTrajectory.scale = 0.8;
+                          selectedTrajectories.add(newTrajectory);
+                          selectedItem = newTrajectory;
+                        });
+                      }
+                    },
+                    builder: (context, candidateData, rejectedData) {
+                      return GestureDetector(
+                        behavior: HitTestBehavior.translucent,
+                        onTap: () {
+                          // キャンバスの白い部分をタップした場合、選択状態を解除
+                          setState(() {
+                            selectedItem = null;
+                          });
+                        },
+                        child: RepaintBoundary(
+                          key: _boundaryKey,
                           child: Stack(
-                            clipBehavior: Clip.none,
                             children: [
-                              Container(
-                                width: expandedTouchArea,
-                                height: expandedTouchArea,
-                                color: Colors.transparent,
-                              ),
-                              Positioned(
-                                left: touchAreaOffset,
-                                top: touchAreaOffset,
-                                child: Transform.rotate(
-                                  angle: item.rotation,
-                                  alignment: Alignment.center,
-                                  child: Container(
-                                    width: trajectorySize,
-                                    height: trajectorySize,
-                                    decoration: BoxDecoration(
-                                      border: selectedItem == item
-                                          ? Border.all(
-                                              color: isRotating
-                                                  ? Colors.orange
-                                                  : Colors.red,
-                                              width: 2.0,
-                                            )
-                                          : null,
-                                    ),
-                                    child: Transform.scale(
-                                      scale: item.scale,
-                                      alignment: Alignment.center,
-                                      child: Stack(
-                                        children: [
-                                          CustomPaint(
-                                            size: Size(
-                                                trajectorySize, trajectorySize),
-                                            painter: PolylinePainter(
-                                              positions: item.polyline,
-                                              minLat: item.minLat,
-                                              maxLat: item.maxLat,
-                                              minLon: item.minLon,
-                                              maxLon: item.maxLon,
-                                            ),
-                                          ),
-                                          // デバッグ: タップ領域を視覚化
-                                          Positioned.fill(
-                                            child: CustomPaint(
-                                                //  painter: DebugBoundsPainter(), // デバッグ用ペインター
-                                                ),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                              ),
-                              // 回転ハンドル（選択時のみ表示）
-                              if (isSelected)
-                                Builder(
-                                  builder: (context) {
-                                    // 赤枠の右上角の位置を計算
-                                    // 中心からの距離（対角線の半分）
-                                    final double radius =
-                                        trajectorySize / 2 * math.sqrt(2);
-                                    // 右上は-45度（-π/4）、回転角度を加算
-                                    final double handleAngle =
-                                        -math.pi / 4 + item.rotation;
-                                    // 中心位置
-                                    final double centerX =
-                                        expandedTouchArea / 2;
-                                    final double centerY =
-                                        expandedTouchArea / 2;
-                                    // ハンドル位置（アイコンサイズを考慮してオフセット）
-                                    final double handleSize = 28.0;
-                                    final double handleX = centerX +
-                                        radius * math.cos(handleAngle) -
-                                        handleSize / 2;
-                                    final double handleY = centerY +
-                                        radius * math.sin(handleAngle) -
-                                        handleSize / 2;
-
-                                    return Positioned(
-                                      left: handleX,
-                                      top: handleY,
-                                      child: GestureDetector(
-                                        behavior: HitTestBehavior.opaque,
-                                        onPanStart: (details) {
-                                          // ドラッグ開始時の角度を記録
-                                          final Offset center =
-                                              Offset(centerX, centerY);
-                                          final Offset touchOffset = Offset(
-                                            handleX +
-                                                handleSize / 2 +
-                                                details.localPosition.dx -
-                                                handleSize / 2,
-                                            handleY +
-                                                handleSize / 2 +
-                                                details.localPosition.dy -
-                                                handleSize / 2,
-                                          );
-                                          _rotationStartAngle = math.atan2(
-                                            touchOffset.dy - center.dy,
-                                            touchOffset.dx - center.dx,
-                                          );
-                                          item.lastRotation = item.rotation;
-                                          setState(() {
-                                            _isRotationHandleDragging = true;
-                                            isRotating = true;
-                                          });
-                                        },
-                                        onPanUpdate: (details) {
-                                          if (_isRotationHandleDragging &&
-                                              _rotationStartAngle != null) {
-                                            // グローバル座標で計算
-                                            final RenderBox? renderBox =
-                                                context.findRenderObject()
-                                                    as RenderBox?;
-                                            if (renderBox != null) {
-                                              // 軌跡の中心をグローバル座標で取得
-                                              final Offset itemGlobalCenter =
-                                                  Offset(
-                                                item.position.dx,
-                                                item.position.dy,
-                                              );
-                                              // 現在のタッチ位置のグローバル座標
-                                              final Offset touchGlobal =
-                                                  details.globalPosition;
-                                              // キャンバスのオフセットを考慮（Positioned内での相対位置調整）
-                                              final RenderBox? stackBox =
-                                                  _boundaryKey.currentContext
-                                                          ?.findRenderObject()
-                                                      as RenderBox?;
-                                              if (stackBox != null) {
-                                                final Offset stackGlobal =
-                                                    stackBox.localToGlobal(
-                                                        Offset.zero);
-                                                final Offset adjustedTouch =
-                                                    touchGlobal - stackGlobal;
-                                                final Offset adjustedCenter =
-                                                    itemGlobalCenter;
-
-                                                // 現在の角度を計算
-                                                final double currentAngle =
-                                                    math.atan2(
-                                                  adjustedTouch.dy -
-                                                      adjustedCenter.dy,
-                                                  adjustedTouch.dx -
-                                                      adjustedCenter.dx,
-                                                );
-                                                // 角度の差分を計算
-                                                final double deltaAngle =
-                                                    currentAngle -
-                                                        _rotationStartAngle!;
-                                                setState(() {
-                                                  item.rotation =
-                                                      item.lastRotation +
-                                                          deltaAngle;
-                                                });
+                              // ガイド画像レイヤー（移動・拡大縮小可能、固定可能、表示・非表示切り替え可能）
+                              if (_guideImage != null && _guideImageVisible)
+                                Positioned.fill(
+                                  child: GestureDetector(
+                                    behavior: _guideImageLocked
+                                        ? HitTestBehavior.translucent
+                                        : HitTestBehavior.translucent,
+                                    onScaleStart: _guideImageLocked
+                                        ? null
+                                        : (details) {
+                                            _guideImageLastScale =
+                                                _guideImageScale;
+                                          },
+                                    onScaleUpdate: _guideImageLocked
+                                        ? null
+                                        : (details) {
+                                            setState(() {
+                                              // 移動処理
+                                              _guideImagePosition +=
+                                                  details.focalPointDelta;
+                                              // スケール処理（ピンチ操作）
+                                              if ((details.scale - 1.0).abs() >
+                                                  0.01) {
+                                                final newScale =
+                                                    _guideImageLastScale *
+                                                        details.scale;
+                                                _guideImageScale =
+                                                    newScale.clamp(0.2, 3.0);
                                               }
-                                            }
-                                          }
-                                        },
-                                        onPanEnd: (details) {
-                                          setState(() {
-                                            _isRotationHandleDragging = false;
-                                            isRotating = false;
-                                            _rotationStartAngle = null;
-                                            item.lastRotation = item.rotation;
-                                          });
-                                        },
-                                        child: Container(
-                                          width: handleSize,
-                                          height: handleSize,
-                                          decoration: BoxDecoration(
-                                            color: Colors.white,
-                                            shape: BoxShape.circle,
-                                            border: Border.all(
-                                              color: isRotating
-                                                  ? Colors.orange
-                                                  : Colors.red,
-                                              width: 2.0,
+                                            });
+                                          },
+                                    child: ClipRect(
+                                      child: Transform.translate(
+                                        offset: _guideImagePosition,
+                                        child: Transform.scale(
+                                          scale: _guideImageScale,
+                                          child: Opacity(
+                                            opacity: _guideImageOpacity,
+                                            child: Image.file(
+                                              _guideImage!,
+                                              width: MediaQuery.of(context)
+                                                  .size
+                                                  .width,
+                                              fit: BoxFit.fitWidth,
                                             ),
-                                            boxShadow: [
-                                              BoxShadow(
-                                                color: Colors.black
-                                                    .withOpacity(0.3),
-                                                blurRadius: 4,
-                                                offset: const Offset(0, 2),
-                                              ),
-                                            ],
-                                          ),
-                                          child: Icon(
-                                            Icons.rotate_right,
-                                            size: 18,
-                                            color: isRotating
-                                                ? Colors.orange
-                                                : Colors.red,
                                           ),
                                         ),
                                       ),
-                                    );
-                                  },
+                                    ),
+                                  ),
                                 ),
+                              ...selectedTrajectories.map((item) {
+                                final isSelected = selectedItem == item;
+
+                                return Positioned(
+                                  left:
+                                      item.position.dx - expandedTouchArea / 2,
+                                  top: item.position.dy - expandedTouchArea / 2,
+                                  child: GestureDetector(
+                                    behavior: HitTestBehavior.opaque,
+                                    onTap: () {
+                                      setState(() {
+                                        // タップした軌跡を選択状態にする
+                                        selectedItem = item;
+                                      });
+                                    },
+                                    onLongPress: () {
+                                      // 長押しで重なっている軌跡を循環選択
+                                      final hitTrajectories =
+                                          _getTrajectoriesAt(item.position);
+                                      if (hitTrajectories.length > 1) {
+                                        setState(() {
+                                          final candidates =
+                                              hitTrajectories.reversed.toList();
+                                          final currentIndex =
+                                              candidates.indexOf(item);
+                                          if (currentIndex != -1) {
+                                            final nextIndex =
+                                                (currentIndex + 1) %
+                                                    candidates.length;
+                                            selectedItem =
+                                                candidates[nextIndex];
+
+                                            // 選択した軌跡を最前面に移動
+                                            selectedTrajectories
+                                                .remove(selectedItem);
+                                            selectedTrajectories
+                                                .add(selectedItem!);
+
+                                            print(
+                                                "Long press cycled to: ${selectedTrajectories.indexOf(selectedItem!)} and brought to front");
+                                          }
+                                        });
+                                      }
+                                    },
+                                    onScaleStart: (details) {
+                                      // 選択された軌跡のみ回転操作を受け入れる
+                                      if (isSelected) {
+                                        setState(() {
+                                          item.lastRotation = item.rotation;
+                                          item.lastScale = item.scale;
+                                          isRotating = false;
+                                          isScaling = false;
+                                        });
+                                      }
+                                    },
+                                    onScaleUpdate: (details) {
+                                      // 選択された軌跡のみ更新する（移動のみ）
+                                      if (isSelected) {
+                                        final bool hasPositionChange =
+                                            details.focalPointDelta.distance >
+                                                0.5;
+
+                                        if (hasPositionChange) {
+                                          setState(() {
+                                            // 移動処理のみ
+                                            item.position +=
+                                                details.focalPointDelta;
+                                          });
+                                        }
+                                      }
+                                    },
+                                    onScaleEnd: (_) {
+                                      if (isSelected) {
+                                        setState(() {
+                                          isRotating = false;
+                                          isScaling = false;
+                                          item.lastRotation = item.rotation;
+                                          item.lastScale = item.scale;
+                                        });
+                                      }
+                                    },
+                                    child: Stack(
+                                      clipBehavior: Clip.none,
+                                      children: [
+                                        Container(
+                                          width: expandedTouchArea,
+                                          height: expandedTouchArea,
+                                          color: Colors.transparent,
+                                        ),
+                                        Positioned(
+                                          left: touchAreaOffset,
+                                          top: touchAreaOffset,
+                                          child: Transform.rotate(
+                                            angle: item.rotation,
+                                            alignment: Alignment.center,
+                                            child: Container(
+                                              width: trajectorySize,
+                                              height: trajectorySize,
+                                              decoration: BoxDecoration(
+                                                border: selectedItem == item
+                                                    ? Border.all(
+                                                        color: isRotating
+                                                            ? Colors.orange
+                                                            : Colors.red,
+                                                        width: 2.0,
+                                                      )
+                                                    : null,
+                                              ),
+                                              child: Transform.scale(
+                                                scale: item.scale,
+                                                alignment: Alignment.center,
+                                                child: Stack(
+                                                  children: [
+                                                    CustomPaint(
+                                                      size: Size(trajectorySize,
+                                                          trajectorySize),
+                                                      painter: PolylinePainter(
+                                                        positions:
+                                                            item.polyline,
+                                                        minLat: item.minLat,
+                                                        maxLat: item.maxLat,
+                                                        minLon: item.minLon,
+                                                        maxLon: item.maxLon,
+                                                      ),
+                                                    ),
+                                                    // デバッグ: タップ領域を視覚化
+                                                    Positioned.fill(
+                                                      child: CustomPaint(
+                                                          //  painter: DebugBoundsPainter(), // デバッグ用ペインター
+                                                          ),
+                                                    ),
+                                                  ],
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                        // 回転ハンドル（選択時のみ表示）
+                                        if (isSelected)
+                                          Builder(
+                                            builder: (context) {
+                                              // 赤枠の右上角の位置を計算
+                                              // 中心からの距離（対角線の半分）
+                                              final double radius =
+                                                  trajectorySize /
+                                                      2 *
+                                                      math.sqrt(2);
+                                              // 右上は-45度（-π/4）、回転角度を加算
+                                              final double handleAngle =
+                                                  -math.pi / 4 + item.rotation;
+                                              // 中心位置
+                                              final double centerX =
+                                                  expandedTouchArea / 2;
+                                              final double centerY =
+                                                  expandedTouchArea / 2;
+                                              // ハンドル位置（アイコンサイズを考慮してオフセット）
+                                              final double handleSize = 28.0;
+                                              final double handleX = centerX +
+                                                  radius *
+                                                      math.cos(handleAngle) -
+                                                  handleSize / 2;
+                                              final double handleY = centerY +
+                                                  radius *
+                                                      math.sin(handleAngle) -
+                                                  handleSize / 2;
+
+                                              return Positioned(
+                                                left: handleX,
+                                                top: handleY,
+                                                child: GestureDetector(
+                                                  behavior:
+                                                      HitTestBehavior.opaque,
+                                                  onPanStart: (details) {
+                                                    // ドラッグ開始時の角度を記録
+                                                    final Offset center =
+                                                        Offset(
+                                                            centerX, centerY);
+                                                    final Offset touchOffset =
+                                                        Offset(
+                                                      handleX +
+                                                          handleSize / 2 +
+                                                          details.localPosition
+                                                              .dx -
+                                                          handleSize / 2,
+                                                      handleY +
+                                                          handleSize / 2 +
+                                                          details.localPosition
+                                                              .dy -
+                                                          handleSize / 2,
+                                                    );
+                                                    _rotationStartAngle =
+                                                        math.atan2(
+                                                      touchOffset.dy -
+                                                          center.dy,
+                                                      touchOffset.dx -
+                                                          center.dx,
+                                                    );
+                                                    item.lastRotation =
+                                                        item.rotation;
+                                                    setState(() {
+                                                      _isRotationHandleDragging =
+                                                          true;
+                                                      isRotating = true;
+                                                    });
+                                                  },
+                                                  onPanUpdate: (details) {
+                                                    if (_isRotationHandleDragging &&
+                                                        _rotationStartAngle !=
+                                                            null) {
+                                                      // グローバル座標で計算
+                                                      final RenderBox?
+                                                          renderBox =
+                                                          context.findRenderObject()
+                                                              as RenderBox?;
+                                                      if (renderBox != null) {
+                                                        // 軌跡の中心をグローバル座標で取得
+                                                        final Offset
+                                                            itemGlobalCenter =
+                                                            Offset(
+                                                          item.position.dx,
+                                                          item.position.dy,
+                                                        );
+                                                        // 現在のタッチ位置のグローバル座標
+                                                        final Offset
+                                                            touchGlobal =
+                                                            details
+                                                                .globalPosition;
+                                                        // キャンバスのオフセットを考慮（Positioned内での相対位置調整）
+                                                        final RenderBox?
+                                                            stackBox =
+                                                            _boundaryKey
+                                                                    .currentContext
+                                                                    ?.findRenderObject()
+                                                                as RenderBox?;
+                                                        if (stackBox != null) {
+                                                          final Offset
+                                                              stackGlobal =
+                                                              stackBox
+                                                                  .localToGlobal(
+                                                                      Offset
+                                                                          .zero);
+                                                          final Offset
+                                                              adjustedTouch =
+                                                              touchGlobal -
+                                                                  stackGlobal;
+                                                          final Offset
+                                                              adjustedCenter =
+                                                              itemGlobalCenter;
+
+                                                          // 現在の角度を計算
+                                                          final double
+                                                              currentAngle =
+                                                              math.atan2(
+                                                            adjustedTouch.dy -
+                                                                adjustedCenter
+                                                                    .dy,
+                                                            adjustedTouch.dx -
+                                                                adjustedCenter
+                                                                    .dx,
+                                                          );
+                                                          // 角度の差分を計算
+                                                          final double
+                                                              deltaAngle =
+                                                              currentAngle -
+                                                                  _rotationStartAngle!;
+                                                          setState(() {
+                                                            item.rotation =
+                                                                item.lastRotation +
+                                                                    deltaAngle;
+                                                          });
+                                                        }
+                                                      }
+                                                    }
+                                                  },
+                                                  onPanEnd: (details) {
+                                                    setState(() {
+                                                      _isRotationHandleDragging =
+                                                          false;
+                                                      isRotating = false;
+                                                      _rotationStartAngle =
+                                                          null;
+                                                      item.lastRotation =
+                                                          item.rotation;
+                                                    });
+                                                  },
+                                                  child: Container(
+                                                    width: handleSize,
+                                                    height: handleSize,
+                                                    decoration: BoxDecoration(
+                                                      color: Colors.white,
+                                                      shape: BoxShape.circle,
+                                                      border: Border.all(
+                                                        color: isRotating
+                                                            ? Colors.orange
+                                                            : Colors.red,
+                                                        width: 2.0,
+                                                      ),
+                                                      boxShadow: [
+                                                        BoxShadow(
+                                                          color: Colors.black
+                                                              .withOpacity(0.3),
+                                                          blurRadius: 4,
+                                                          offset: const Offset(
+                                                              0, 2),
+                                                        ),
+                                                      ],
+                                                    ),
+                                                    child: Icon(
+                                                      Icons.rotate_right,
+                                                      size: 18,
+                                                      color: isRotating
+                                                          ? Colors.orange
+                                                          : Colors.red,
+                                                    ),
+                                                  ),
+                                                ),
+                                              );
+                                            },
+                                          ),
+                                      ],
+                                    ),
+                                  ),
+                                );
+                              }).toList(),
                             ],
                           ),
                         ),
                       );
-                    }).toList(),
-                  ],
+                    },
+                  ),
                 ),
-              ),
-            ),
-          ),
-          // 削除ボタンの表示
-          if (selectedItem != null)
-            Align(
-              alignment: Alignment.bottomCenter,
-              child: Padding(
-                padding: const EdgeInsets.symmetric(vertical: 8.0),
-                child: IconButton(
-                  icon: Icon(Icons.delete, size: 30, color: Colors.red),
-                  onPressed: _removeSelectedTrajectory,
-                ),
-              ),
-            ),
-          // ガイド画像コントロールUI（画面左上）- メニューから有効化された場合のみ表示
-          if (_showGuideImageControl)
-            Positioned(
-              top: 8,
-              left: 8,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  // トグルボタン
-                  Container(
-                    decoration: BoxDecoration(
-                      color: Colors.white.withOpacity(0.9),
-                      borderRadius: BorderRadius.circular(8),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black.withOpacity(0.1),
-                          blurRadius: 4,
-                          offset: const Offset(0, 2),
-                        ),
-                      ],
-                    ),
-                    child: IconButton(
-                      icon: Icon(
-                        _showGuideImagePanel
-                            ? Icons.expand_less
-                            : Icons.add_photo_alternate,
-                        color: _guideImage != null
-                            ? Colors.blue
-                            : Colors.grey[700],
+                // 削除ボタンの表示
+                if (selectedItem != null)
+                  Align(
+                    alignment: Alignment.bottomCenter,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 8.0),
+                      child: IconButton(
+                        icon: Icon(Icons.delete, size: 30, color: Colors.red),
+                        onPressed: _removeSelectedTrajectory,
                       ),
-                      tooltip: _showGuideImagePanel ? 'パネルを閉じる' : 'ガイド画像設定',
-                      onPressed: () {
-                        setState(() {
-                          _showGuideImagePanel = !_showGuideImagePanel;
-                        });
-                      },
                     ),
                   ),
-                  // コントロールパネル（トグルで表示・非表示）
-                  if (_showGuideImagePanel)
-                    Container(
-                      margin: const EdgeInsets.only(top: 8),
-                      padding: const EdgeInsets.all(8),
-                      decoration: BoxDecoration(
-                        color: Colors.white.withOpacity(0.9),
-                        borderRadius: BorderRadius.circular(8),
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.black.withOpacity(0.1),
-                            blurRadius: 4,
-                            offset: const Offset(0, 2),
-                          ),
-                        ],
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          // ガイド画像選択ボタン
-                          Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              TextButton.icon(
-                                icon: Icon(
-                                  _guideImage != null
-                                      ? Icons.image
-                                      : Icons.add_photo_alternate,
-                                  size: 20,
-                                ),
-                                label:
-                                    Text(_guideImage != null ? '変更' : '画像を選択'),
-                                onPressed: _pickGuideImage,
+                // ガイド画像コントロールUI（画面左上）- メニューから有効化された場合のみ表示
+                if (_showGuideImageControl)
+                  Positioned(
+                    top: 8,
+                    left: 8,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        // トグルボタン
+                        Container(
+                          decoration: BoxDecoration(
+                            color: Colors.white.withOpacity(0.9),
+                            borderRadius: BorderRadius.circular(8),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.black.withOpacity(0.1),
+                                blurRadius: 4,
+                                offset: const Offset(0, 2),
                               ),
-                              // 表示・非表示切り替えボタン（画像が設定されている場合のみ）
-                              if (_guideImage != null)
-                                IconButton(
-                                  icon: Icon(
-                                    _guideImageVisible
-                                        ? Icons.visibility
-                                        : Icons.visibility_off,
-                                    size: 20,
-                                    color: _guideImageVisible
-                                        ? Colors.blue
-                                        : Colors.grey,
-                                  ),
-                                  tooltip:
-                                      _guideImageVisible ? '非表示にする' : '表示する',
-                                  onPressed: _toggleGuideImageVisibility,
-                                ),
                             ],
                           ),
-                          // 不透明度スライダー（ガイド画像が設定されている場合のみ表示）
-                          if (_guideImage != null) ...[
-                            const SizedBox(height: 8),
-                            const Text(
-                              '不透明度',
-                              style:
-                                  TextStyle(fontSize: 12, color: Colors.grey),
+                          child: IconButton(
+                            icon: Icon(
+                              _showGuideImagePanel
+                                  ? Icons.expand_less
+                                  : Icons.add_photo_alternate,
+                              color: _guideImage != null
+                                  ? Colors.blue
+                                  : Colors.grey[700],
                             ),
-                            SizedBox(
-                              width: 150,
-                              child: Slider(
-                                value: _guideImageOpacity,
-                                min: 0.1,
-                                max: 1.0,
-                                divisions: 9,
-                                label: '${(_guideImageOpacity * 100).toInt()}%',
-                                onChanged: (value) {
-                                  setState(() {
-                                    _guideImageOpacity = value;
-                                  });
-                                },
-                              ),
-                            ),
-                            const SizedBox(height: 8),
-                            // 位置・サイズ固定トグルボタン
-                            Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Icon(
-                                  _guideImageLocked
-                                      ? Icons.lock
-                                      : Icons.lock_open,
-                                  size: 18,
-                                  color: _guideImageLocked
-                                      ? Colors.orange
-                                      : Colors.grey,
-                                ),
-                                const SizedBox(width: 4),
-                                const Text('位置・サイズ固定'),
-                                Switch(
-                                  value: _guideImageLocked,
-                                  onChanged: (value) {
-                                    setState(() {
-                                      _guideImageLocked = value;
-                                    });
-                                  },
+                            tooltip:
+                                _showGuideImagePanel ? 'パネルを閉じる' : 'ガイド画像設定',
+                            onPressed: () {
+                              setState(() {
+                                _showGuideImagePanel = !_showGuideImagePanel;
+                              });
+                            },
+                          ),
+                        ),
+                        // コントロールパネル（トグルで表示・非表示）
+                        if (_showGuideImagePanel)
+                          Container(
+                            margin: const EdgeInsets.only(top: 8),
+                            padding: const EdgeInsets.all(8),
+                            decoration: BoxDecoration(
+                              color: Colors.white.withOpacity(0.9),
+                              borderRadius: BorderRadius.circular(8),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: Colors.black.withOpacity(0.1),
+                                  blurRadius: 4,
+                                  offset: const Offset(0, 2),
                                 ),
                               ],
                             ),
-                          ],
-                        ],
-                      ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                // ガイド画像選択ボタン
+                                Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    TextButton.icon(
+                                      icon: Icon(
+                                        _guideImage != null
+                                            ? Icons.image
+                                            : Icons.add_photo_alternate,
+                                        size: 20,
+                                      ),
+                                      label: Text(
+                                          _guideImage != null ? '変更' : '画像を選択'),
+                                      onPressed: _pickGuideImage,
+                                    ),
+                                    // 表示・非表示切り替えボタン（画像が設定されている場合のみ）
+                                    if (_guideImage != null)
+                                      IconButton(
+                                        icon: Icon(
+                                          _guideImageVisible
+                                              ? Icons.visibility
+                                              : Icons.visibility_off,
+                                          size: 20,
+                                          color: _guideImageVisible
+                                              ? Colors.blue
+                                              : Colors.grey,
+                                        ),
+                                        tooltip: _guideImageVisible
+                                            ? '非表示にする'
+                                            : '表示する',
+                                        onPressed: _toggleGuideImageVisibility,
+                                      ),
+                                  ],
+                                ),
+                                // 不透明度スライダー（ガイド画像が設定されている場合のみ表示）
+                                if (_guideImage != null) ...[
+                                  const SizedBox(height: 8),
+                                  const Text(
+                                    '不透明度',
+                                    style: TextStyle(
+                                        fontSize: 12, color: Colors.grey),
+                                  ),
+                                  SizedBox(
+                                    width: 150,
+                                    child: Slider(
+                                      value: _guideImageOpacity,
+                                      min: 0.1,
+                                      max: 1.0,
+                                      divisions: 9,
+                                      label:
+                                          '${(_guideImageOpacity * 100).toInt()}%',
+                                      onChanged: (value) {
+                                        setState(() {
+                                          _guideImageOpacity = value;
+                                        });
+                                      },
+                                    ),
+                                  ),
+                                  const SizedBox(height: 8),
+                                  // 位置・サイズ固定トグルボタン
+                                  Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(
+                                        _guideImageLocked
+                                            ? Icons.lock
+                                            : Icons.lock_open,
+                                        size: 18,
+                                        color: _guideImageLocked
+                                            ? Colors.orange
+                                            : Colors.grey,
+                                      ),
+                                      const SizedBox(width: 4),
+                                      const Text('位置・サイズ固定'),
+                                      Switch(
+                                        value: _guideImageLocked,
+                                        onChanged: (value) {
+                                          setState(() {
+                                            _guideImageLocked = value;
+                                          });
+                                        },
+                                      ),
+                                    ],
+                                  ),
+                                ],
+                              ],
+                            ),
+                          ),
+                      ],
                     ),
-                ],
+                  ),
+              ],
+            ),
+          ),
+          // \u4e0b\u90e8: \u8ecc\u8de1\u30ea\u30b9\u30c8
+          _buildTrajectoryList(),
+        ],
+      ),
+    );
+  }
+
+  /// \u753b\u9762\u4e0b\u90e8\u306b\u8868\u793a\u3059\u308b\u8ecc\u8de1\u30ea\u30b9\u30c8\u3092\u69cb\u7bc9
+  Widget _buildTrajectoryList() {
+    if (_isTrajectoryListLoading) {
+      return Container(
+        height: 120,
+        color: Colors.white,
+        child: const Center(
+          child: CircularProgressIndicator(),
+        ),
+      );
+    }
+
+    // \u30ed\u30fc\u30ab\u30eb\u8ecc\u8de1\u3068Garmin\u8ecc\u8de1\u3092\u7d71\u5408
+    final List<Map<String, dynamic>> allTrajectories = [];
+
+    // \u30ed\u30fc\u30ab\u30eb\u8ecc\u8de1\u3092\u8ffd\u52a0
+    for (int i = 0; i < recordedTrajectories.length; i++) {
+      final trajectory = recordedTrajectories[i];
+      final groupId = _localTrajectoryGroupIds[i];
+
+      // \u4f7f\u7528\u6e08\u307f\u307e\u305f\u306f\u4e00\u6642\u4f7f\u7528\u4e2d\u306e\u8ecc\u8de1\u306f\u9664\u5916
+      if (groupId != null) {
+        if (_recentlyUsedGroupIds.contains(groupId) ||
+            temporarilyUsedGroupIds.contains(groupId)) {
+          continue;
+        }
+      }
+
+      allTrajectories.add({
+        'positions': trajectory,
+        'isGarmin': false,
+        'date': DateFormat('yyyy/MM/dd').format(trajectory.first.timestamp),
+        'groupId': groupId,
+      });
+    }
+
+    // Garmin\u8ecc\u8de1\u3092\u8ffd\u52a0
+    for (final activity in _garminActivities) {
+      final groupId = activity['group_id'] as String;
+
+      // \u4f7f\u7528\u6e08\u307f\u307e\u305f\u306f\u4e00\u6642\u4f7f\u7528\u4e2d\u306e\u8ecc\u8de1\u306f\u9664\u5916
+      if (_usedGarminGroupIds.contains(groupId) ||
+          temporarilyUsedGroupIds.contains(groupId)) {
+        continue;
+      }
+
+      final positions = (jsonDecode(activity['positions']) as List).map((pos) {
+        return Position(
+          latitude: pos['latitude'],
+          longitude: pos['longitude'],
+          timestamp: DateTime.tryParse(pos['timestamp']) ?? DateTime.now(),
+          accuracy: 0.0,
+          altitude: 0.0,
+          heading: 0.0,
+          speed: 0.0,
+          speedAccuracy: 0.0,
+          altitudeAccuracy: 0.0,
+          headingAccuracy: 0.0,
+        );
+      }).toList();
+
+      allTrajectories.add({
+        'positions': positions,
+        'isGarmin': true,
+        'date': activity['date'] as String,
+        'groupId': groupId,
+      });
+    }
+
+    // \u65e5\u4ed8\u9806\u306b\u30bd\u30fc\u30c8\uff08\u65b0\u3057\u3044\u9806\uff09
+    allTrajectories.sort((a, b) {
+      final List<Position> positionsA = a['positions'];
+      final List<Position> positionsB = b['positions'];
+      final DateTime latestA = positionsA
+          .map((p) => p.timestamp)
+          .reduce((value, element) => value.isAfter(element) ? value : element);
+      final DateTime latestB = positionsB
+          .map((p) => p.timestamp)
+          .reduce((value, element) => value.isAfter(element) ? value : element);
+      return latestB.compareTo(latestA);
+    });
+
+    if (allTrajectories.isEmpty) {
+      return Container(
+        height: 120,
+        color: Colors.white,
+        child: const Center(
+          child: Text(
+              '\u5229\u7528\u53ef\u80fd\u306a\u8ecc\u8de1\u304c\u3042\u308a\u307e\u305b\u3093'),
+        ),
+      );
+    }
+
+    final bottomPadding = MediaQuery.of(context).padding.bottom;
+    return Container(
+      height: 120 + bottomPadding,
+      padding: EdgeInsets.only(bottom: bottomPadding),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.1),
+            blurRadius: 4,
+            offset: const Offset(0, -2),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(left: 12, top: 8, bottom: 4),
+            child: Text(
+              '\u8ecc\u8de1\u3092\u30c9\u30e9\u30c3\u30b0\u3057\u3066\u30ad\u30e3\u30f3\u30d0\u30b9\u306b\u914d\u7f6e',
+              style: TextStyle(
+                fontSize: 12,
+                color: Colors.grey[600],
+                fontWeight: FontWeight.w500,
               ),
             ),
+          ),
+          Expanded(
+            child: ListView.builder(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              itemCount: allTrajectories.length,
+              itemBuilder: (context, index) {
+                final trajectory = allTrajectories[index];
+                final List<Position> positions = trajectory['positions'];
+                final bool isGarmin = trajectory['isGarmin'];
+                final String date = trajectory['date'];
+                final String? groupId = trajectory['groupId'];
+
+                return Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 4),
+                  child: LongPressDraggable<Map<String, dynamic>>(
+                    data: {
+                      'positions': positions,
+                      'isGarmin': isGarmin,
+                      'groupId': groupId,
+                    },
+                    feedback: Material(
+                      elevation: 4,
+                      borderRadius: BorderRadius.circular(8),
+                      child: Container(
+                        width: 80,
+                        height: 80,
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: Colors.blue, width: 2),
+                        ),
+                        child: CustomPaint(
+                          size: const Size(80, 80),
+                          painter: PolylinePainter(
+                            positions: positions,
+                            minLat: positions
+                                .map((p) => p.latitude)
+                                .reduce((a, b) => a < b ? a : b),
+                            maxLat: positions
+                                .map((p) => p.latitude)
+                                .reduce((a, b) => a > b ? a : b),
+                            minLon: positions
+                                .map((p) => p.longitude)
+                                .reduce((a, b) => a < b ? a : b),
+                            maxLon: positions
+                                .map((p) => p.longitude)
+                                .reduce((a, b) => a > b ? a : b),
+                          ),
+                        ),
+                      ),
+                    ),
+                    childWhenDragging: Opacity(
+                      opacity: 0.5,
+                      child: _buildTrajectoryTile(positions, date, isGarmin),
+                    ),
+                    child: GestureDetector(
+                      onTap: () {
+                        // \u30bf\u30c3\u30d7\u3067\u5730\u56f3\u60c5\u5831\u3092\u8868\u793a
+                        _showTrajectoryMapDialog(
+                            context, positions, date, isGarmin, groupId);
+                      },
+                      child: _buildTrajectoryTile(positions, date, isGarmin),
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
         ],
+      ),
+    );
+  }
+
+  /// \u8ecc\u8de1\u30bf\u30a4\u30eb\u3092\u69cb\u7bc9
+  Widget _buildTrajectoryTile(
+      List<Position> positions, String date, bool isGarmin) {
+    return Container(
+      width: 70,
+      height: 85,
+      decoration: BoxDecoration(
+        color: Colors.grey[100],
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.grey[300]!),
+      ),
+      child: Column(
+        children: [
+          Expanded(
+            child: CustomPaint(
+              size: const Size(60, 55),
+              painter: PolylinePainter(
+                positions: positions,
+                minLat: positions
+                    .map((p) => p.latitude)
+                    .reduce((a, b) => a < b ? a : b),
+                maxLat: positions
+                    .map((p) => p.latitude)
+                    .reduce((a, b) => a > b ? a : b),
+                minLon: positions
+                    .map((p) => p.longitude)
+                    .reduce((a, b) => a < b ? a : b),
+                maxLon: positions
+                    .map((p) => p.longitude)
+                    .reduce((a, b) => a > b ? a : b),
+              ),
+            ),
+          ),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+            child: Text(
+              date.substring(5), // MM/dd \u306e\u307f\u8868\u793a
+              style: TextStyle(fontSize: 10, color: Colors.grey[600]),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// \u8ecc\u8de1\u306e\u5730\u56f3\u60c5\u5831\u3092\u30dd\u30c3\u30d7\u30a2\u30c3\u30d7\u3067\u8868\u793a\u3059\u308b\u30c0\u30a4\u30a2\u30ed\u30b0
+  void _showTrajectoryMapDialog(
+    BuildContext context,
+    List<Position> positions,
+    String date,
+    bool isGarmin,
+    String? groupId,
+  ) {
+    if (positions.isEmpty) return;
+
+    // \u8ecc\u8de1\u306e\u5883\u754c\u3092\u8a08\u7b97
+    final double minLat =
+        positions.map((p) => p.latitude).reduce((a, b) => a < b ? a : b);
+    final double maxLat =
+        positions.map((p) => p.latitude).reduce((a, b) => a > b ? a : b);
+    final double minLng =
+        positions.map((p) => p.longitude).reduce((a, b) => a < b ? a : b);
+    final double maxLng =
+        positions.map((p) => p.longitude).reduce((a, b) => a > b ? a : b);
+
+    // \u4e2d\u5fc3\u5ea7\u6a19\u3092\u8a08\u7b97
+    final double centerLat = (minLat + maxLat) / 2;
+    final double centerLng = (minLng + maxLng) / 2;
+
+    // \u9069\u5207\u306a\u30ba\u30fc\u30e0\u30ec\u30d9\u30eb\u3092\u8a08\u7b97
+    final double latDelta = maxLat - minLat;
+    final double lngDelta = maxLng - minLng;
+    final double maxDelta = math.max(latDelta, lngDelta);
+
+    // \u30ba\u30fc\u30e0\u30ec\u30d9\u30eb\u306e\u8a08\u7b97\uff08\u5927\u307e\u304b\u306a\u76ee\u5b89\uff09
+    double zoomLevel = 15.0;
+    if (maxDelta > 0.1) {
+      zoomLevel = 10.0;
+    } else if (maxDelta > 0.05) {
+      zoomLevel = 12.0;
+    } else if (maxDelta > 0.01) {
+      zoomLevel = 14.0;
+    } else if (maxDelta > 0.005) {
+      zoomLevel = 15.0;
+    } else {
+      zoomLevel = 16.0;
+    }
+
+    // \u30dd\u30ea\u30e9\u30a4\u30f3\u3092\u4f5c\u6210
+    final polyline = gmaps.Polyline(
+      polylineId: const gmaps.PolylineId('trajectory'),
+      points:
+          positions.map((p) => gmaps.LatLng(p.latitude, p.longitude)).toList(),
+      color: Colors.blue,
+      width: 4,
+    );
+
+    // \u7dcf\u8ddd\u96e2\u3092\u8a08\u7b97
+    double totalDistance = 0.0;
+    for (int i = 0; i < positions.length - 1; i++) {
+      totalDistance += Geolocator.distanceBetween(
+        positions[i].latitude,
+        positions[i].longitude,
+        positions[i + 1].latitude,
+        positions[i + 1].longitude,
+      );
+    }
+
+    showDialog(
+      context: context,
+      builder: (dialogContext) => Dialog(
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+        ),
+        child: Container(
+          width: MediaQuery.of(context).size.width * 0.9,
+          height: MediaQuery.of(context).size.height * 0.5,
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // \u5730\u56f3
+              Expanded(
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(12),
+                  child: gmaps.GoogleMap(
+                    initialCameraPosition: gmaps.CameraPosition(
+                      target: gmaps.LatLng(centerLat, centerLng),
+                      zoom: zoomLevel,
+                    ),
+                    polylines: {polyline},
+                    myLocationEnabled: false,
+                    zoomControlsEnabled: false,
+                    mapToolbarEnabled: false,
+                    compassEnabled: false,
+                    rotateGesturesEnabled: false,
+                    scrollGesturesEnabled: false,
+                    zoomGesturesEnabled: false,
+                    tiltGesturesEnabled: false,
+                    mapType: gmaps.MapType.normal,
+                    onMapCreated: (controller) {
+                      // \u5730\u56f3\u304c\u4f5c\u6210\u3055\u308c\u305f\u3089\u30dd\u30ea\u30e9\u30a4\u30f3\u304c\u898b\u3048\u308b\u3088\u3046\u306b\u30ab\u30e1\u30e9\u3092\u8abf\u6574
+                      Future.delayed(const Duration(milliseconds: 300), () {
+                        if (positions.length >= 2) {
+                          controller.moveCamera(
+                            gmaps.CameraUpdate.newLatLngBounds(
+                              gmaps.LatLngBounds(
+                                southwest: gmaps.LatLng(
+                                    minLat - 0.001, minLng - 0.001),
+                                northeast: gmaps.LatLng(
+                                    maxLat + 0.001, maxLng + 0.001),
+                              ),
+                              50, // padding
+                            ),
+                          );
+                        }
+                      });
+                    },
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              // \u60c5\u5831\u8868\u793a
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  // \u7dcf\u8ddd\u96e2
+                  Row(
+                    children: [
+                      Icon(Icons.straighten, size: 16, color: Colors.grey[700]),
+                      const SizedBox(width: 4),
+                      Text(
+                        totalDistance >= 1000
+                            ? '${(totalDistance / 1000).toStringAsFixed(2)} km'
+                            : '${totalDistance.toStringAsFixed(0)} m',
+                        style: TextStyle(
+                          fontSize: 14,
+                          color: Colors.grey[700],
+                        ),
+                      ),
+                    ],
+                  ),
+                  // \u8a18\u9332\u65e5\u6642
+                  Row(
+                    children: [
+                      Icon(Icons.calendar_today,
+                          size: 16, color: Colors.grey[700]),
+                      const SizedBox(width: 4),
+                      Text(
+                        date,
+                        style: TextStyle(
+                          fontSize: 14,
+                          color: Colors.grey[700],
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              // \u9589\u3058\u308b\u30dc\u30bf\u30f3
+              SizedBox(
+                width: double.infinity,
+                child: TextButton(
+                  onPressed: () => Navigator.pop(dialogContext),
+                  child: const Text('\u9589\u3058\u308b'),
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -1487,7 +1945,7 @@ class _TrajectoryModalContentState extends State<_TrajectoryModalContent> {
     try {
       final firestoreService = FirestoreService();
       final trajectories =
-          await firestoreService.getUsedTrajectoriesFromFirestore();
+          await firestoreService.getAllUsedTrajectoriesFromArtworks();
       final groupIds = trajectories.map((t) => t['groupId'] as String).toSet();
 
       print("📌 Firestoreから取得した使用済み軌跡: ${groupIds.length}件 - $groupIds");
@@ -1672,18 +2130,59 @@ class _TrajectoryModalContentState extends State<_TrajectoryModalContent> {
         final String date = trajectory['date'];
         final String? groupId = trajectory['groupId'];
 
-        return GestureDetector(
-          onTap: () {
-            widget.onSelectTrajectory(positions, isGarmin, groupId);
+        // 軌跡をドラッグ可能にする
+        final trajectoryWidget = Stack(
+          children: [
+            CustomPaint(
+              size: Size(60, 60),
+              painter: PolylinePainter(
+                positions: positions,
+                minLat: positions
+                    .map((p) => p.latitude)
+                    .reduce((a, b) => a < b ? a : b),
+                maxLat: positions
+                    .map((p) => p.latitude)
+                    .reduce((a, b) => a > b ? a : b),
+                minLon: positions
+                    .map((p) => p.longitude)
+                    .reduce((a, b) => a < b ? a : b),
+                maxLon: positions
+                    .map((p) => p.longitude)
+                    .reduce((a, b) => a > b ? a : b),
+              ),
+            ),
+            // 日付ラベル
+            Positioned(
+              top: 0,
+              right: 0,
+              child: Container(
+                padding: EdgeInsets.all(4),
+                color: Colors.white.withOpacity(0.8),
+                child: Text(date, style: TextStyle(fontSize: 12)),
+              ),
+            ),
+          ],
+        );
+
+        return LongPressDraggable<Map<String, dynamic>>(
+          data: {
+            'positions': positions,
+            'isGarmin': isGarmin,
+            'groupId': groupId,
           },
-          onLongPress: () {
-            _showTrajectoryMapDialog(
-                context, positions, date, isGarmin, groupId);
-          },
-          child: Stack(
-            children: [
-              CustomPaint(
-                size: Size(60, 60),
+          feedback: Material(
+            elevation: 4,
+            borderRadius: BorderRadius.circular(8),
+            child: Container(
+              width: 80,
+              height: 80,
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.blue, width: 2),
+              ),
+              child: CustomPaint(
+                size: Size(80, 80),
                 painter: PolylinePainter(
                   positions: positions,
                   minLat: positions
@@ -1700,17 +2199,19 @@ class _TrajectoryModalContentState extends State<_TrajectoryModalContent> {
                       .reduce((a, b) => a > b ? a : b),
                 ),
               ),
-              // 日付ラベル
-              Positioned(
-                top: 0,
-                right: 0,
-                child: Container(
-                  padding: EdgeInsets.all(4),
-                  color: Colors.white.withOpacity(0.8),
-                  child: Text(date, style: TextStyle(fontSize: 12)),
-                ),
-              ),
-            ],
+            ),
+          ),
+          childWhenDragging: Opacity(
+            opacity: 0.5,
+            child: trajectoryWidget,
+          ),
+          child: GestureDetector(
+            onTap: () {
+              // タップで地図情報を表示
+              _showTrajectoryMapDialog(
+                  context, positions, date, isGarmin, groupId);
+            },
+            child: trajectoryWidget,
           ),
         );
       },
@@ -1870,6 +2371,15 @@ class _TrajectoryModalContentState extends State<_TrajectoryModalContent> {
                     ],
                   ),
                 ],
+              ),
+              const SizedBox(height: 12),
+              // \u9589\u3058\u308b\u30dc\u30bf\u30f3
+              SizedBox(
+                width: double.infinity,
+                child: TextButton(
+                  onPressed: () => Navigator.pop(dialogContext),
+                  child: const Text('\u9589\u3058\u308b'),
+                ),
               ),
             ],
           ),

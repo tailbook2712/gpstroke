@@ -138,6 +138,19 @@ class DatabaseHelper {
     print("✅ 軌跡を使用済みとしてマーク: $groupId");
   }
 
+  /// ローカルDBのみに使用済み軌跡を保存（Firestore同期なし）
+  Future<void> markTrajectoryAsUsedLocally(String groupId) async {
+    Database db = await database;
+
+    await db.insert(
+      usedTrajectoriesTable,
+      {columnUsedTrajectoryGroupId: groupId},
+      conflictAlgorithm: ConflictAlgorithm.ignore,
+    );
+
+    print("✅ 軌跡をローカルDBに使用済みとしてマーク: $groupId");
+  }
+
   /// レガシーメソッド（後方互換性のため）
   @deprecated
   Future<void> insertUsedTrajectory(String groupId) async {
@@ -183,12 +196,12 @@ class DatabaseHelper {
         .toList();
   }
 
-  /// 使用済み軌跡をFirestoreと同期（統一スキーマ対応）
+  /// 使用済み軌跡をFirestoreと同期（作品サブコレクションから取得）
   Future<void> syncUsedTrajectoriesFromFirestore() async {
     try {
-      // Firestoreから使用済み軌跡をすべて取得（新統一スキーマ）
+      // Firestoreから全作品の使用済み軌跡を集計して取得
       List<Map<String, dynamic>> remoteTrajectories =
-          await _firestoreService.getUsedTrajectoriesFromFirestore();
+          await _firestoreService.getAllUsedTrajectoriesFromArtworks();
 
       if (remoteTrajectories.isEmpty) {
         print("📌 Firestore上に使用済み軌跡がありません");
@@ -202,6 +215,7 @@ class DatabaseHelper {
       Database db = await database;
       Batch batch = db.batch();
 
+      int addedCount = 0;
       for (final remote in remoteTrajectories) {
         final groupId = remote['groupId'] as String;
         if (!localGroupIds.contains(groupId)) {
@@ -210,12 +224,12 @@ class DatabaseHelper {
             {columnUsedTrajectoryGroupId: groupId},
             conflictAlgorithm: ConflictAlgorithm.ignore,
           );
+          addedCount++;
         }
       }
 
       await batch.commit();
-      print(
-          "✅ Firestoreから新たに同期した使用済み軌跡: ${remoteTrajectories.length - localGroupIds.length}件");
+      print("✅ Firestoreから新たに同期した使用済み軌跡: $addedCount件");
     } catch (e) {
       print("❌ 使用済みローカル軌跡の同期エラー: $e");
     }
@@ -382,7 +396,7 @@ class DatabaseHelper {
     return result.isEmpty; // 見つからなければ使用可能
   }
 
-  /// 使用済みGarmin軌跡のリストを取得（ローカルDB + Firebase統一スキーマ）
+  /// 使用済みGarmin軌跡のリストを取得（ローカルDB + Firebase作品サブコレクション）
   Future<List<String>> getUsedGarminActivityGroupIds() async {
     // ローカルDBから使用済み軌跡をすべて取得
     Database db = await database;
@@ -391,45 +405,49 @@ class DatabaseHelper {
         .map((row) => row[columnUsedTrajectoryGroupId] as String)
         .toList();
 
+    // Firebaseからも取得（作品サブコレクションから取得）
+    final firestoreUsedTrajectories =
+        await _firestoreService.getAllUsedTrajectoriesFromArtworks();
+    final firestoreUsedGroupIds =
+        firestoreUsedTrajectories.map((t) => t['groupId'] as String).toList();
+
+    // マージして重複を除去
+    final mergedGroupIds = {...localUsedGroupIds, ...firestoreUsedGroupIds};
+
     // そのうち、Garmin軌跡である is_from_garmin: true のものをフィルタリング
     List<Map<String, dynamic>> allWalkingData = await getAllWalkingData();
-    final localGarminGroupIds = allWalkingData
+    final garminGroupIds = allWalkingData
         .where((data) =>
-            localUsedGroupIds.contains(data['group_id']) &&
+            mergedGroupIds.contains(data['group_id']) &&
             data['is_from_garmin'] == 1)
         .map((data) => data['group_id'] as String)
         .toList();
 
-    // Firebaseからも取得（統一スキーマの used_trajectories コレクションから is_from_garmin: true のみ取得）
-    final firestoreUsedTrajectories =
-        await _firestoreService.getUsedTrajectoriesFromFirestore();
-    final firestoreGarminGroupIds = firestoreUsedTrajectories
-        .where((t) => t['is_from_garmin'] == true)
-        .map((t) => t['groupId'] as String)
-        .toList();
-
-    // マージして重複を除去
-    final allGroupIds =
-        {...localGarminGroupIds, ...firestoreGarminGroupIds}.toList();
-    print(
-        '使用済みGarmin軌跡: ローカル=${localGarminGroupIds.length}, Firebase=${firestoreGarminGroupIds.length}, マージ後=${allGroupIds.length}');
-    return allGroupIds;
+    print('使用済みGarmin軌跡: ${garminGroupIds.length}件');
+    return garminGroupIds;
   }
 
-  /// Firebase復元時にローカルDBに同期（使用済みGarmin軌跡・統一スキーマ）
+  /// Firebase復元時にローカルDBに同期（使用済みGarmin軌跡・作品サブコレクションから）
   Future<void> syncUsedGarminActivitiesFromFirestore() async {
     Database db = await database;
-    // 統一スキーマから使用済み軌跡を取得（is_from_garmin: true のみ）
+    // 作品サブコレクションから使用済み軌跡を取得
     final firestoreUsedTrajectories =
-        await _firestoreService.getUsedTrajectoriesFromFirestore();
-    final firestoreGarminGroupIds = firestoreUsedTrajectories
-        .where((t) => t['is_from_garmin'] == true)
-        .map((t) => t['groupId'] as String)
+        await _firestoreService.getAllUsedTrajectoriesFromArtworks();
+    final firestoreUsedGroupIds =
+        firestoreUsedTrajectories.map((t) => t['groupId'] as String).toList();
+
+    // ローカルDBの walking_data から Garmin軌跡を取得
+    List<Map<String, dynamic>> allWalkingData = await getAllWalkingData();
+    final garminGroupIds = allWalkingData
+        .where((data) =>
+            firestoreUsedGroupIds.contains(data['group_id']) &&
+            data['is_from_garmin'] == 1)
+        .map((data) => data['group_id'] as String)
         .toList();
 
-    print('📌 Firebase同期開始: 使用済みGarmin軌跡 ${firestoreGarminGroupIds.length}件');
+    print('📌 Firebase同期開始: 使用済みGarmin軌跡 ${garminGroupIds.length}件');
 
-    for (final groupId in firestoreGarminGroupIds) {
+    for (final groupId in garminGroupIds) {
       // ローカルDBに既に存在するか確認
       final result = await db.query(
         usedTrajectoriesTable,
