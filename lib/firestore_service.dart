@@ -169,9 +169,13 @@ class FirestoreService {
     }
   }
 
-  // 特定の作品をFirestoreから削除するメソッド
+  // 特定の作品をFirestoreから削除するメソッド（サブコレクションも削除）
   Future<void> deleteArtworkById(String artworkId) async {
     try {
+      // まずサブコレクション（使用済み軌跡）を削除
+      await deleteUsedTrajectoriesForArtwork(artworkId);
+
+      // 作品ドキュメントを削除
       await _db.collection('artworks').doc(artworkId).delete();
       print("FirestoreからArtworkID $artworkId の作品を削除しました");
     } catch (e) {
@@ -300,6 +304,113 @@ class FirestoreService {
     } catch (e) {
       print("❌ 使用済み軌跡取得エラー: $e");
       return [];
+    }
+  }
+
+  // *** 作品ごとの使用済み軌跡管理（サブコレクション方式） ***
+
+  /// 作品に使用された軌跡をサブコレクションに保存
+  Future<void> saveUsedTrajectoriesForArtwork(
+      String artworkId, List<String> groupIds) async {
+    try {
+      final artworkRef = _db.collection('artworks').doc(artworkId);
+
+      // バッチ処理で一括保存
+      WriteBatch batch = _db.batch();
+
+      for (final groupId in groupIds) {
+        final trajectoryRef =
+            artworkRef.collection('used_trajectories').doc(groupId);
+        batch.set(trajectoryRef, {
+          'groupId': groupId,
+          'marked_at': FieldValue.serverTimestamp(),
+        });
+      }
+
+      await batch.commit();
+      print("✅ 作品 $artworkId の使用済み軌跡を保存しました: ${groupIds.length}件");
+    } catch (e) {
+      print("❌ 作品の使用済み軌跡保存エラー: $e");
+    }
+  }
+
+  /// 特定の作品で使用された軌跡を取得
+  Future<List<String>> getUsedTrajectoriesForArtwork(String artworkId) async {
+    try {
+      final snapshot = await _db
+          .collection('artworks')
+          .doc(artworkId)
+          .collection('used_trajectories')
+          .get();
+
+      final groupIds =
+          snapshot.docs.map((doc) => doc.data()['groupId'] as String).toList();
+      print("📌 作品 $artworkId の使用済み軌跡: ${groupIds.length}件");
+      return groupIds;
+    } catch (e) {
+      print("❌ 作品の使用済み軌跡取得エラー: $e");
+      return [];
+    }
+  }
+
+  /// 全作品から使用済み軌跡を集計して取得
+  Future<List<Map<String, dynamic>>>
+      getAllUsedTrajectoriesFromArtworks() async {
+    try {
+      // まず全作品を取得
+      QuerySnapshot artworksSnapshot = await _db.collection('artworks').get();
+
+      Set<String> uniqueGroupIds = {};
+      List<Map<String, dynamic>> result = [];
+
+      // 各作品のサブコレクションから使用済み軌跡を取得
+      for (var artworkDoc in artworksSnapshot.docs) {
+        final trajectorySnapshot =
+            await artworkDoc.reference.collection('used_trajectories').get();
+
+        for (var trajectoryDoc in trajectorySnapshot.docs) {
+          final data = trajectoryDoc.data();
+          final groupId = data['groupId'] as String;
+
+          // 重複を避ける
+          if (!uniqueGroupIds.contains(groupId)) {
+            uniqueGroupIds.add(groupId);
+            result.add({
+              'groupId': groupId,
+              'artworkId': artworkDoc.id,
+            });
+          }
+        }
+      }
+
+      print("📌 全作品から使用済み軌跡を集計: ${result.length}件");
+      return result;
+    } catch (e) {
+      print("❌ 使用済み軌跡の集計エラー: $e");
+      return [];
+    }
+  }
+
+  /// 作品のサブコレクション（used_trajectories）を削除
+  Future<void> deleteUsedTrajectoriesForArtwork(String artworkId) async {
+    try {
+      final collectionRef = _db
+          .collection('artworks')
+          .doc(artworkId)
+          .collection('used_trajectories');
+
+      final snapshot = await collectionRef.get();
+
+      // バッチ処理で一括削除
+      WriteBatch batch = _db.batch();
+      for (var doc in snapshot.docs) {
+        batch.delete(doc.reference);
+      }
+
+      await batch.commit();
+      print("✅ 作品 $artworkId の使用済み軌跡サブコレクションを削除しました");
+    } catch (e) {
+      print("❌ サブコレクション削除エラー: $e");
     }
   }
 }

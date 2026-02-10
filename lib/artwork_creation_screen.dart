@@ -169,9 +169,9 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
         }
       }
 
-      // Firestoreから最新の使用済み軌跡を取得
+      // Firestoreから最新の使用済み軌跡を取得（作品サブコレクションから集計）
       final trajectories =
-          await _firestoreService.getUsedTrajectoriesFromFirestore();
+          await _firestoreService.getAllUsedTrajectoriesFromArtworks();
       final recentlyUsedGroupIds =
           trajectories.map((t) => t['groupId'] as String).toSet();
 
@@ -462,12 +462,20 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
       print(
           "Firestoreに保存した作品データ: artworkId=$artworkId, canvasStateのキー=${canvasState.keys.toList()}");
 
-      // 使用済みの軌跡を保存
+      // 使用済みの軌跡を作品のサブコレクションに保存
       print(
           "📌 使用済みとしてマークする軌跡: ${temporarilyUsedGroupIds.length}件 - $temporarilyUsedGroupIds");
+
+      // 作品ごとのサブコレクションに保存
+      await _firestoreService.saveUsedTrajectoriesForArtwork(
+        artworkId,
+        temporarilyUsedGroupIds.toList(),
+      );
+
+      // ローカルDBにも保存（オフライン時の参照用）
       for (final groupId in temporarilyUsedGroupIds) {
         print('🔹 軌跡をマーク済みにしました: $groupId');
-        await _dbHelper.markTrajectoryAsUsed(groupId);
+        await _dbHelper.markTrajectoryAsUsedLocally(groupId);
       }
       print("✅ 全軌跡のマーク処理完了");
 
@@ -1937,7 +1945,7 @@ class _TrajectoryModalContentState extends State<_TrajectoryModalContent> {
     try {
       final firestoreService = FirestoreService();
       final trajectories =
-          await firestoreService.getUsedTrajectoriesFromFirestore();
+          await firestoreService.getAllUsedTrajectoriesFromArtworks();
       final groupIds = trajectories.map((t) => t['groupId'] as String).toSet();
 
       print("📌 Firestoreから取得した使用済み軌跡: ${groupIds.length}件 - $groupIds");
