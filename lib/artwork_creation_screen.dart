@@ -53,6 +53,22 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
   // 軌跡のサイズ定義
   final double trajectorySize = 100.0;
 
+  // スケールバー関連
+  double _scaleBarDistanceMeters = 500.0; // スケールバーが表す距離（メートル）
+  final double _scaleBarPixelLength = 80.0; // スケールバーの固定ピクセル長
+  static const List<double> _scaleDistanceOptions = [
+    50,
+    100,
+    200,
+    300,
+    500,
+    1000,
+    2000,
+    3000,
+    5000,
+    10000
+  ];
+
   // ガイド画像機能用の状態変数
   File? _guideImage;
   double _guideImageOpacity = 0.5;
@@ -615,6 +631,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
       final draftState = {
         'canvasWidth': canvasSize.width,
         'canvasHeight': canvasSize.height,
+        'scaleBarDistance': _scaleBarDistanceMeters,
         'trajectories': selectedTrajectories.map((item) {
           return {
             'positions': item.polyline.map((p) {
@@ -673,6 +690,12 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
     final canvasHeight = draftData['canvasHeight'];
 
     setState(() {
+      // スケールバー距離を復元
+      final savedScaleDistance = draftData['scaleBarDistance'];
+      if (savedScaleDistance != null) {
+        _scaleBarDistanceMeters = (savedScaleDistance as num).toDouble();
+      }
+
       selectedTrajectories =
           (draftData['trajectories'] as List<dynamic>).map((item) {
         final positions = (item['positions'] as List).map((p) {
@@ -757,6 +780,141 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
         );
       }
     }
+  }
+
+  // ─── スケールバー関連メソッド ───
+
+  /// 軌跡の実世界における最大寸法（メートル）を計算
+  double _computeTrajectoryExtentMeters(TransformablePolyline item) {
+    final meanLat = (item.minLat + item.maxLat) / 2.0;
+    final latExtent = (item.maxLat - item.minLat) * 111320.0;
+    final lonExtent = (item.maxLon - item.minLon) *
+        111320.0 *
+        math.cos(meanLat * math.pi / 180.0);
+    return math.max(latExtent, lonExtent);
+  }
+
+  /// スケールバー設定に基づいて軌跡のスケール値を計算
+  double _computeScaleForTrajectory(TransformablePolyline item) {
+    final extentMeters = _computeTrajectoryExtentMeters(item);
+    if (extentMeters <= 0) return 1.0;
+    // metersPerPixel = スケールバー距離 / スケールバーピクセル長
+    // 軌跡の描画領域は trajectorySize * 0.8（PolylinePainterの10%パディング考慮）
+    final metersPerPixel = _scaleBarDistanceMeters / _scaleBarPixelLength;
+    return extentMeters / (metersPerPixel * trajectorySize * 0.8);
+  }
+
+  /// すべての軌跡のスケールをスケールバーに基づいて再計算
+  void _updateAllTrajectoryScales() {
+    for (final item in selectedTrajectories) {
+      item.scale = _computeScaleForTrajectory(item);
+    }
+  }
+
+  /// スケール距離値を表示用にフォーマット
+  String _formatScaleDistance(double meters) {
+    if (meters >= 1000) {
+      final km = meters / 1000;
+      return '${km % 1 == 0 ? km.toInt() : km.toStringAsFixed(1)}km';
+    }
+    return '${meters.toInt()}m';
+  }
+
+  /// スケールバーの距離を増やす（次のオプションに切り替え）
+  void _increaseScaleDistance() {
+    final currentIndex = _scaleDistanceOptions.indexOf(_scaleBarDistanceMeters);
+    if (currentIndex < _scaleDistanceOptions.length - 1) {
+      setState(() {
+        _scaleBarDistanceMeters = _scaleDistanceOptions[currentIndex + 1];
+        _updateAllTrajectoryScales();
+      });
+    }
+  }
+
+  /// スケールバーの距離を減らす（前のオプションに切り替え）
+  void _decreaseScaleDistance() {
+    final currentIndex = _scaleDistanceOptions.indexOf(_scaleBarDistanceMeters);
+    if (currentIndex > 0) {
+      setState(() {
+        _scaleBarDistanceMeters = _scaleDistanceOptions[currentIndex - 1];
+        _updateAllTrajectoryScales();
+      });
+    }
+  }
+
+  /// スケールバーウィジェットを構築
+  Widget _buildScaleBar() {
+    final currentIndex = _scaleDistanceOptions.indexOf(_scaleBarDistanceMeters);
+    final canDecrease = currentIndex > 0;
+    final canIncrease = currentIndex < _scaleDistanceOptions.length - 1;
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // スケールバー本体 + 操作ボタン
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // マイナスボタン
+              GestureDetector(
+                onTap: canDecrease ? _decreaseScaleDistance : null,
+                behavior: HitTestBehavior.opaque,
+                child: Padding(
+                  padding: const EdgeInsets.all(6),
+                  child: Icon(
+                    Icons.remove,
+                    size: 20,
+                    color: canDecrease ? Colors.black54 : Colors.grey[400],
+                  ),
+                ),
+              ),
+              // スケールバーグラフィック（U字型）
+              Container(
+                width: _scaleBarPixelLength,
+                height: 8,
+                decoration: BoxDecoration(
+                  border: Border(
+                    left: BorderSide(width: 1.5, color: Colors.black54),
+                    right: BorderSide(width: 1.5, color: Colors.black54),
+                    bottom: BorderSide(width: 1.5, color: Colors.black54),
+                  ),
+                ),
+              ),
+              // プラスボタン
+              GestureDetector(
+                onTap: canIncrease ? _increaseScaleDistance : null,
+                behavior: HitTestBehavior.opaque,
+                child: Padding(
+                  padding: const EdgeInsets.all(6),
+                  child: Icon(
+                    Icons.add,
+                    size: 20,
+                    color: canIncrease ? Colors.black54 : Colors.grey[400],
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 1),
+          // 距離ラベル（バーの中央に配置）
+          SizedBox(
+            width: _scaleBarPixelLength + 64, // ボタン幅も考慮
+            child: Center(
+              child: Text(
+                _formatScaleDistance(_scaleBarDistanceMeters),
+                style: TextStyle(
+                  fontSize: 10,
+                  color: Colors.black54,
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -886,7 +1044,8 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                             localPosition, // ドロップ位置に配置
                             groupId: groupId,
                           );
-                          newTrajectory.scale = 0.8;
+                          newTrajectory.scale =
+                              _computeScaleForTrajectory(newTrajectory);
                           selectedTrajectories.add(newTrajectory);
                           selectedItem = newTrajectory;
                         });
@@ -1299,10 +1458,16 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                       ),
                     ),
                   ),
-                // ガイド画像コントロールUI（画面左上）- メニューから有効化された場合のみ表示
+                // スケールバー（常時表示、画面左上）
+                Positioned(
+                  top: 8,
+                  left: 8,
+                  child: _buildScaleBar(),
+                ),
+                // ガイド画像コントロールUI（スケールバーの下）- メニューから有効化された場合のみ表示
                 if (_showGuideImageControl)
                   Positioned(
-                    top: 8,
+                    top: 60,
                     left: 8,
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
