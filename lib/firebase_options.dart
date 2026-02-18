@@ -51,19 +51,20 @@ class DefaultFirebaseOptions {
 
   static const FirebaseOptions android = FirebaseOptions(
     apiKey: 'AIzaSyC6DJzKfyXr3Fo7bRZbVC8gImRV_D0w9LM',
-    appId: '1:36151156004:android:7fa5bfef935ba4514f27b1',
+    appId: '1:36151156004:android:58b7017109d67a604f27b1',
     messagingSenderId: '36151156004',
     projectId: 'walktrackerapp-9e00e',
-    storageBucket: 'walktrackerapp-9e00e.appspot.com',
+    storageBucket: 'walktrackerapp-9e00e.firebasestorage.app',
   );
 
   static const FirebaseOptions ios = FirebaseOptions(
     apiKey: 'AIzaSyCaU9aoYIeBDrEF5XIMsPAC2e2-sJSgQw0',
-    appId: '1:36151156004:ios:e40a9ba28c3cdaf94f27b1',
+    appId: '1:36151156004:ios:4e01d75ef304f4794f27b1',
     messagingSenderId: '36151156004',
     projectId: 'walktrackerapp-9e00e',
-    storageBucket: 'walktrackerapp-9e00e.appspot.com',
-    iosBundleId: 'com.example.walkTrackerApp',
+    storageBucket: 'walktrackerapp-9e00e.firebasestorage.app',
+    iosClientId: '36151156004-tfmj1eecuptta3v0g2e3dln6jh6b4ima.apps.googleusercontent.com',
+    iosBundleId: 'com.example.walkPromotionAppGPSArt',
   );
 
 }

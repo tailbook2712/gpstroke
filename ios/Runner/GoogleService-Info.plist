@@ -2,6 +2,10 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>CLIENT_ID</key>
+	<string>36151156004-tfmj1eecuptta3v0g2e3dln6jh6b4ima.apps.googleusercontent.com</string>
+	<key>REVERSED_CLIENT_ID</key>
+	<string>com.googleusercontent.apps.36151156004-tfmj1eecuptta3v0g2e3dln6jh6b4ima</string>
 	<key>API_KEY</key>
 	<string>AIzaSyCaU9aoYIeBDrEF5XIMsPAC2e2-sJSgQw0</string>
 	<key>GCM_SENDER_ID</key>
@@ -9,11 +13,11 @@
 	<key>PLIST_VERSION</key>
 	<string>1</string>
 	<key>BUNDLE_ID</key>
-	<string>com.example.walkTrackerApp</string>
+	<string>com.example.walkPromotionAppGPSArt</string>
 	<key>PROJECT_ID</key>
 	<string>walktrackerapp-9e00e</string>
 	<key>STORAGE_BUCKET</key>
-	<string>walktrackerapp-9e00e.appspot.com</string>
+	<string>walktrackerapp-9e00e.firebasestorage.app</string>
 	<key>IS_ADS_ENABLED</key>
 	<false></false>
 	<key>IS_ANALYTICS_ENABLED</key>
@@ -25,6 +29,6 @@
 	<key>IS_SIGNIN_ENABLED</key>
 	<true></true>
 	<key>GOOGLE_APP_ID</key>
-	<string>1:36151156004:ios:e40a9ba28c3cdaf94f27b1</string>
+	<string>1:36151156004:ios:4e01d75ef304f4794f27b1</string>
 </dict>
 </plist>
