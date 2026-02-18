@@ -1238,6 +1238,8 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                                                         maxLat: item.maxLat,
                                                         minLon: item.minLon,
                                                         maxLon: item.maxLon,
+                                                        strokeWidth:
+                                                            4.0 / item.scale,
                                                       ),
                                                     ),
                                                     // デバッグ: タップ領域を視覚化

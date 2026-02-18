@@ -592,17 +592,15 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
       double centerLng = (minLng + maxLng) / 2;
       LatLng center = LatLng(centerLat, centerLng);
 
-      // 軌跡のスケールと回転に基づいてポリラインの太さを調整
+      // 軌跡のポリラインの太さは固定
       double baseLineWidth = 4.0;
-      double scaledLineWidth = baseLineWidth * trajectory.scale;
-      scaledLineWidth = scaledLineWidth.clamp(2.0, 12.0);
 
       Set<Polyline> polylines = {
         Polyline(
           polylineId: PolylineId('route_$actualTrajectoryIndex'),
           points: polylinePoints,
           color: Colors.red.withOpacity(0.4), // 透明度を0.9から0.4に変更してより薄く
-          width: scaledLineWidth.round(),
+          width: baseLineWidth.round(),
         )
       };
 
@@ -1247,7 +1245,8 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
                             maxLon: item.maxLon,
                             color: _trajectoryColors[index],
                             preserveAspectRatio: true,
-                            strokeWidth: isCurrentlyHighlighted ? 5.0 : 4.0,
+                            strokeWidth: (isCurrentlyHighlighted ? 5.0 : 4.0) /
+                                (item.scale * pulseScale),
                           ),
                         ),
                       ),
