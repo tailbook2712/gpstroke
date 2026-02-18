@@ -1,9 +1,25 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'dart:convert';
 import 'dart:typed_data';
+import 'auth_service.dart';
 
 class FirestoreService {
   final FirebaseFirestore _db = FirebaseFirestore.instance;
+  final AuthService _authService = AuthService();
+
+  /// 現在のユーザーIDを取得（未ログイン時は例外）
+  String get _userId {
+    final uid = _authService.userId;
+    if (uid == null) {
+      throw Exception('ユーザーがログインしていません');
+    }
+    return uid;
+  }
+
+  /// ユーザーごとのコレクション参照を取得
+  CollectionReference _userCollection(String collectionName) {
+    return _db.collection('users').doc(_userId).collection(collectionName);
+  }
 
   // 位置情報と歩行データをFirestoreに保存するメソッド（共通）
   Future<void> saveWalkingData({
@@ -18,8 +34,8 @@ class FirestoreService {
           ? positions[0]['timestamp'] as String
           : DateTime.now().toIso8601String();
 
-      // Firestoreにデータを保存（walking_data コレクション）
-      await _db.collection('walking_data').doc(groupId).set({
+      // Firestoreにデータを保存（users/{userId}/walking_data コレクション）
+      await _userCollection('walking_data').doc(groupId).set({
         'groupId': groupId,
         'positions': positions,
         'date': date,
@@ -37,8 +53,7 @@ class FirestoreService {
   Future<Map<String, dynamic>?> getWalkingDataByGroupId(String groupId) async {
     try {
       // groupIdに対応するドキュメントからデータを取得
-      QuerySnapshot querySnapshot = await _db
-          .collection('walking_data')
+      QuerySnapshot querySnapshot = await _userCollection('walking_data')
           .where('groupId', isEqualTo: groupId)
           .get();
 
@@ -55,7 +70,7 @@ class FirestoreService {
   // Firestoreからすべての歩行データを取得するメソッド
   Future<List<Map<String, dynamic>>> getAllWalkingData() async {
     try {
-      QuerySnapshot snapshot = await _db.collection('walking_data').get();
+      QuerySnapshot snapshot = await _userCollection('walking_data').get();
       return snapshot.docs.map((doc) {
         Map<String, dynamic> data = doc.data() as Map<String, dynamic>;
         data['groupId'] = doc.id; // ドキュメント ID を groupId として追加
@@ -70,13 +85,12 @@ class FirestoreService {
   // 特定のGroupIDの歩行データをFirestoreから削除するメソッド
   Future<void> deleteWalkingDataByGroupId(String groupId) async {
     try {
-      QuerySnapshot querySnapshot = await _db
-          .collection('walking_data')
+      QuerySnapshot querySnapshot = await _userCollection('walking_data')
           .where('groupId', isEqualTo: groupId.toString())
           .get();
 
       for (var doc in querySnapshot.docs) {
-        await _db.collection('walking_data').doc(doc.id).delete();
+        await _userCollection('walking_data').doc(doc.id).delete();
       }
 
       print("FirestoreからGroupID $groupId の歩行データを削除しました");
@@ -110,7 +124,7 @@ class FirestoreService {
       print('Firestoreに保存するデータのキー: ${saveData.keys.toList()}');
 
       // Firestoreに作品データを保存
-      await _db.collection('artworks').doc(artworkId).set(saveData);
+      await _userCollection('artworks').doc(artworkId).set(saveData);
       print("作品データをFirestoreに保存しました: ArtworkID $artworkId");
     } catch (e) {
       print("作品のFirestoreへの保存エラー: $e");
@@ -120,7 +134,7 @@ class FirestoreService {
   // Firestoreからすべての作品データを取得するメソッド
   Future<List<Map<String, dynamic>>> getAllArtworks() async {
     try {
-      QuerySnapshot snapshot = await _db.collection('artworks').get();
+      QuerySnapshot snapshot = await _userCollection('artworks').get();
       List<Map<String, dynamic>> result = [];
 
       for (var doc in snapshot.docs) {
@@ -176,7 +190,7 @@ class FirestoreService {
       await deleteUsedTrajectoriesForArtwork(artworkId);
 
       // 作品ドキュメントを削除
-      await _db.collection('artworks').doc(artworkId).delete();
+      await _userCollection('artworks').doc(artworkId).delete();
       print("FirestoreからArtworkID $artworkId の作品を削除しました");
     } catch (e) {
       print("Firestoreからの作品削除エラー: $e");
@@ -188,9 +202,9 @@ class FirestoreService {
   // 使用済み軌跡インデックスをFirestoreに保存
   Future<void> saveUsedTrajectories(List<int> indices) async {
     try {
+      final docRef = _userCollection('app_data').doc('used_trajectories');
       // 既存のデータを取得
-      DocumentSnapshot doc =
-          await _db.collection('app_data').doc('used_trajectories').get();
+      DocumentSnapshot doc = await docRef.get();
 
       // データをマージ
       if (doc.exists) {
@@ -198,13 +212,13 @@ class FirestoreService {
             (doc.data() as Map<String, dynamic>)['indices'] ?? [];
         Set<int> uniqueIndices = {...existingIndices.cast<int>(), ...indices};
 
-        await _db.collection('app_data').doc('used_trajectories').update({
+        await docRef.update({
           'indices': uniqueIndices.toList(),
           'updated_at': DateTime.now().toIso8601String(),
         });
       } else {
         // 最初の保存
-        await _db.collection('app_data').doc('used_trajectories').set({
+        await docRef.set({
           'indices': indices,
           'updated_at': DateTime.now().toIso8601String(),
         });
@@ -219,7 +233,7 @@ class FirestoreService {
   Future<List<int>> getUsedTrajectories() async {
     try {
       DocumentSnapshot doc =
-          await _db.collection('app_data').doc('used_trajectories').get();
+          await _userCollection('app_data').doc('used_trajectories').get();
 
       if (doc.exists) {
         List<dynamic> indices =
@@ -237,13 +251,14 @@ class FirestoreService {
   /// 使用済みGarmin軌跡をFirestoreに保存（永続化）
   Future<void> markGarminActivityAsUsedInFirestore(String groupId) async {
     try {
-      await _db.collection('app_data').doc('used_garmin_activities').update({
+      final docRef = _userCollection('app_data').doc('used_garmin_activities');
+      await docRef.update({
         'groupIds': FieldValue.arrayUnion([groupId]),
         'updatedAt': FieldValue.serverTimestamp(),
       }).catchError((e) {
         // ドキュメントが存在しない場合はsetで作成
         if (e.code == 'not-found') {
-          return _db.collection('app_data').doc('used_garmin_activities').set({
+          return docRef.set({
             'groupIds': [groupId],
             'updatedAt': FieldValue.serverTimestamp(),
           });
@@ -260,7 +275,7 @@ class FirestoreService {
   Future<List<String>> getUsedGarminActivitiesFromFirestore() async {
     try {
       DocumentSnapshot doc =
-          await _db.collection('app_data').doc('used_garmin_activities').get();
+          await _userCollection('app_data').doc('used_garmin_activities').get();
 
       if (doc.exists) {
         final data = doc.data() as Map<String, dynamic>;
@@ -278,7 +293,7 @@ class FirestoreService {
   /// 軌跡を使用済みとしてマーク
   Future<void> markTrajectoryAsUsedInFirestore(String groupId) async {
     try {
-      await _db.collection('used_trajectories').doc(groupId).set({
+      await _userCollection('used_trajectories').doc(groupId).set({
         'groupId': groupId,
         'marked_at': FieldValue.serverTimestamp(),
       });
@@ -291,7 +306,7 @@ class FirestoreService {
   /// Firestoreから使用済み軌跡をすべて取得
   Future<List<Map<String, dynamic>>> getUsedTrajectoriesFromFirestore() async {
     try {
-      QuerySnapshot snapshot = await _db.collection('used_trajectories').get();
+      QuerySnapshot snapshot = await _userCollection('used_trajectories').get();
       final result = snapshot.docs.map((doc) {
         final data = doc.data() as Map<String, dynamic>;
         return {
@@ -313,7 +328,7 @@ class FirestoreService {
   Future<void> saveUsedTrajectoriesForArtwork(
       String artworkId, List<String> groupIds) async {
     try {
-      final artworkRef = _db.collection('artworks').doc(artworkId);
+      final artworkRef = _userCollection('artworks').doc(artworkId);
 
       // バッチ処理で一括保存
       WriteBatch batch = _db.batch();
@@ -337,8 +352,7 @@ class FirestoreService {
   /// 特定の作品で使用された軌跡を取得
   Future<List<String>> getUsedTrajectoriesForArtwork(String artworkId) async {
     try {
-      final snapshot = await _db
-          .collection('artworks')
+      final snapshot = await _userCollection('artworks')
           .doc(artworkId)
           .collection('used_trajectories')
           .get();
@@ -358,7 +372,7 @@ class FirestoreService {
       getAllUsedTrajectoriesFromArtworks() async {
     try {
       // まず全作品を取得
-      QuerySnapshot artworksSnapshot = await _db.collection('artworks').get();
+      QuerySnapshot artworksSnapshot = await _userCollection('artworks').get();
 
       Set<String> uniqueGroupIds = {};
       List<Map<String, dynamic>> result = [];
@@ -394,8 +408,7 @@ class FirestoreService {
   /// 作品のサブコレクション（used_trajectories）を削除
   Future<void> deleteUsedTrajectoriesForArtwork(String artworkId) async {
     try {
-      final collectionRef = _db
-          .collection('artworks')
+      final collectionRef = _userCollection('artworks')
           .doc(artworkId)
           .collection('used_trajectories');
 

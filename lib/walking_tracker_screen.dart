@@ -12,6 +12,7 @@ import 'package:walk_tracker_app/artwork_list_screen.dart';
 import 'package:walk_tracker_app/artwork_creation_screen.dart';
 import 'database_helper.dart';
 import 'firestore_service.dart';
+import 'auth_service.dart';
 import 'garmin_import_screen.dart';
 import 'route_destination_selection_screen.dart';
 import 'package:pedometer/pedometer.dart';
@@ -71,6 +72,7 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
   late DatabaseHelper _dbHelper;
   List<List<Position>> trajectories = [];
   late FirestoreService _firestoreService;
+  final AuthService _authService = AuthService();
   StreamSubscription<Position>? _positionStream;
   StreamSubscription<StepCount>? _stepStream;
   List<Map<String, dynamic>> savedArtworks = []; // スクリーンショットとキャンバス状態のリスト
@@ -698,6 +700,74 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
             ),
           ],
         ),
+        actions: [
+          // ユーザーアイコン（ログアウトメニュー）
+          PopupMenuButton<String>(
+            icon: CircleAvatar(
+              radius: 16,
+              backgroundImage: _authService.currentUser?.photoURL != null
+                  ? NetworkImage(_authService.currentUser!.photoURL!)
+                  : null,
+              child: _authService.currentUser?.photoURL == null
+                  ? Icon(Icons.person, size: 20)
+                  : null,
+            ),
+            onSelected: (value) async {
+              if (value == 'logout') {
+                final confirm = await showDialog<bool>(
+                  context: context,
+                  builder: (context) => AlertDialog(
+                    title: Text('ログアウト'),
+                    content: Text('ログアウトしますか？'),
+                    actions: [
+                      TextButton(
+                        onPressed: () => Navigator.pop(context, false),
+                        child: Text('キャンセル'),
+                      ),
+                      TextButton(
+                        onPressed: () => Navigator.pop(context, true),
+                        child: Text('ログアウト'),
+                      ),
+                    ],
+                  ),
+                );
+                if (confirm == true) {
+                  await _authService.signOut();
+                }
+              }
+            },
+            itemBuilder: (context) => [
+              PopupMenuItem(
+                enabled: false,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      _authService.currentUser?.displayName ?? 'ユーザー',
+                      style: TextStyle(
+                          fontWeight: FontWeight.bold, color: Colors.black),
+                    ),
+                    Text(
+                      _authService.currentUser?.email ?? '',
+                      style: TextStyle(fontSize: 12, color: Colors.grey),
+                    ),
+                  ],
+                ),
+              ),
+              PopupMenuDivider(),
+              PopupMenuItem(
+                value: 'logout',
+                child: Row(
+                  children: [
+                    Icon(Icons.logout, color: Colors.red),
+                    SizedBox(width: 8),
+                    Text('ログアウト', style: TextStyle(color: Colors.red)),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ],
       ),
       body: Stack(
         children: [
