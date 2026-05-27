@@ -58,3 +58,4 @@ web/
 
 !*.gitignore
 docs/
+.env
