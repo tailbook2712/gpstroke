@@ -79,6 +79,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
   double _guideImageScale = 1.0; // ガイド画像のスケール
   double _guideImageLastScale = 1.0; // スケール操作用
   bool _guideImageLocked = false; // ガイド画像の位置・サイズ固定
+  bool _showLayerPanel = false;
 
   // 軌跡リスト用のデータ（画面下部に常時表示）
   List<Map<String, dynamic>> _garminActivities = [];
@@ -917,6 +918,118 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
     );
   }
 
+  /// レイヤーパネルを構築（右側オーバーレイ）
+  Widget _buildLayerPanel() {
+    return Container(
+      width: 80,
+      constraints: const BoxConstraints(maxHeight: 220),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.95),
+        borderRadius: BorderRadius.circular(8),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.15),
+            blurRadius: 6,
+            offset: const Offset(-2, 2),
+          ),
+        ],
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 4),
+            child: Text(
+              'レイヤー',
+              style: TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.bold,
+                color: Colors.black87,
+              ),
+            ),
+          ),
+          const Divider(height: 1, thickness: 1),
+          Flexible(
+            child: selectedTrajectories.isEmpty
+                ? const Padding(
+                    padding: EdgeInsets.all(6),
+                    child: Text(
+                      '軌跡なし',
+                      style: TextStyle(fontSize: 9, color: Colors.grey),
+                    ),
+                  )
+                : ReorderableListView.builder(
+                    shrinkWrap: true,
+                    physics: const ClampingScrollPhysics(),
+                    buildDefaultDragHandles: false,
+                    padding: EdgeInsets.zero,
+                    itemCount: selectedTrajectories.length,
+                    onReorder: (oldIndex, newIndex) {
+                      setState(() {
+                        final displayList =
+                            selectedTrajectories.reversed.toList();
+                        if (oldIndex < newIndex) newIndex--;
+                        final item = displayList.removeAt(oldIndex);
+                        displayList.insert(newIndex, item);
+                        selectedTrajectories = displayList.reversed.toList();
+                      });
+                    },
+                    itemBuilder: (context, panelIndex) {
+                      final arrayIndex =
+                          selectedTrajectories.length - 1 - panelIndex;
+                      final traj = selectedTrajectories[arrayIndex];
+                      final isSelected = selectedItem == traj;
+                      return ReorderableDelayedDragStartListener(
+                        key: ValueKey(traj),
+                        index: panelIndex,
+                        child: _buildLayerItem(traj, isSelected),
+                      );
+                    },
+                  ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// レイヤーパネルの1アイテムを構築
+  Widget _buildLayerItem(TransformablePolyline traj, bool isSelected) {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: () {
+        setState(() {
+          selectedItem = traj;
+        });
+      },
+      child: Container(
+        color: isSelected ? Colors.red.withOpacity(0.08) : Colors.transparent,
+        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 3),
+        child: Container(
+          decoration: BoxDecoration(
+            color: Colors.grey[100],
+            borderRadius: BorderRadius.circular(4),
+            border: Border.all(
+              color: isSelected ? Colors.red : Colors.grey[300]!,
+              width: isSelected ? 1.5 : 1.0,
+            ),
+          ),
+          child: CustomPaint(
+            size: const Size(72, 54),
+            painter: PolylinePainter(
+              positions: traj.polyline,
+              minLat: traj.minLat,
+              maxLat: traj.maxLat,
+              minLon: traj.minLon,
+              maxLon: traj.maxLon,
+              color: isSelected ? Colors.red : Colors.blue,
+              strokeWidth: 2.0,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     double screenWidth = MediaQuery.of(context).size.width;
@@ -1130,10 +1243,17 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                                         selectedItem = item;
                                       });
                                     },
-                                    onLongPress: () {
-                                      // 長押しで重なっている軌跡を循環選択
+                                    onLongPressStart: (details) {
+                                      // 実際のタッチ位置をキャンバス座標に変換して重なり判定
+                                      final RenderBox? canvasBox =
+                                          _boundaryKey.currentContext
+                                              ?.findRenderObject() as RenderBox?;
+                                      if (canvasBox == null) return;
+                                      final canvasTouchPosition =
+                                          canvasBox.globalToLocal(
+                                              details.globalPosition);
                                       final hitTrajectories =
-                                          _getTrajectoriesAt(item.position);
+                                          _getTrajectoriesAt(canvasTouchPosition);
                                       if (hitTrajectories.length > 1) {
                                         setState(() {
                                           final candidates =
@@ -1240,6 +1360,9 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                                                         maxLon: item.maxLon,
                                                         strokeWidth:
                                                             4.0 / item.scale,
+                                                        color: isSelected
+                                                            ? Colors.red
+                                                            : Colors.blue,
                                                       ),
                                                     ),
                                                     // デバッグ: タップ領域を視覚化
@@ -1614,6 +1737,46 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                           ),
                       ],
                     ),
+                  ),
+                // \u30ec\u30a4\u30e4\u30fc\u30d1\u30cd\u30eb\u30c8\u30b0\u30eb\u30dc\u30bf\u30f3\uff08\u53f3\u4e0a\uff09
+                Positioned(
+                  top: 8,
+                  right: 8,
+                  child: GestureDetector(
+                    onTap: () {
+                      setState(() {
+                        _showLayerPanel = !_showLayerPanel;
+                      });
+                    },
+                    child: Container(
+                      decoration: BoxDecoration(
+                        color: Colors.white.withOpacity(0.9),
+                        borderRadius: BorderRadius.circular(8),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withOpacity(0.1),
+                            blurRadius: 4,
+                            offset: const Offset(0, 2),
+                          ),
+                        ],
+                      ),
+                      padding: const EdgeInsets.all(8),
+                      child: Icon(
+                        Icons.layers,
+                        size: 22,
+                        color: _showLayerPanel
+                            ? Colors.blue
+                            : Colors.grey[700],
+                      ),
+                    ),
+                  ),
+                ),
+                // \u30ec\u30a4\u30e4\u30fc\u30d1\u30cd\u30eb\uff08\u53f3\u5074\u30aa\u30fc\u30d0\u30fc\u30ec\u30a4\uff09
+                if (_showLayerPanel)
+                  Positioned(
+                    top: 48,
+                    right: 8,
+                    child: _buildLayerPanel(),
                   ),
               ],
             ),
