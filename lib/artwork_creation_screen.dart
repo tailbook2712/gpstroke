@@ -599,20 +599,6 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
     }
   }
 
-  /// 指定された位置にある軌跡のリストを取得する
-  List<TransformablePolyline> _getTrajectoriesAt(Offset position) {
-    final double expandedTouchArea = trajectorySize * 1.5;
-    final double halfSize = expandedTouchArea / 2;
-
-    // 逆順で検索（上にあるものが先にヒットするように）
-    // ただし、全てのヒットするものを取得したいので filter を使う
-    return selectedTrajectories.where((item) {
-      final double dx = (item.position.dx - position.dx).abs();
-      final double dy = (item.position.dy - position.dy).abs();
-      return dx <= halfSize && dy <= halfSize;
-    }).toList();
-  }
-
   // 作品の途中保存
   void _saveDraft({String? draftFilePath}) async {
     try {
@@ -999,6 +985,8 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
       onTap: () {
         setState(() {
           selectedItem = traj;
+          selectedTrajectories.remove(traj);
+          selectedTrajectories.add(traj);
         });
       },
       child: Container(
@@ -1013,16 +1001,19 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
               width: isSelected ? 1.5 : 1.0,
             ),
           ),
-          child: CustomPaint(
-            size: const Size(72, 54),
-            painter: PolylinePainter(
-              positions: traj.polyline,
-              minLat: traj.minLat,
-              maxLat: traj.maxLat,
-              minLon: traj.minLon,
-              maxLon: traj.maxLon,
-              color: isSelected ? Colors.red : Colors.blue,
-              strokeWidth: 2.0,
+          child: Transform.rotate(
+            angle: traj.rotation,
+            child: CustomPaint(
+              size: const Size(72, 54),
+              painter: PolylinePainter(
+                positions: traj.polyline,
+                minLat: traj.minLat,
+                maxLat: traj.maxLat,
+                minLon: traj.minLon,
+                maxLon: traj.maxLon,
+                color: isSelected ? Colors.red : Colors.blue,
+                strokeWidth: 2.0,
+              ),
             ),
           ),
         ),
@@ -1239,45 +1230,10 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                                     behavior: HitTestBehavior.opaque,
                                     onTap: () {
                                       setState(() {
-                                        // タップした軌跡を選択状態にする
                                         selectedItem = item;
+                                        selectedTrajectories.remove(item);
+                                        selectedTrajectories.add(item);
                                       });
-                                    },
-                                    onLongPressStart: (details) {
-                                      // 実際のタッチ位置をキャンバス座標に変換して重なり判定
-                                      final RenderBox? canvasBox =
-                                          _boundaryKey.currentContext
-                                              ?.findRenderObject() as RenderBox?;
-                                      if (canvasBox == null) return;
-                                      final canvasTouchPosition =
-                                          canvasBox.globalToLocal(
-                                              details.globalPosition);
-                                      final hitTrajectories =
-                                          _getTrajectoriesAt(canvasTouchPosition);
-                                      if (hitTrajectories.length > 1) {
-                                        setState(() {
-                                          final candidates =
-                                              hitTrajectories.reversed.toList();
-                                          final currentIndex =
-                                              candidates.indexOf(item);
-                                          if (currentIndex != -1) {
-                                            final nextIndex =
-                                                (currentIndex + 1) %
-                                                    candidates.length;
-                                            selectedItem =
-                                                candidates[nextIndex];
-
-                                            // 選択した軌跡を最前面に移動
-                                            selectedTrajectories
-                                                .remove(selectedItem);
-                                            selectedTrajectories
-                                                .add(selectedItem!);
-
-                                            print(
-                                                "Long press cycled to: ${selectedTrajectories.indexOf(selectedItem!)} and brought to front");
-                                          }
-                                        });
-                                      }
                                     },
                                     onScaleStart: (details) {
                                       // 選択された軌跡のみ回転操作を受け入れる
