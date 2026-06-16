@@ -999,6 +999,8 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
       onTap: () {
         setState(() {
           selectedItem = traj;
+          selectedTrajectories.remove(traj);
+          selectedTrajectories.add(traj);
         });
       },
       child: Container(
@@ -1239,8 +1241,9 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                                     behavior: HitTestBehavior.opaque,
                                     onTap: () {
                                       setState(() {
-                                        // タップした軌跡を選択状態にする
                                         selectedItem = item;
+                                        selectedTrajectories.remove(item);
+                                        selectedTrajectories.add(item);
                                       });
                                     },
                                     onLongPressStart: (details) {
