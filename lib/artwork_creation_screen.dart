@@ -1001,16 +1001,19 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
               width: isSelected ? 1.5 : 1.0,
             ),
           ),
-          child: CustomPaint(
-            size: const Size(72, 54),
-            painter: PolylinePainter(
-              positions: traj.polyline,
-              minLat: traj.minLat,
-              maxLat: traj.maxLat,
-              minLon: traj.minLon,
-              maxLon: traj.maxLon,
-              color: isSelected ? Colors.red : Colors.blue,
-              strokeWidth: 2.0,
+          child: Transform.rotate(
+            angle: traj.rotation,
+            child: CustomPaint(
+              size: const Size(72, 54),
+              painter: PolylinePainter(
+                positions: traj.polyline,
+                minLat: traj.minLat,
+                maxLat: traj.maxLat,
+                minLon: traj.minLon,
+                maxLon: traj.maxLon,
+                color: isSelected ? Colors.red : Colors.blue,
+                strokeWidth: 2.0,
+              ),
             ),
           ),
         ),
