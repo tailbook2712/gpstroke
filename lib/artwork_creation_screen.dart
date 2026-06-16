@@ -599,20 +599,6 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
     }
   }
 
-  /// 指定された位置にある軌跡のリストを取得する
-  List<TransformablePolyline> _getTrajectoriesAt(Offset position) {
-    final double expandedTouchArea = trajectorySize * 1.5;
-    final double halfSize = expandedTouchArea / 2;
-
-    // 逆順で検索（上にあるものが先にヒットするように）
-    // ただし、全てのヒットするものを取得したいので filter を使う
-    return selectedTrajectories.where((item) {
-      final double dx = (item.position.dx - position.dx).abs();
-      final double dy = (item.position.dy - position.dy).abs();
-      return dx <= halfSize && dy <= halfSize;
-    }).toList();
-  }
-
   // 作品の途中保存
   void _saveDraft({String? draftFilePath}) async {
     try {
@@ -1245,42 +1231,6 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                                         selectedTrajectories.remove(item);
                                         selectedTrajectories.add(item);
                                       });
-                                    },
-                                    onLongPressStart: (details) {
-                                      // 実際のタッチ位置をキャンバス座標に変換して重なり判定
-                                      final RenderBox? canvasBox =
-                                          _boundaryKey.currentContext
-                                              ?.findRenderObject() as RenderBox?;
-                                      if (canvasBox == null) return;
-                                      final canvasTouchPosition =
-                                          canvasBox.globalToLocal(
-                                              details.globalPosition);
-                                      final hitTrajectories =
-                                          _getTrajectoriesAt(canvasTouchPosition);
-                                      if (hitTrajectories.length > 1) {
-                                        setState(() {
-                                          final candidates =
-                                              hitTrajectories.reversed.toList();
-                                          final currentIndex =
-                                              candidates.indexOf(item);
-                                          if (currentIndex != -1) {
-                                            final nextIndex =
-                                                (currentIndex + 1) %
-                                                    candidates.length;
-                                            selectedItem =
-                                                candidates[nextIndex];
-
-                                            // 選択した軌跡を最前面に移動
-                                            selectedTrajectories
-                                                .remove(selectedItem);
-                                            selectedTrajectories
-                                                .add(selectedItem!);
-
-                                            print(
-                                                "Long press cycled to: ${selectedTrajectories.indexOf(selectedItem!)} and brought to front");
-                                          }
-                                        });
-                                      }
                                     },
                                     onScaleStart: (details) {
                                       // 選択された軌跡のみ回転操作を受け入れる
