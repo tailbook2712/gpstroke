@@ -1,16 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'route_generation_screen.dart';
 
 class RouteDesignCanvasScreen extends StatefulWidget {
-  final LatLng startingPoint;
-  final LatLng destination;
-
-  RouteDesignCanvasScreen({
-    required this.startingPoint,
-    required this.destination,
-  });
-
   @override
   _RouteDesignCanvasScreenState createState() =>
       _RouteDesignCanvasScreenState();
@@ -22,27 +15,36 @@ class _RouteDesignCanvasScreenState extends State<RouteDesignCanvasScreen> {
   // 描画データ: List<Offset> のリスト（複数ストロークを管理）
   List<List<Offset>> _strokes = [];
 
-  // マップの初期位置計算用
-  late LatLng _initialCenter;
-  late double _initialZoom;
+  // マップの初期位置
+  LatLng _initialCenter = LatLng(35.6812, 139.7671); // デフォルト: 東京
+  bool _isLoadingLocation = true;
 
   // 描画モードかどうか（trueならマップ操作無効・描画有効）
-  bool _isDrawingMode = true;
+  bool _isDrawingMode = false;
 
   @override
   void initState() {
     super.initState();
-    _calculateInitialMapState();
+    _initCurrentLocation();
   }
 
-  /// 出発地と目的地から初期マップ表示位置を計算
-  void _calculateInitialMapState() {
-    double lat =
-        (widget.startingPoint.latitude + widget.destination.latitude) / 2;
-    double lng =
-        (widget.startingPoint.longitude + widget.destination.longitude) / 2;
-    _initialCenter = LatLng(lat, lng);
-    _initialZoom = 14.0; // 適当なズームレベル
+  Future<void> _initCurrentLocation() async {
+    try {
+      Position position = await Geolocator.getCurrentPosition(
+        locationSettings: LocationSettings(
+          accuracy: LocationAccuracy.best,
+          distanceFilter: 0,
+        ),
+      );
+      setState(() {
+        _initialCenter = LatLng(position.latitude, position.longitude);
+        _isLoadingLocation = false;
+      });
+    } catch (e) {
+      setState(() {
+        _isLoadingLocation = false;
+      });
+    }
   }
 
   /// キャンバスをクリア
@@ -54,9 +56,10 @@ class _RouteDesignCanvasScreenState extends State<RouteDesignCanvasScreen> {
 
   /// 描画を確定して次のステップへ
   Future<void> _proceedToGenerationScreen() async {
-    if (_strokes.isEmpty) {
+    if (_strokes.isEmpty || _strokes.every((s) => s.isEmpty)) {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('形を描いてください')),
+        const SnackBar(content: Text('形を描いてください')),
       );
       return;
     }
@@ -64,25 +67,32 @@ class _RouteDesignCanvasScreenState extends State<RouteDesignCanvasScreen> {
     // スクリーン座標(Offset)をLatLngに変換
     List<LatLng> tracedPath = await _convertStrokesToLatLngs();
 
-    if (tracedPath.isEmpty) {
+    if (!mounted) return;
+
+    if (tracedPath.length < 2) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('ルート変換に失敗しました')),
+        const SnackBar(content: Text('ルート変換に失敗しました')),
       );
       return;
     }
+
+    // スケッチの始点・終点を出発地・目的地として使用
+    final startingPoint = tracedPath.first;
+    final destination = tracedPath.last;
 
     // ルート生成画面へナビゲート
     final result = await Navigator.push(
       context,
       MaterialPageRoute(
         builder: (context) => RouteGenerationScreen(
-          startingPoint: widget.startingPoint,
-          destination: widget.destination,
-          tracedPath: tracedPath, // 変換後のパスを渡す
+          startingPoint: startingPoint,
+          destination: destination,
+          tracedPath: tracedPath,
         ),
       ),
     );
 
+    if (!mounted) return;
     if (result != null) {
       Navigator.pop(context, result);
     }
@@ -91,11 +101,6 @@ class _RouteDesignCanvasScreenState extends State<RouteDesignCanvasScreen> {
   /// スクリーン座標をLatLngに変換
   Future<List<LatLng>> _convertStrokesToLatLngs() async {
     List<LatLng> allPoints = [];
-
-    // 画面のピクセル比率を取得（Retinaディスプレイ対応など）
-    // GoogleMapController.getLatLng は論理ピクセル(Offset)を受け取るはずだが、
-    // 実装によってはデバイスピクセル比を考慮する必要がある場合がある。
-    // 通常、FlutterのOffsetは論理ピクセルなのでそのままで良いはず。
 
     for (final stroke in _strokes) {
       for (final offset in stroke) {
@@ -122,172 +127,277 @@ class _RouteDesignCanvasScreenState extends State<RouteDesignCanvasScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return WillPopScope(
-      onWillPop: () async {
-        Navigator.pop(context, null);
-        return false;
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) Navigator.pop(context, null);
       },
       child: Scaffold(
         appBar: AppBar(
-          title: Text('地図をなぞる'),
+          title: const Text('地図をなぞる'),
           centerTitle: true,
           elevation: 0,
-          actions: [
-            // 描画モード切り替えボタン
-            IconButton(
-              icon: Icon(_isDrawingMode ? Icons.map : Icons.edit),
-              onPressed: () {
-                setState(() {
-                  _isDrawingMode = !_isDrawingMode;
-                });
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: Text(_isDrawingMode
-                        ? '描画モード: 地図をなぞってください'
-                        : 'マップ操作モード: 地図を動かせます'),
-                    duration: Duration(seconds: 1),
-                  ),
-                );
-              },
-            ),
-          ],
         ),
-        body: Column(
-          children: [
-            // 描画キャンバス (Map + CustomPaint)
-            Expanded(
-              child: Stack(
+        body: _isLoadingLocation
+            ? Center(child: CircularProgressIndicator())
+            : Column(
                 children: [
-                  // Google Map
-                  GoogleMap(
-                    initialCameraPosition: CameraPosition(
-                      target: _initialCenter,
-                      zoom: _initialZoom,
+                  // 描画キャンバス (Map + CustomPaint)
+                  Expanded(
+                    child: Stack(
+                      children: [
+                        // Google Map
+                        GoogleMap(
+                          initialCameraPosition: CameraPosition(
+                            target: _initialCenter,
+                            zoom: 16.0,
+                          ),
+                          onMapCreated: (GoogleMapController controller) {
+                            _mapController = controller;
+                          },
+                          myLocationEnabled: true,
+                          myLocationButtonEnabled: true,
+                          // 描画モード中はマップ操作を無効化
+                          scrollGesturesEnabled: !_isDrawingMode,
+                          zoomGesturesEnabled: !_isDrawingMode,
+                          rotateGesturesEnabled: !_isDrawingMode,
+                          tiltGesturesEnabled: !_isDrawingMode,
+                        ),
+
+                        // 描画レイヤー
+                        if (_isDrawingMode)
+                          GestureDetector(
+                            onPanStart: (details) {
+                              setState(() {
+                                _strokes.add([details.localPosition]);
+                              });
+                            },
+                            onPanUpdate: (details) {
+                              setState(() {
+                                if (_strokes.isNotEmpty) {
+                                  _strokes.last.add(details.localPosition);
+                                }
+                              });
+                            },
+                            onPanEnd: (details) {},
+                            child: Container(
+                              color: Colors.transparent,
+                              child: CustomPaint(
+                                painter: CanvasPainter(_strokes),
+                                size: Size.infinite,
+                              ),
+                            ),
+                          )
+                        else
+                          IgnorePointer(
+                            child: CustomPaint(
+                              painter: CanvasPainter(_strokes),
+                              size: Size.infinite,
+                            ),
+                          ),
+
+                        // 現在モードを示すバッジ（マップ上部に常時表示）
+                        Positioned(
+                          top: 12,
+                          left: 0,
+                          right: 0,
+                          child: Center(
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 16, vertical: 8),
+                              decoration: BoxDecoration(
+                                color: _isDrawingMode
+                                    ? Colors.orange[700]
+                                    : Colors.blue[700],
+                                borderRadius: BorderRadius.circular(24),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: Colors.black.withValues(alpha: 0.25),
+                                    blurRadius: 6,
+                                    offset: const Offset(0, 2),
+                                  ),
+                                ],
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(
+                                    _isDrawingMode
+                                        ? Icons.edit
+                                        : Icons.open_with,
+                                    color: Colors.white,
+                                    size: 18,
+                                  ),
+                                  const SizedBox(width: 6),
+                                  Text(
+                                    _isDrawingMode
+                                        ? 'スケッチモード'
+                                        : '地図移動モード',
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 14,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
-                    onMapCreated: (GoogleMapController controller) {
-                      _mapController = controller;
-                    },
-                    markers: {
-                      Marker(
-                        markerId: MarkerId('start'),
-                        position: widget.startingPoint,
-                        icon: BitmapDescriptor.defaultMarkerWithHue(
-                            BitmapDescriptor.hueBlue),
-                      ),
-                      Marker(
-                        markerId: MarkerId('dest'),
-                        position: widget.destination,
-                        icon: BitmapDescriptor.defaultMarkerWithHue(
-                            BitmapDescriptor.hueRed),
-                      ),
-                    },
-                    // 描画モード中はマップ操作を無効化
-                    scrollGesturesEnabled: !_isDrawingMode,
-                    zoomGesturesEnabled: !_isDrawingMode,
-                    rotateGesturesEnabled: !_isDrawingMode,
-                    tiltGesturesEnabled: !_isDrawingMode,
                   ),
 
-                  // 描画レイヤー
-                  if (_isDrawingMode)
-                    GestureDetector(
-                      onPanStart: (details) {
-                        setState(() {
-                          _strokes.add([details.localPosition]);
-                        });
-                      },
-                      onPanUpdate: (details) {
-                        setState(() {
-                          if (_strokes.isNotEmpty) {
-                            _strokes.last.add(details.localPosition);
-                          }
-                        });
-                      },
-                      onPanEnd: (details) {
-                        // ストローク終了
-                      },
-                      child: Container(
-                        color: Colors.transparent, // タッチイベントを受け取るために透明
-                        child: CustomPaint(
-                          painter: CanvasPainter(_strokes),
-                          size: Size.infinite,
+                  // 下部: 操作パネル
+                  Container(
+                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+                    color: Colors.white,
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        // モード切り替えトグル
+                        Container(
+                          decoration: BoxDecoration(
+                            color: Colors.grey[200],
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          padding: const EdgeInsets.all(4),
+                          child: Row(
+                            children: [
+                              // 地図移動ボタン
+                              Expanded(
+                                child: GestureDetector(
+                                  onTap: () =>
+                                      setState(() => _isDrawingMode = false),
+                                  child: AnimatedContainer(
+                                    duration:
+                                        const Duration(milliseconds: 200),
+                                    padding: const EdgeInsets.symmetric(
+                                        vertical: 10),
+                                    decoration: BoxDecoration(
+                                      color: !_isDrawingMode
+                                          ? Colors.blue[700]
+                                          : Colors.transparent,
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
+                                    child: Row(
+                                      mainAxisAlignment:
+                                          MainAxisAlignment.center,
+                                      children: [
+                                        Icon(
+                                          Icons.open_with,
+                                          size: 18,
+                                          color: !_isDrawingMode
+                                              ? Colors.white
+                                              : Colors.grey[600],
+                                        ),
+                                        const SizedBox(width: 6),
+                                        Text(
+                                          '地図移動',
+                                          style: TextStyle(
+                                            fontWeight: FontWeight.bold,
+                                            fontSize: 13,
+                                            color: !_isDrawingMode
+                                                ? Colors.white
+                                                : Colors.grey[600],
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              // スケッチボタン
+                              Expanded(
+                                child: GestureDetector(
+                                  onTap: () =>
+                                      setState(() => _isDrawingMode = true),
+                                  child: AnimatedContainer(
+                                    duration:
+                                        const Duration(milliseconds: 200),
+                                    padding: const EdgeInsets.symmetric(
+                                        vertical: 10),
+                                    decoration: BoxDecoration(
+                                      color: _isDrawingMode
+                                          ? Colors.orange[700]
+                                          : Colors.transparent,
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
+                                    child: Row(
+                                      mainAxisAlignment:
+                                          MainAxisAlignment.center,
+                                      children: [
+                                        Icon(
+                                          Icons.edit,
+                                          size: 18,
+                                          color: _isDrawingMode
+                                              ? Colors.white
+                                              : Colors.grey[600],
+                                        ),
+                                        const SizedBox(width: 6),
+                                        Text(
+                                          'スケッチ',
+                                          style: TextStyle(
+                                            fontWeight: FontWeight.bold,
+                                            fontSize: 13,
+                                            color: _isDrawingMode
+                                                ? Colors.white
+                                                : Colors.grey[600],
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
                         ),
-                      ),
-                    )
-                  else
-                    // マップ操作モードでも描画内容は表示し続ける（タッチは透過）
-                    IgnorePointer(
-                      child: CustomPaint(
-                        painter: CanvasPainter(_strokes),
-                        size: Size.infinite,
-                      ),
+                        const SizedBox(height: 12),
+                        Row(
+                          children: [
+                            // 全削除ボタン
+                            Expanded(
+                              child: ElevatedButton.icon(
+                                onPressed: _clearCanvas,
+                                icon: const Icon(Icons.delete_sweep),
+                                label: const Text('全削除'),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: Colors.grey[400],
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            // 1つ戻るボタン
+                            Expanded(
+                              child: ElevatedButton.icon(
+                                onPressed: _undoLastStroke,
+                                icon: const Icon(Icons.undo),
+                                label: const Text('戻る'),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: Colors.orange[400],
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            // 決定ボタン
+                            Expanded(
+                              child: ElevatedButton.icon(
+                                onPressed: _proceedToGenerationScreen,
+                                icon: const Icon(Icons.arrow_forward),
+                                label: const Text('決定'),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: Colors.blue,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
                     ),
+                  ),
                 ],
               ),
-            ),
-
-            // 下部: 操作ボタン
-            Container(
-              padding: EdgeInsets.all(16),
-              color: Colors.white,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Row(
-                    children: [
-                      // 削除ボタン（全削除）
-                      Expanded(
-                        child: ElevatedButton.icon(
-                          onPressed: _clearCanvas,
-                          icon: Icon(Icons.delete_sweep),
-                          label: Text('全削除'),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.grey[400],
-                          ),
-                        ),
-                      ),
-                      SizedBox(width: 12),
-                      // 戻るボタン（最後のストロークを削除）
-                      Expanded(
-                        child: ElevatedButton.icon(
-                          onPressed: _undoLastStroke,
-                          icon: Icon(Icons.undo),
-                          label: Text('戻る'),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.orange[400],
-                          ),
-                        ),
-                      ),
-                      SizedBox(width: 12),
-                      // 決定ボタン
-                      Expanded(
-                        child: ElevatedButton.icon(
-                          onPressed: _proceedToGenerationScreen,
-                          icon: Icon(Icons.arrow_forward),
-                          label: Text('決定'),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.blue,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                  SizedBox(height: 12),
-                  Text(
-                    _isDrawingMode
-                        ? '地図をなぞってルートを描いてください（右上のボタンでマップ移動切替）'
-                        : '地図を動かして位置を調整してください（右上のボタンで描画再開）',
-                    style: TextStyle(
-                      fontSize: 11,
-                      color: Colors.grey[600],
-                    ),
-                    textAlign: TextAlign.center,
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
       ),
     );
   }
@@ -301,15 +411,13 @@ class CanvasPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    // ストロークを描画
     for (int strokeIndex = 0; strokeIndex < strokes.length; strokeIndex++) {
       final stroke = strokes[strokeIndex];
       if (stroke.isEmpty) continue;
 
-      // ストロークの線を描画
       final linePaint = Paint()
         ..color = Colors.blue
-        ..strokeWidth = 4.0 // 少し太く
+        ..strokeWidth = 4.0
         ..strokeCap = StrokeCap.round
         ..strokeJoin = StrokeJoin.round;
 
@@ -317,19 +425,22 @@ class CanvasPainter extends CustomPainter {
         canvas.drawLine(stroke[i], stroke[i + 1], linePaint);
       }
 
-      // 開始点と終了点を強調表示
-      if (stroke.isNotEmpty) {
-        // 開始点（緑）
+      // 全ストロークの中の最初の点（出発地）と最後の点（目的地）を強調
+      final isFirstStroke = strokeIndex == 0;
+      final isLastStroke = strokeIndex == strokes.length - 1;
+
+      if (isFirstStroke) {
         final startPaint = Paint()
           ..color = Colors.green
           ..strokeWidth = 2.0;
-        canvas.drawCircle(stroke.first, 5.0, startPaint);
+        canvas.drawCircle(stroke.first, 7.0, startPaint);
+      }
 
-        // 終了点（赤）
+      if (isLastStroke) {
         final endPaint = Paint()
           ..color = Colors.red
           ..strokeWidth = 2.0;
-        canvas.drawCircle(stroke.last, 5.0, endPaint);
+        canvas.drawCircle(stroke.last, 7.0, endPaint);
       }
     }
   }

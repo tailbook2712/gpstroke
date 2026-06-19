@@ -149,10 +149,7 @@ class _RouteDestinationSelectionScreenState
     final result = await Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (context) => RouteDesignCanvasScreen(
-          startingPoint: _startingPoint!,
-          destination: _destination!,
-        ),
+        builder: (context) => RouteDesignCanvasScreen(),
       ),
     );
 
