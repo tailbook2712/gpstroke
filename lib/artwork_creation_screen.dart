@@ -15,7 +15,7 @@ import 'database_helper.dart';
 import 'draft_list_screen.dart';
 import 'polyline_painter.dart';
 import 'firestore_service.dart';
-import 'route_destination_selection_screen.dart';
+import 'route_design_canvas_screen.dart';
 
 import 'utils/utils.dart';
 
@@ -750,7 +750,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
     final routeResult = await Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (context) => RouteDestinationSelectionScreen(),
+        builder: (context) => RouteDesignCanvasScreen(),
       ),
     );
 

@@ -15,7 +15,7 @@ import 'database_helper.dart';
 import 'firestore_service.dart';
 import 'auth_service.dart';
 import 'garmin_import_screen.dart';
-import 'route_destination_selection_screen.dart';
+import 'route_design_canvas_screen.dart';
 import 'package:pedometer/pedometer.dart';
 
 import 'utils/utils.dart';
@@ -779,7 +779,7 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
     final result = await Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (context) => RouteDestinationSelectionScreen(),
+        builder: (context) => RouteDesignCanvasScreen(),
       ),
     );
 
@@ -951,37 +951,108 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                // トグルボタン（小さく、白背景）
-                SegmentedButton<RecordingMode>(
-                  segments: <ButtonSegment<RecordingMode>>[
-                    ButtonSegment<RecordingMode>(
-                      value: RecordingMode.freeMode,
-                      label: Text('フリー'),
-                      icon: Icon(Icons.location_on),
-                    ),
-                    ButtonSegment<RecordingMode>(
-                      value: RecordingMode.routeFollowMode,
-                      label: Text('ルート'),
-                      icon: Icon(Icons.route),
-                    ),
-                  ],
-                  selected: <RecordingMode>{_recordingMode},
-                  style: SegmentedButton.styleFrom(
-                    backgroundColor: Colors.white,
-                    selectedBackgroundColor: Colors.blue,
-                    selectedForegroundColor: Colors.white,
+                // モード切り替えトグル
+                Container(
+                  decoration: BoxDecoration(
+                    color: Colors.grey[200],
+                    borderRadius: BorderRadius.circular(12),
                   ),
-                  onSelectionChanged: (Set<RecordingMode> newSelection) {
-                    setState(() {
-                      _recordingMode = newSelection.first;
-                      // ルート提案モードに切り替えた時、自動的にルート提案画面に移動
-                      if (_recordingMode == RecordingMode.routeFollowMode &&
-                          (_suggestedRoutePath == null ||
-                              _suggestedRoutePath!.isEmpty)) {
-                        _navigateToRouteSuggestionScreen();
-                      }
-                    });
-                  },
+                  padding: const EdgeInsets.all(4),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      // フリーモード
+                      GestureDetector(
+                        onTap: () {
+                          setState(() {
+                            _recordingMode = RecordingMode.freeMode;
+                          });
+                        },
+                        child: AnimatedContainer(
+                          duration: const Duration(milliseconds: 200),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 20, vertical: 10),
+                          decoration: BoxDecoration(
+                            color: _recordingMode == RecordingMode.freeMode
+                                ? Colors.blue[700]
+                                : Colors.transparent,
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Row(
+                            children: [
+                              Icon(
+                                Icons.location_on,
+                                size: 18,
+                                color: _recordingMode == RecordingMode.freeMode
+                                    ? Colors.white
+                                    : Colors.grey[600],
+                              ),
+                              const SizedBox(width: 6),
+                              Text(
+                                'フリー',
+                                style: TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 13,
+                                  color:
+                                      _recordingMode == RecordingMode.freeMode
+                                          ? Colors.white
+                                          : Colors.grey[600],
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      // ルート追従モード
+                      GestureDetector(
+                        onTap: () {
+                          setState(() {
+                            _recordingMode = RecordingMode.routeFollowMode;
+                            if (_suggestedRoutePath == null ||
+                                _suggestedRoutePath!.isEmpty) {
+                              _navigateToRouteSuggestionScreen();
+                            }
+                          });
+                        },
+                        child: AnimatedContainer(
+                          duration: const Duration(milliseconds: 200),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 20, vertical: 10),
+                          decoration: BoxDecoration(
+                            color: _recordingMode ==
+                                    RecordingMode.routeFollowMode
+                                ? Colors.orange[700]
+                                : Colors.transparent,
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Row(
+                            children: [
+                              Icon(
+                                Icons.route,
+                                size: 18,
+                                color: _recordingMode ==
+                                        RecordingMode.routeFollowMode
+                                    ? Colors.white
+                                    : Colors.grey[600],
+                              ),
+                              const SizedBox(width: 6),
+                              Text(
+                                'ルート',
+                                style: TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 13,
+                                  color: _recordingMode ==
+                                          RecordingMode.routeFollowMode
+                                      ? Colors.white
+                                      : Colors.grey[600],
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
                 SizedBox(height: 12),
                 // アクションボタン
