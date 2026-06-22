@@ -615,7 +615,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
       File draftFile = File(filePath);
 
       final canvasSize = _boundaryKey.currentContext!.size!;
-      final draftState = {
+      final draftState = <String, dynamic>{
         'canvasWidth': canvasSize.width,
         'canvasHeight': canvasSize.height,
         'scaleBarDistance': _scaleBarDistanceMeters,
@@ -638,6 +638,16 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
         }).toList(),
         'timestamp': DateTime.now().toIso8601String(),
       };
+
+      // ガイド画像データを保存
+      if (_guideImage != null) {
+        draftState['guideImagePath'] = _guideImage!.path;
+        draftState['guideImageOpacity'] = _guideImageOpacity;
+        draftState['guideImagePositionDx'] = _guideImagePosition.dx;
+        draftState['guideImagePositionDy'] = _guideImagePosition.dy;
+        draftState['guideImageScale'] = _guideImageScale;
+        draftState['guideImageLocked'] = _guideImageLocked;
+      }
 
       await draftFile.writeAsString(jsonEncode(draftState));
 
@@ -722,6 +732,31 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
           temporarilyUsedIndices.add(index);
         }
       }
+
+      // ガイド画像を復元
+      final guideImagePath = draftData['guideImagePath'] as String?;
+      if (guideImagePath != null) {
+        final imageFile = File(guideImagePath);
+        if (imageFile.existsSync()) {
+          _guideImage = imageFile;
+          _guideImageOpacity =
+              (draftData['guideImageOpacity'] as num?)?.toDouble() ?? 0.5;
+          _guideImagePosition = Offset(
+            (draftData['guideImagePositionDx'] as num?)?.toDouble() ?? 0.0,
+            (draftData['guideImagePositionDy'] as num?)?.toDouble() ?? 0.0,
+          );
+          _guideImageScale =
+              (draftData['guideImageScale'] as num?)?.toDouble() ?? 1.0;
+          _guideImageLocked = draftData['guideImageLocked'] as bool? ?? false;
+          _showGuideImageControl = true;
+        } else {
+          _guideImage = null;
+          _showGuideImageControl = false;
+        }
+      } else {
+        _guideImage = null;
+        _showGuideImageControl = false;
+      }
     });
   }
 
@@ -747,10 +782,40 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
   ///
   /// 既存のルート提案フロー（出発地・目的地選択 → キャンバス描画 → ルート生成）を使用
   Future<void> _navigateToRouteSuggestion() async {
+    // 現在制作中のキャンバス状態をルート提案画面に渡す
+    Map<String, dynamic>? currentCanvasData;
+    if (selectedTrajectories.isNotEmpty) {
+      final renderBox =
+          _boundaryKey.currentContext?.findRenderObject() as RenderBox?;
+      final canvasSize = renderBox?.size ?? MediaQuery.of(context).size;
+      currentCanvasData = {
+        'canvasWidth': canvasSize.width,
+        'canvasHeight': canvasSize.height,
+        'scaleBarDistance': _scaleBarDistanceMeters,
+        'trajectories': selectedTrajectories.map((item) {
+          return {
+            'positions': item.polyline
+                .map((p) => {
+                      'latitude': p.latitude,
+                      'longitude': p.longitude,
+                    })
+                .toList(),
+            'position': {
+              'dx': item.position.dx / canvasSize.width,
+              'dy': item.position.dy / canvasSize.height,
+            },
+            'scale': item.scale,
+            'rotation': item.rotation,
+          };
+        }).toList(),
+      };
+    }
+
     final routeResult = await Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (context) => RouteDesignCanvasScreen(),
+        builder: (context) =>
+            RouteDesignCanvasScreen(initialCanvasData: currentCanvasData),
       ),
     );
 
