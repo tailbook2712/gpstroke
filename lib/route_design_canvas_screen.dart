@@ -4,6 +4,10 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'route_generation_screen.dart';
 
 class RouteDesignCanvasScreen extends StatefulWidget {
+  final Map<String, dynamic>? initialCanvasData;
+
+  RouteDesignCanvasScreen({this.initialCanvasData});
+
   @override
   _RouteDesignCanvasScreenState createState() =>
       _RouteDesignCanvasScreenState();
@@ -88,6 +92,7 @@ class _RouteDesignCanvasScreenState extends State<RouteDesignCanvasScreen> {
           startingPoint: startingPoint,
           destination: destination,
           tracedPath: tracedPath,
+          initialCanvasData: widget.initialCanvasData,
         ),
       ),
     );
