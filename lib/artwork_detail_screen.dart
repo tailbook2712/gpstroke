@@ -28,7 +28,7 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
 
   String _artworkName = "作品の詳細";
   final double canvasPadding = 20.0;
-  bool _isColorful = false;
+
   List<Color> _trajectoryColors = [];
 
   final double trajectorySize = 100.0;
@@ -38,7 +38,7 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
 
   // スライドショー機能の状態管理
   bool _isSlideshowPlaying = false;
-  bool _isControlPanelVisible = true;
+  bool _isControlPanelVisible = false;
   int _currentTrajectoryIndex = -1;
   late AnimationController _highlightController;
   late AnimationController _mapTransitionController;
@@ -279,30 +279,6 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
     }
   }
 
-  Color _generateRandomColor() {
-    Random random = Random();
-    return Color.fromARGB(
-      255,
-      random.nextInt(256),
-      random.nextInt(256),
-      random.nextInt(256),
-    );
-  }
-
-  void _setColorfulMode(bool isColorful) {
-    setState(() {
-      _isColorful = isColorful;
-      _trajectoryColors = isColorful
-          ? List.generate(
-              _trajectories.length,
-              (_) => _generateRandomColor(),
-            )
-          : List.generate(
-              _trajectories.length,
-              (_) => Colors.blue,
-            );
-    });
-  }
 
   Future<void> _showTrajectoryDetails(TransformablePolyline trajectory) async {
     // 既にアニメーション中の場合は無視
@@ -346,7 +322,7 @@ _currentTrajectoryIndex = trajectoryIndex;
       // 軌跡の色を元に戻す
       setState(() {
         _trajectoryColors[trajectoryIndex] =
-            _isColorful ? _generateRandomColor() : Colors.blue;
+            Colors.blue;
         _isSlideshowPlaying = false; // アニメーション終了
 _currentTrajectoryIndex = -1;
         _isShowingMap = false;
@@ -358,7 +334,7 @@ _currentTrajectoryIndex = -1;
         _isShowingMap = false;
         if (trajectoryIndex < _trajectoryColors.length) {
           _trajectoryColors[trajectoryIndex] =
-              _isColorful ? _generateRandomColor() : Colors.blue;
+              Colors.blue;
         }
       });
 
@@ -398,7 +374,7 @@ _currentTrajectoryIndex = -1;
     setState(() {
       _trajectoryColors = List.generate(
         _trajectories.length,
-        (_) => _isColorful ? _generateRandomColor() : Colors.blue,
+        (_) => Colors.blue,
       );
     });
   }
@@ -420,7 +396,7 @@ _currentTrajectoryIndex = -1;
       _currentTrajectoryIndex = index - 1;
       _trajectoryColors = List.generate(
         _trajectories.length,
-        (_) => _isColorful ? _generateRandomColor() : Colors.blue,
+        (_) => Colors.blue,
       );
     });
 
@@ -991,7 +967,7 @@ _currentTrajectoryIndex = -1;
     // 軌跡の色を元に戻す
     setState(() {
       _trajectoryColors[actualTrajectoryIndex] =
-          _isColorful ? _generateRandomColor() : Colors.blue;
+          Colors.blue;
     });
 
     // 速度に応じた次の軌跡への遷移の待機
@@ -1044,7 +1020,7 @@ _currentTrajectoryIndex = -1;
     // 軌跡の色を元に戻す
     setState(() {
       _trajectoryColors[actualTrajectoryIndex] =
-          _isColorful ? _generateRandomColor() : Colors.blue;
+          Colors.blue;
     });
 
     // 速度に応じた次の軌跡への遷移の待機
@@ -1119,14 +1095,12 @@ _currentTrajectoryIndex = -1;
       appBar: AppBar(
         title: Text(_artworkName),
         actions: [
-          IconButton(
-            icon: Icon(
-              _isColorful ? Icons.color_lens : Icons.color_lens_outlined,
+          if (_trajectories.isNotEmpty)
+            IconButton(
+              icon: const Icon(Icons.animation),
+              onPressed: () =>
+                  setState(() => _isControlPanelVisible = !_isControlPanelVisible),
             ),
-            onPressed: () {
-              _setColorfulMode(!_isColorful);
-            },
-          ),
         ],
       ),
       body: Container(
@@ -1251,31 +1225,6 @@ _currentTrajectoryIndex = -1;
                 ),
               );
             }).toList(),
-
-            // パネル非表示時の再表示タブ
-            if (_trajectories.isNotEmpty && !_isControlPanelVisible)
-              Positioned(
-                bottom: 0,
-                left: 0,
-                right: 0,
-                child: Center(
-                  child: GestureDetector(
-                    onTap: () =>
-                        setState(() => _isControlPanelVisible = true),
-                    child: Container(
-                      padding:
-                          EdgeInsets.symmetric(horizontal: 20, vertical: 6),
-                      decoration: BoxDecoration(
-                        color: Colors.black.withOpacity(0.75),
-                        borderRadius:
-                            BorderRadius.vertical(top: Radius.circular(12)),
-                      ),
-                      child: Icon(Icons.keyboard_arrow_up,
-                          color: Colors.white70, size: 20),
-                    ),
-                  ),
-                ),
-              ),
 
             // 再生コントロールパネル
             if (_trajectories.isNotEmpty && _isControlPanelVisible)
