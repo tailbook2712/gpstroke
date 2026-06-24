@@ -28,7 +28,7 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
 
   String _artworkName = "作品の詳細";
   final double canvasPadding = 20.0;
-  bool _isColorful = false;
+
   List<Color> _trajectoryColors = [];
 
   final double trajectorySize = 100.0;
@@ -38,7 +38,7 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
 
   // スライドショー機能の状態管理
   bool _isSlideshowPlaying = false;
-  bool _isIndividualTrajectoryAnimation = false; // 個別軌跡アニメーションフラグ
+  bool _isControlPanelVisible = false;
   int _currentTrajectoryIndex = -1;
   late AnimationController _highlightController;
   late AnimationController _mapTransitionController;
@@ -279,30 +279,6 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
     }
   }
 
-  Color _generateRandomColor() {
-    Random random = Random();
-    return Color.fromARGB(
-      255,
-      random.nextInt(256),
-      random.nextInt(256),
-      random.nextInt(256),
-    );
-  }
-
-  void _setColorfulMode(bool isColorful) {
-    setState(() {
-      _isColorful = isColorful;
-      _trajectoryColors = isColorful
-          ? List.generate(
-              _trajectories.length,
-              (_) => _generateRandomColor(),
-            )
-          : List.generate(
-              _trajectories.length,
-              (_) => Colors.blue,
-            );
-    });
-  }
 
   Future<void> _showTrajectoryDetails(TransformablePolyline trajectory) async {
     // 既にアニメーション中の場合は無視
@@ -322,8 +298,7 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
       // アニメーション状態を設定
       setState(() {
         _isSlideshowPlaying = true; // 他のタップを無効にするため
-        _isIndividualTrajectoryAnimation = true; // 個別軌跡アニメーションフラグ
-        _currentTrajectoryIndex = trajectoryIndex;
+_currentTrajectoryIndex = trajectoryIndex;
         _isShowingMap = false;
         _isMapAligned = false;
         // 対象軌跡を赤色にハイライト
@@ -347,21 +322,19 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
       // 軌跡の色を元に戻す
       setState(() {
         _trajectoryColors[trajectoryIndex] =
-            _isColorful ? _generateRandomColor() : Colors.blue;
+            Colors.blue;
         _isSlideshowPlaying = false; // アニメーション終了
-        _isIndividualTrajectoryAnimation = false; // 個別軌跡アニメーション終了
-        _currentTrajectoryIndex = -1;
+_currentTrajectoryIndex = -1;
         _isShowingMap = false;
       });
     } catch (e) {
       setState(() {
         _isSlideshowPlaying = false;
-        _isIndividualTrajectoryAnimation = false;
         _currentTrajectoryIndex = -1;
         _isShowingMap = false;
         if (trajectoryIndex < _trajectoryColors.length) {
           _trajectoryColors[trajectoryIndex] =
-              _isColorful ? _generateRandomColor() : Colors.blue;
+              Colors.blue;
         }
       });
 
@@ -376,8 +349,7 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
 
     setState(() {
       _isSlideshowPlaying = true;
-      _isIndividualTrajectoryAnimation = false; // スライドショー開始時は個別軌跡アニメーションではない
-      _currentTrajectoryIndex = -1;
+_currentTrajectoryIndex = -1;
       _isShowingMap = false;
       _isMapAligned = false;
     });
@@ -388,8 +360,7 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
   void _stopSlideshow() {
     setState(() {
       _isSlideshowPlaying = false;
-      _isIndividualTrajectoryAnimation = false; // スライドショー停止時もリセット
-      _currentTrajectoryIndex = -1;
+_currentTrajectoryIndex = -1;
       _isShowingMap = false;
       _isMapAligned = false;
       _cachedCameraPosition = null;
@@ -403,9 +374,33 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
     setState(() {
       _trajectoryColors = List.generate(
         _trajectories.length,
-        (_) => _isColorful ? _generateRandomColor() : Colors.blue,
+        (_) => Colors.blue,
       );
     });
+  }
+
+  void _seekToTrajectory(int index) {
+    if (_recordedOrder.isEmpty) return;
+    index = index.clamp(0, _recordedOrder.length - 1);
+
+    _highlightController.stop();
+    _mapTransitionController.stop();
+    _mapAlignmentController.stop();
+
+    setState(() {
+      _isSlideshowPlaying = true;
+      _isShowingMap = false;
+      _isMapAligned = false;
+      _cachedCameraPosition = null;
+      _alignedCameraPosition = null;
+      _currentTrajectoryIndex = index - 1;
+      _trajectoryColors = List.generate(
+        _trajectories.length,
+        (_) => Colors.blue,
+      );
+    });
+
+    _showNextTrajectory();
   }
 
   // 速度制御メソッド
@@ -416,17 +411,6 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
         _playbackSpeed = _speedOptions[currentIndex + 1];
       } else {
         _playbackSpeed = 1; // 3倍速の次は1倍速に戻る
-      }
-    });
-  }
-
-  void _decreaseSpeed() {
-    setState(() {
-      int currentIndex = _speedOptions.indexOf(_playbackSpeed);
-      if (currentIndex > 0) {
-        _playbackSpeed = _speedOptions[currentIndex - 1];
-      } else {
-        _playbackSpeed = 1; // -3倍速の次は1倍速に戻る
       }
     });
   }
@@ -983,7 +967,7 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
     // 軌跡の色を元に戻す
     setState(() {
       _trajectoryColors[actualTrajectoryIndex] =
-          _isColorful ? _generateRandomColor() : Colors.blue;
+          Colors.blue;
     });
 
     // 速度に応じた次の軌跡への遷移の待機
@@ -1036,7 +1020,7 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
     // 軌跡の色を元に戻す
     setState(() {
       _trajectoryColors[actualTrajectoryIndex] =
-          _isColorful ? _generateRandomColor() : Colors.blue;
+          Colors.blue;
     });
 
     // 速度に応じた次の軌跡への遷移の待機
@@ -1111,26 +1095,12 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
       appBar: AppBar(
         title: Text(_artworkName),
         actions: [
-          IconButton(
-            icon: Icon(
-              _isColorful ? Icons.color_lens : Icons.color_lens_outlined,
+          if (_trajectories.isNotEmpty)
+            IconButton(
+              icon: const Icon(Icons.animation),
+              onPressed: () =>
+                  setState(() => _isControlPanelVisible = !_isControlPanelVisible),
             ),
-            onPressed: () {
-              _setColorfulMode(!_isColorful);
-            },
-          ),
-          IconButton(
-            icon: Icon(
-              _isSlideshowPlaying ? Icons.stop : Icons.slideshow,
-            ),
-            onPressed: () {
-              if (_isSlideshowPlaying) {
-                _stopSlideshow();
-              } else {
-                _startSlideshow();
-              }
-            },
-          ),
         ],
       ),
       body: Container(
@@ -1256,172 +1226,176 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
               );
             }).toList(),
 
-            // 軌跡情報表示
-            if (_isShowingMap && _currentTrajectoryDetails != null)
+            // 再生コントロールパネル
+            if (_trajectories.isNotEmpty && _isControlPanelVisible)
               Positioned(
-                bottom: 120,
+                bottom: 0,
                 left: 0,
                 right: 0,
-                child: Center(
-                  child: AnimatedBuilder(
-                    animation: _mapTransitionController,
-                    builder: (context, child) {
-                      return Transform.scale(
-                        scale: _mapTransitionController.value,
-                        child: Opacity(
-                          opacity: _mapTransitionController.value,
-                          child: Container(
-                            padding: EdgeInsets.all(16),
-                            margin: EdgeInsets.symmetric(horizontal: 20),
-                            decoration: BoxDecoration(
-                              color: Colors.white.withOpacity(0.95),
-                              borderRadius: BorderRadius.circular(16),
-                              boxShadow: [
-                                BoxShadow(
-                                  color: Colors.black26,
-                                  blurRadius: 12,
-                                  offset: Offset(0, 6),
-                                ),
-                              ],
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: Colors.black.withOpacity(0.85),
+                    borderRadius:
+                        BorderRadius.vertical(top: Radius.circular(16)),
+                  ),
+                  padding: EdgeInsets.fromLTRB(16, 4, 16, 24),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      // 閉じるハンドル
+                      GestureDetector(
+                        onTap: () =>
+                            setState(() => _isControlPanelVisible = false),
+                        child: Padding(
+                          padding: EdgeInsets.symmetric(vertical: 6),
+                          child: Icon(Icons.keyboard_arrow_down,
+                              color: Colors.white54, size: 20),
+                        ),
+                      ),
+                      // 上段：情報表示エリア
+                      if (_currentTrajectoryDetails != null) ...[
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                          children: [
+                            Text(
+                              '記録日時: ${_formatDate(_currentTrajectoryDetails!['date'])}',
+                              style: TextStyle(
+                                color: Colors.white70,
+                                fontSize: 12,
+                              ),
                             ),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.center,
+                            Row(
                               mainAxisSize: MainAxisSize.min,
                               children: [
-                                // 日時（軌跡の記録日時）
+                                Icon(Icons.directions_walk,
+                                    size: 14, color: Colors.blue[300]),
+                                SizedBox(width: 4),
                                 Text(
-                                  () {
-                                    try {
-                                      DateTime? recordDate = DateTime.tryParse(
-                                          _currentTrajectoryDetails!['date']);
-                                      if (recordDate != null) {
-                                        String formattedDate =
-                                            '${recordDate.year}/${recordDate.month.toString().padLeft(2, '0')}/${recordDate.day.toString().padLeft(2, '0')} ${recordDate.hour.toString().padLeft(2, '0')}:${recordDate.minute.toString().padLeft(2, '0')}';
-                                        return '記録日時: $formattedDate';
-                                      }
-                                    } catch (e) {
-                                      print('日時のパースエラー: $e');
-                                      print(
-                                          '元データ: ${_currentTrajectoryDetails?['date']}');
-                                    }
-                                    return '記録日時: 不明';
-                                  }(),
+                                  '${_currentTrajectoryDetails!['steps']} 歩',
                                   style: TextStyle(
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 16,
-                                    color: Colors.black87,
-                                  ),
-                                ),
-                                SizedBox(height: 16),
-                                // 統計情報
-                                Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    _buildStatItem(
-                                      Icons.directions_walk,
-                                      '${_currentTrajectoryDetails!['steps']} 歩',
-                                      Colors.blue,
-                                    ),
-                                    SizedBox(width: 24),
-                                    _buildStatItem(
-                                      Icons.straighten,
-                                      '${(_currentTrajectoryDetails!['distance'] as double).toStringAsFixed(2)} km',
-                                      Colors.green,
-                                    ),
-                                  ],
+                                      color: Colors.white70, fontSize: 12),
                                 ),
                               ],
                             ),
-                          ),
+                            Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.straighten,
+                                    size: 14, color: Colors.green[300]),
+                                SizedBox(width: 4),
+                                Text(
+                                  '${(_currentTrajectoryDetails!['distance'] as double).toStringAsFixed(2)} km',
+                                  style: TextStyle(
+                                      color: Colors.white70, fontSize: 12),
+                                ),
+                              ],
+                            ),
+                          ],
                         ),
-                      );
-                    },
-                  ),
-                ),
-              ),
-
-            // 速度制御UI（スライドショー中のみ表示、個別軌跡アニメーション中は非表示）
-            if (_isSlideshowPlaying && !_isIndividualTrajectoryAnimation)
-              Positioned(
-                bottom: 20,
-                left: 0,
-                right: 0,
-                child: Center(
-                  child: Container(
-                    padding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                    margin: EdgeInsets.symmetric(horizontal: 20),
-                    decoration: BoxDecoration(
-                      color: Colors.black87,
-                      borderRadius: BorderRadius.circular(25),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black26,
-                          blurRadius: 8,
-                          offset: Offset(0, 4),
-                        ),
+                        SizedBox(height: 8),
                       ],
-                    ),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        // 軌跡番号表示
-                        Container(
-                          padding:
-                              EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-                          child: Text(
-                            '${_currentTrajectoryIndex + 1} / ${_recordedOrder.length}',
+                      // 下段：再生コントロールエリア（停止ボタン + シークバー）
+                      Row(
+                        children: [
+                          IconButton(
+                            icon: Icon(
+                              _isSlideshowPlaying
+                                  ? Icons.stop
+                                  : Icons.play_arrow,
+                              color: Colors.white,
+                            ),
+                            onPressed: _isSlideshowPlaying
+                                ? _stopSlideshow
+                                : _startSlideshow,
+                            padding: EdgeInsets.all(4),
+                            constraints:
+                                BoxConstraints(minWidth: 36, minHeight: 36),
+                          ),
+                          Expanded(
+                            child: SliderTheme(
+                              data: SliderTheme.of(context).copyWith(
+                                trackHeight: 3.0,
+                                thumbShape: RoundSliderThumbShape(
+                                    enabledThumbRadius: 7),
+                                activeTrackColor: Colors.white,
+                                inactiveTrackColor: Colors.white30,
+                                thumbColor: Colors.white,
+                                overlayColor: Colors.white24,
+                              ),
+                              child: Slider(
+                                value: _recordedOrder.isEmpty
+                                    ? 0.0
+                                    : _currentTrajectoryIndex
+                                        .clamp(0, _recordedOrder.length - 1)
+                                        .toDouble(),
+                                min: 0,
+                                max: _recordedOrder.length <= 1
+                                    ? 1.0
+                                    : (_recordedOrder.length - 1).toDouble(),
+                                divisions: _recordedOrder.length > 1
+                                    ? _recordedOrder.length - 1
+                                    : null,
+                                onChanged: _recordedOrder.length > 1
+                                    ? (value) =>
+                                        _seekToTrajectory(value.round())
+                                    : null,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      // ストローク操作エリア（コマ送り + ストローク番号 + 速度）
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          IconButton(
+                            icon: Icon(Icons.navigate_before,
+                                color: Colors.white),
+                            onPressed: () => _seekToTrajectory(
+                                (_currentTrajectoryIndex - 1)
+                                    .clamp(0, _recordedOrder.length - 1)),
+                            padding: EdgeInsets.all(4),
+                            constraints:
+                                BoxConstraints(minWidth: 36, minHeight: 36),
+                          ),
+                          Text(
+                            '${(_currentTrajectoryIndex + 1).clamp(1, _recordedOrder.length)} / ${_recordedOrder.length}',
                             style: TextStyle(
-                              fontSize: 12,
+                              fontSize: 13,
                               fontWeight: FontWeight.w500,
                               color: Colors.white70,
                             ),
                           ),
-                        ),
-                        // 速度制御
-                        Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            // 左矢印（速度ダウン）
-                            IconButton(
-                              onPressed: _decreaseSpeed,
-                              icon: Icon(Icons.keyboard_arrow_left),
-                              color: Colors.white,
-                              iconSize: 28,
-                              padding: EdgeInsets.all(8),
-                              constraints: BoxConstraints(
-                                minWidth: 44,
-                                minHeight: 44,
-                              ),
-                            ),
-                            // 速度表示
-                            Container(
+                          IconButton(
+                            icon:
+                                Icon(Icons.navigate_next, color: Colors.white),
+                            onPressed: () => _seekToTrajectory(
+                                (_currentTrajectoryIndex + 1)
+                                    .clamp(0, _recordedOrder.length - 1)),
+                            padding: EdgeInsets.all(4),
+                            constraints:
+                                BoxConstraints(minWidth: 36, minHeight: 36),
+                          ),
+                          SizedBox(width: 8),
+                          TextButton(
+                            onPressed: _increaseSpeed,
+                            style: TextButton.styleFrom(
+                              foregroundColor: Colors.white,
                               padding: EdgeInsets.symmetric(
-                                  horizontal: 16, vertical: 8),
-                              child: Text(
-                                _getSpeedText(),
-                                style: TextStyle(
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.w600,
-                                  color: Colors.white,
-                                ),
+                                  horizontal: 12, vertical: 4),
+                              minimumSize: Size(0, 36),
+                            ),
+                            child: Text(
+                              _getSpeedText(),
+                              style: TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w600,
                               ),
                             ),
-                            // 右矢印（速度アップ）
-                            IconButton(
-                              onPressed: _increaseSpeed,
-                              icon: Icon(Icons.keyboard_arrow_right),
-                              color: Colors.white,
-                              iconSize: 28,
-                              padding: EdgeInsets.all(8),
-                              constraints: BoxConstraints(
-                                minWidth: 44,
-                                minHeight: 44,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
+                          ),
+                        ],
+                      ),
+                    ],
                   ),
                 ),
               ),
@@ -1431,30 +1405,15 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
     );
   }
 
-  // 統計情報アイテムを構築するヘルパーメソッド
-  Widget _buildStatItem(IconData icon, String text, Color color) {
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Container(
-          padding: EdgeInsets.all(6),
-          decoration: BoxDecoration(
-            color: color.withOpacity(0.1),
-            borderRadius: BorderRadius.circular(8),
-          ),
-          child: Icon(icon, size: 18, color: color),
-        ),
-        SizedBox(width: 8),
-        Text(
-          text,
-          style: TextStyle(
-            fontSize: 14,
-            fontWeight: FontWeight.w600,
-            color: Colors.black87,
-          ),
-        ),
-      ],
-    );
+  String _formatDate(String? dateString) {
+    if (dateString == null) return '不明';
+    try {
+      DateTime? date = DateTime.tryParse(dateString);
+      if (date != null) {
+        return '${date.year}/${date.month.toString().padLeft(2, '0')}/${date.day.toString().padLeft(2, '0')} ${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}';
+      }
+    } catch (_) {}
+    return '不明';
   }
 
   // 地図上の軌跡座標とオーバーレイ座標を比較・検証する機能
