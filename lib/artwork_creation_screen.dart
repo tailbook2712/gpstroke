@@ -1106,13 +1106,6 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                 _saveDraft(draftFilePath: _currentDraftFilePath); // 上書き保存
               } else if (value == 'load_draft') {
                 _showDraftListScreen(); // 途中保存一覧
-              } else if (value == 'guide_image') {
-                setState(() {
-                  _showGuideImageControl = !_showGuideImageControl;
-                  if (_showGuideImageControl) {
-                    _showGuideImagePanel = true;
-                  }
-                });
               }
             },
             itemBuilder: (context) => [
@@ -1128,36 +1121,9 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                 value: 'load_draft',
                 child: Text('下書き一覧'),
               ),
-              PopupMenuItem(
-                value: 'guide_image',
-                child: Row(
-                  children: [
-                    Icon(
-                      _showGuideImageControl
-                          ? Icons.check_box
-                          : Icons.check_box_outline_blank,
-                      size: 20,
-                      color: _showGuideImageControl ? Colors.blue : Colors.grey,
-                    ),
-                    const SizedBox(width: 8),
-                    const Text('ガイド画像設定'),
-                  ],
-                ),
-              ),
             ],
           ),
         ],
-      ),
-      floatingActionButton: Padding(
-        padding: EdgeInsets.only(
-            bottom: 130 + MediaQuery.of(context).padding.bottom),
-        child: FloatingActionButton.small(
-          heroTag: 'route_suggestion',
-          onPressed: () => _navigateToRouteSuggestion(),
-          backgroundColor: Colors.orange,
-          child: const Icon(Icons.route, size: 20),
-          tooltip: 'ルート提案',
-        ),
       ),
       body: Column(
         children: [
@@ -1759,37 +1725,100 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                       ],
                     ),
                   ),
-                // \u30ec\u30a4\u30e4\u30fc\u30d1\u30cd\u30eb\u30c8\u30b0\u30eb\u30dc\u30bf\u30f3\uff08\u53f3\u4e0a\uff09
+                // \u53f3\u4e0a\u30dc\u30bf\u30f3\u7fa4\uff08\u30ac\u30a4\u30c9\u753b\u50cf\u8a2d\u5b9a\u30fb\u30eb\u30fc\u30c8\u63d0\u6848\u30fb\u30ec\u30a4\u30e4\u30fc\uff09
                 Positioned(
                   top: 8,
                   right: 8,
-                  child: GestureDetector(
-                    onTap: () {
-                      setState(() {
-                        _showLayerPanel = !_showLayerPanel;
-                      });
-                    },
-                    child: Container(
-                      decoration: BoxDecoration(
-                        color: Colors.white.withOpacity(0.9),
-                        borderRadius: BorderRadius.circular(8),
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.black.withOpacity(0.1),
-                            blurRadius: 4,
-                            offset: const Offset(0, 2),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      // \u30ac\u30a4\u30c9\u753b\u50cf\u8a2d\u5b9a\u30dc\u30bf\u30f3
+                      GestureDetector(
+                        onTap: () {
+                          setState(() {
+                            _showGuideImageControl = !_showGuideImageControl;
+                            if (_showGuideImageControl) {
+                              _showGuideImagePanel = true;
+                            }
+                          });
+                        },
+                        child: Container(
+                          decoration: BoxDecoration(
+                            color: Colors.white.withOpacity(0.9),
+                            borderRadius: BorderRadius.circular(8),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.black.withOpacity(0.1),
+                                blurRadius: 4,
+                                offset: const Offset(0, 2),
+                              ),
+                            ],
                           ),
-                        ],
+                          padding: const EdgeInsets.all(8),
+                          child: Icon(
+                            Icons.add_photo_alternate,
+                            size: 22,
+                            color: _showGuideImageControl
+                                ? Colors.blue
+                                : Colors.grey[700],
+                          ),
+                        ),
                       ),
-                      padding: const EdgeInsets.all(8),
-                      child: Icon(
-                        Icons.layers,
-                        size: 22,
-                        color: _showLayerPanel
-                            ? Colors.blue
-                            : Colors.grey[700],
+                      const SizedBox(width: 8),
+                      // \u30eb\u30fc\u30c8\u63d0\u6848\u30dc\u30bf\u30f3
+                      GestureDetector(
+                        onTap: () => _navigateToRouteSuggestion(),
+                        child: Container(
+                          decoration: BoxDecoration(
+                            color: Colors.white.withOpacity(0.9),
+                            borderRadius: BorderRadius.circular(8),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.black.withOpacity(0.1),
+                                blurRadius: 4,
+                                offset: const Offset(0, 2),
+                              ),
+                            ],
+                          ),
+                          padding: const EdgeInsets.all(8),
+                          child: Icon(
+                            Icons.route,
+                            size: 22,
+                            color: Colors.grey[700],
+                          ),
+                        ),
                       ),
-                    ),
+                      const SizedBox(width: 8),
+                      // \u30ec\u30a4\u30e4\u30fc\u30dc\u30bf\u30f3
+                      GestureDetector(
+                        onTap: () {
+                          setState(() {
+                            _showLayerPanel = !_showLayerPanel;
+                          });
+                        },
+                        child: Container(
+                          decoration: BoxDecoration(
+                            color: Colors.white.withOpacity(0.9),
+                            borderRadius: BorderRadius.circular(8),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.black.withOpacity(0.1),
+                                blurRadius: 4,
+                                offset: const Offset(0, 2),
+                              ),
+                            ],
+                          ),
+                          padding: const EdgeInsets.all(8),
+                          child: Icon(
+                            Icons.layers,
+                            size: 22,
+                            color: _showLayerPanel
+                                ? Colors.blue
+                                : Colors.grey[700],
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
                 ),
                 // \u30ec\u30a4\u30e4\u30fc\u30d1\u30cd\u30eb\uff08\u53f3\u5074\u30aa\u30fc\u30d0\u30fc\u30ec\u30a4\uff09
