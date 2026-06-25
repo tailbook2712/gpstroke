@@ -11,6 +11,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart' as gmaps;
 import 'package:intl/intl.dart';
 import 'package:image_picker/image_picker.dart';
+import 'auth_service.dart';
 import 'database_helper.dart';
 import 'draft_list_screen.dart';
 import 'polyline_painter.dart';
@@ -38,8 +39,8 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
   Set<String> temporarilyUsedGroupIds = {}; // 一時的に使用された軌跡のgroupId
   Set<String> usedLocalTrajectoryGroupIds = {}; // 使用済みローカル軌跡のgroupIdセット
   final DatabaseHelper _dbHelper = DatabaseHelper();
-  final FirestoreService _firestoreService =
-      FirestoreService(); // Firestoreサービスのインスタンス化
+  final FirestoreService _firestoreService = FirestoreService();
+  final AuthService _authService = AuthService();
   String? _currentDraftFilePath; // 現在の下書きファイルパスを保持
 
   bool isRotating = false;
@@ -305,9 +306,12 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
         });
       }
 
+      final userId = _authService.userId!;
       final directory = await getApplicationDocumentsDirectory();
-      final artworksDirectory = Directory('${directory.path}/artworks');
-      final canvasDirectory = Directory('${directory.path}/canvas_states');
+      final artworksDirectory =
+          Directory('${directory.path}/artworks/$userId');
+      final canvasDirectory =
+          Directory('${directory.path}/canvas_states/$userId');
 
       if (!(await artworksDirectory.exists())) {
         await artworksDirectory.create(recursive: true);

@@ -128,6 +128,15 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
     await _dbHelper.syncUsedTrajectoriesFromFirestore();
   }
 
+  /// ユーザーIDでスコープされたアートワーク・キャンバスディレクトリを返す
+  Future<(Directory, Directory)> _getUserArtworkDirectories() async {
+    final userId = _authService.userId!;
+    final base = await getApplicationDocumentsDirectory();
+    final artworksDir = Directory('${base.path}/artworks/$userId');
+    final canvasDir = Directory('${base.path}/canvas_states/$userId');
+    return (artworksDir, canvasDir);
+  }
+
   // Firestoreから保存されたアートワークを復元
   Future<void> _restoreArtworksFromFirestore() async {
     try {
@@ -137,9 +146,8 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
         return;
       }
 
-      final directory = await getApplicationDocumentsDirectory();
-      final artworksDirectory = Directory('${directory.path}/artworks');
-      final canvasDirectory = Directory('${directory.path}/canvas_states');
+      final (artworksDirectory, canvasDirectory) =
+          await _getUserArtworkDirectories();
 
       if (!(await artworksDirectory.exists())) {
         await artworksDirectory.create(recursive: true);
@@ -220,9 +228,8 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
 
   // 保存された作品をロード
   Future<void> _loadSavedArtworks() async {
-    final directory = await getApplicationDocumentsDirectory();
-    final artworksDirectory = Directory('${directory.path}/artworks');
-    final canvasDirectory = Directory('${directory.path}/canvas_states');
+    final (artworksDirectory, canvasDirectory) =
+        await _getUserArtworkDirectories();
 
     // 両ディレクトリが存在しない場合は空リストのまま返す
     if (!await artworksDirectory.exists() || !await canvasDirectory.exists()) {
@@ -286,6 +293,7 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
     // 前回の未保存バッファをクリアしてから開始
     await _clearPositionsBuffer();
 
+    if (!mounted) return;
     setState(() {
       _isRecording = true;
       _totalDistance = 0.0;
@@ -300,6 +308,7 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
 
     // 歩数のstreamを監視
     _stepStream = Pedometer.stepCountStream.listen((StepCount event) {
+      if (!mounted) return;
       if (_isRecording) {
         setState(() {
           if (_initialStepCount == 0) {
@@ -460,6 +469,7 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
   // ユーザーが移動しているかどうかをチェック
   // BackgroundGeolocation の onLocation コールバックから呼ばれる（単一の位置情報ソース）
   Future<void> _checkIfUserIsMoving(Position newPosition) async {
+    if (!mounted) return;
     if (_previousPosition != null) {
       final double distance = Geolocator.distanceBetween(
         _previousPosition!.latitude,
@@ -728,6 +738,7 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
         loadedTrajectories.add(positions);
       }
 
+      if (!mounted) return;
       setState(() {
         trajectories = loadedTrajectories;
       });
@@ -790,6 +801,7 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
       ),
     );
 
+    if (!mounted) return;
     // ルート選択画面から戻った場合、トグルをフリーモードにリセット
     setState(() {
       _recordingMode = RecordingMode.freeMode;
@@ -847,6 +859,7 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
 
   @override
   void dispose() {
+    _stepStream?.cancel();
     bg.BackgroundGeolocation.stop();
     super.dispose();
   }
@@ -1153,6 +1166,7 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
   Future<void> _setInitialCameraPosition() async {
     try {
       Position position = await Geolocator.getCurrentPosition();
+      if (!mounted) return;
       setState(() {
         _currentPosition = position;
       });

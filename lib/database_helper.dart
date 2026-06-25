@@ -2,10 +2,10 @@ import 'dart:convert';
 
 import 'package:path/path.dart';
 import 'package:sqflite/sqflite.dart';
+import 'auth_service.dart';
 import 'firestore_service.dart';
 
 class DatabaseHelper {
-  static final _databaseName = "walking_tracker.db";
   static final _databaseVersion = 1;
 
   static final tableWalkingData = 'walking_data';
@@ -27,17 +27,27 @@ class DatabaseHelper {
   // used_garmin_activities テーブルのカラム
   static final columnUsedGarminGroupId = 'group_id';
 
-  static Database? _database;
+  // ユーザーIDごとにDBインスタンスをキャッシュ
+  static final Map<String, Database> _databases = {};
+
+  final AuthService _authService = AuthService();
   final FirestoreService _firestoreService = FirestoreService();
 
-  Future<Database> get database async {
-    if (_database != null) return _database!;
-    _database = await _initDatabase();
-    return _database!;
+  String get _userId {
+    final uid = _authService.userId;
+    if (uid == null) throw Exception('ユーザーがログインしていません');
+    return uid;
   }
 
-  _initDatabase() async {
-    String path = join(await getDatabasesPath(), _databaseName);
+  Future<Database> get database async {
+    final userId = _userId;
+    if (_databases[userId] != null) return _databases[userId]!;
+    _databases[userId] = await _initDatabase(userId);
+    return _databases[userId]!;
+  }
+
+  Future<Database> _initDatabase(String userId) async {
+    final path = join(await getDatabasesPath(), 'walking_tracker_$userId.db');
     return await openDatabase(
       path,
       version: _databaseVersion,
