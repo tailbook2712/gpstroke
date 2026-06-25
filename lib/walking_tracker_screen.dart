@@ -498,6 +498,13 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
 
         // 距離が更新されたのでロック画面通知を更新（10m移動ごと）
         _updateLockScreenNotification();
+
+        // 記録中は現在地を地図の中央に固定
+        _mapController?.animateCamera(
+          CameraUpdate.newLatLng(
+            LatLng(newPosition.latitude, newPosition.longitude),
+          ),
+        );
       }
 
       if (newPosition.speed > speedThreshold) {
