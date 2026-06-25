@@ -97,11 +97,6 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
   // データベースから保存済みの軌跡を読み込む
   Future<void> _loadRecordTrajectories() async {
     try {
-      // Firebase から使用済み情報を同期（アプリ再インストール対策）
-      print("🔄 使用済み情報を Firebase から同期中...");
-      await _dbHelper.syncUsedGarminActivitiesFromFirestore();
-      await _dbHelper.syncUsedTrajectoriesFromFirestore();
-      print("✅ 使用済み情報の同期が完了しました");
 
       recordedTrajectories.clear();
 
@@ -186,11 +181,9 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
         }
       }
 
-      // Firestoreから最新の使用済み軌跡を取得（作品サブコレクションから集計）
-      final trajectories =
-          await _firestoreService.getAllUsedTrajectoriesFromArtworks();
-      final recentlyUsedGroupIds =
-          trajectories.map((t) => t['groupId'] as String).toSet();
+      // ローカルDBから使用済み軌跡を取得（Firestore同期はアプリ起動時のみ）
+      final usedGroupIdList = await _dbHelper.getUsedTrajectories();
+      final recentlyUsedGroupIds = usedGroupIdList.toSet();
 
       print("📊 軌跡リスト用データ読み込み完了:");
       print("  - Garmin軌跡: ${garminActivities.length}件");
@@ -247,10 +240,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
   /// Firebase から使用済みローカル軌跡のgroupIdを同期して読み込む
   Future<void> _loadUsedTrajectories() async {
     try {
-      // Firestore から使用済みローカル軌跡を同期
-      await _dbHelper.syncUsedTrajectoriesFromFirestore();
-
-      // ローカルDBから読み込む
+      // ローカルDBから読み込む（Firestore同期はアプリ起動時のみ）
       final loadedUsedGroupIds = await _dbHelper.getUsedTrajectories();
       print(
           "✅ 使用済みローカル軌跡を読み込みました: ${loadedUsedGroupIds.length}件 - $loadedUsedGroupIds");

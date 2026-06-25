@@ -260,7 +260,7 @@ class _GarminImportScreenState extends State<GarminImportScreen> {
             child: Center(
               child: Text(
                 '身長: ${_userHeightCm.toStringAsFixed(1)}cm',
-                style: TextStyle(color: Colors.white),
+                style: TextStyle(color: Colors.black),
               ),
             ),
           ),

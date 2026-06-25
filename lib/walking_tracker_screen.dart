@@ -738,8 +738,8 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
 
   // アートワーク作成画面に遷移
   void _navigateToArtworkCreationScreen() async {
+    // ローカルDBのみ読み込み（Firestoreへのアクセスは起動時に済んでいる）
     await _loadTrajectories();
-    await _syncUsedTrajectories(); // 使用済み軌跡情報を同期してから作成画面に移動
 
     final result = await Navigator.push(
       context,
@@ -748,9 +748,9 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
       ),
     );
 
-    // 作品が保存された場合、ギャラリーを更新
+    // 作品が保存された場合のみFirestoreと同期してギャラリーを更新
     if (result != null) {
-      await _syncUsedTrajectories(); // 保存後も同期を行う
+      await _syncUsedTrajectories();
       await _loadSavedArtworks();
     }
   }
