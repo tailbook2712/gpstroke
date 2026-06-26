@@ -1074,7 +1074,7 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
                     ],
                   ),
                 ),
-                SizedBox(height: 12),
+                const SizedBox(height: 12),
                 // アクションボタン
                 SizedBox(
                   width: 200,
@@ -1088,12 +1088,12 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
                             : _startRecording,
                     icon: Icon(
                       _isRecording
-                          ? Icons.stop
+                          ? Icons.stop_rounded
                           : (_recordingMode == RecordingMode.routeFollowMode &&
                                   (_suggestedRoutePath == null ||
                                       _suggestedRoutePath!.isEmpty))
                               ? Icons.add_location
-                              : Icons.play_arrow,
+                              : Icons.play_arrow_rounded,
                     ),
                     label: Text(
                       _isRecording
@@ -1106,13 +1106,18 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
                     ),
                     style: ElevatedButton.styleFrom(
                       backgroundColor: _isRecording
-                          ? Colors.red
+                          ? Colors.red[600]
                           : (_recordingMode == RecordingMode.routeFollowMode &&
                                   (_suggestedRoutePath == null ||
                                       _suggestedRoutePath!.isEmpty))
-                              ? Colors.orange
-                              : Colors.blue,
-                      padding: EdgeInsets.symmetric(vertical: 12),
+                              ? Colors.orange[700]
+                              : Colors.blue[700],
+                      foregroundColor: Colors.white,
+                      elevation: 0,
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
                     ),
                   ),
                 ),
