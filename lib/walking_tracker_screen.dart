@@ -107,7 +107,6 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
 
     _initializeScreen(); // 非同期初期化処理をまとめたメソッド
     _loadSavedArtworks();
-    _setInitialCameraPosition();
 
     // ポリラインを初期化
     _polylines.add(Polyline(
@@ -126,6 +125,7 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
   void _initializeLocationServices() {
     _checkPermissionAndStartTracking();
     _initializeBackgroundGeolocation();
+    _setInitialCameraPosition();
   }
 
   Future<void> _showWalkingCoachMarkIfNeeded() async {
