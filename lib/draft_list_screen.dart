@@ -40,6 +40,7 @@ class DraftListScreen extends StatelessWidget {
                 ),
                 onDismissed: (direction) async {
                   await _deleteDraft(draft['filePath']);
+                  if (!context.mounted) return;
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(content: Text('下書きを削除しました')),
                   );

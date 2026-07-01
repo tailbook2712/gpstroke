@@ -58,6 +58,8 @@ dependencies:
   http: ^1.1.0
   firebase_auth: ^5.7.0
   google_sign_in: ^6.2.2
+  crypto: ^3.0.7
+  path: ^1.9.1
 
 dev_dependencies:
   flutter_test:

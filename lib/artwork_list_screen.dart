@@ -72,10 +72,13 @@ class _ArtworkListScreenState extends State<ArtworkListScreen> {
         artworks.removeAt(index);
       });
 
+      if (!mounted) return;
+
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('作品を削除しました')),
       );
     } catch (e) {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('削除に失敗しました: $e')),
       );

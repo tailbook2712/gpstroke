@@ -361,6 +361,8 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
         source: ImageSource.gallery,
       );
 
+      if (!mounted) return;
+
       if (image != null) {
         setState(() {
           _guideImage = File(image.path);
@@ -371,6 +373,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
         );
       }
     } catch (e) {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('画像の選択に失敗しました: $e')),
       );
@@ -404,6 +407,9 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
   // アートワークを保存するメソッドを修正
   Future<void> _saveArtwork() async {
     String artworkName = await _promptForArtworkName(); // 作品名を入力
+
+    if (!mounted) return;
+
     if (artworkName.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('作品名を入力してください。')),
@@ -473,6 +479,8 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
 
       // キャンバスのサイズを取得
       final canvasSize = _boundaryKey.currentContext!.size!;
+
+      if (!mounted) return;
 
       // 実際のスクリーンサイズ（AppBarを除く）を取得
       final mediaQuery = MediaQuery.of(context);
@@ -804,6 +812,8 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
         }
       }
 
+      if (!mounted) return;
+
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('途中保存しました。')),
       );
@@ -815,6 +825,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
         selectedItem = null;
       });
     } catch (e) {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('途中保存に失敗しました: $e')),
       );
@@ -962,6 +973,8 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
     // 歩行終了後、新しい軌跡が記録されていれば再読み込み
     if (mounted) {
       await _loadRecordTrajectories();
+
+      if (!mounted) return;
 
       if (routeResult != null) {
         ScaffoldMessenger.of(context).showSnackBar(

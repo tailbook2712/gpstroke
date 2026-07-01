@@ -153,6 +153,8 @@ class _RouteDestinationSelectionScreenState
       ),
     );
 
+    if (!mounted) return;
+
     if (result != null) {
       // ルート生成結果が返ってくる
       // walking_tracker_screen に戻す時、戻る値を返す
@@ -243,10 +245,11 @@ class _RouteDestinationSelectionScreenState
 
   @override
   Widget build(BuildContext context) {
-    return WillPopScope(
-      onWillPop: () async {
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop) return;
         Navigator.pop(context, null);
-        return false;
       },
       child: Scaffold(
         appBar: AppBar(

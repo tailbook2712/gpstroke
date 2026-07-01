@@ -165,6 +165,9 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
       Map<String, dynamic> data = jsonDecode(jsonString);
 
       String artworkName = data['meta']['artworkName'] ?? '作品の詳細';
+
+      if (!mounted) return;
+
       final mediaQuery = MediaQuery.of(context);
 
       // 保存時のキャンバスサイズを取得
@@ -273,6 +276,7 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
       await _sortTrajectoriesByRecordTime();
     } catch (e) {
       print("キャンバス状態の読み込みエラー: $e");
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text("キャンバス状態の読み込みに失敗しました: $e")),
       );
@@ -338,6 +342,7 @@ _currentTrajectoryIndex = -1;
         }
       });
 
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text("アニメーションエラーが発生しました: $e")),
       );

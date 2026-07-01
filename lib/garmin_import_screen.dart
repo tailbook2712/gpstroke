@@ -125,6 +125,8 @@ class _GarminImportScreenState extends State<GarminImportScreen> {
           userHeightCm: _userHeightCm,
         );
 
+        if (!mounted) return;
+
         if (activityData != null) {
           setState(() {
             _importedActivities.add(activityData);
@@ -159,6 +161,7 @@ class _GarminImportScreenState extends State<GarminImportScreen> {
       });
 
       print('❌ ファイルピッカーエラー: $e');
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('エラー: $e'),
@@ -229,6 +232,8 @@ class _GarminImportScreenState extends State<GarminImportScreen> {
         _importedActivities.clear();
       });
 
+      if (!mounted) return;
+
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('$savedCount 個のアクティビティを保存しました')),
       );
@@ -239,6 +244,8 @@ class _GarminImportScreenState extends State<GarminImportScreen> {
       setState(() {
         _isLoading = false;
       });
+
+      if (!mounted) return;
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
