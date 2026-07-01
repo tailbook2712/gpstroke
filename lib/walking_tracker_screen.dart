@@ -850,6 +850,8 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
     // ローカルDBのみ読み込み（Firestoreへのアクセスは起動時に済んでいる）
     await _loadTrajectories();
 
+    if (!mounted) return;
+
     final result = await Navigator.push(
       context,
       MaterialPageRoute(
@@ -867,6 +869,9 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
   // アートワークギャラリー画面に遷移
   Future<void> _navigatetoArtworkGalleryScreen() async {
     await _loadSavedArtworks();
+
+    if (!mounted) return;
+
     Navigator.push(
       context,
       MaterialPageRoute(
