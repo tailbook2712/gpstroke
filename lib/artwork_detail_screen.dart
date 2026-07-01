@@ -370,6 +370,9 @@ _currentTrajectoryIndex = -1;
       _isMapAligned = false;
       _cachedCameraPosition = null;
       _alignedCameraPosition = null;
+      // 記録日時・歩数・距離の表示を再生前の状態（非表示）に戻す
+      _currentTrajectoryDetails = null;
+      _mapPolylines = {};
     });
 
     _highlightController.reset();
