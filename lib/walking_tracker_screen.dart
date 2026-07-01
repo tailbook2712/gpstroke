@@ -11,6 +11,7 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:walk_tracker_app/artwork_list_screen.dart';
 import 'package:walk_tracker_app/artwork_creation_screen.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:tutorial_coach_mark/tutorial_coach_mark.dart';
 import 'database_helper.dart';
 import 'firestore_service.dart';
 import 'auth_service.dart';
@@ -86,6 +87,10 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
   GoogleMapController? _mapController;
   Set<Polyline> _polylines = {};
 
+  // コーチマーク用 GlobalKey
+  final GlobalKey _recordButtonKey = GlobalKey();
+  final GlobalKey _modeToggleKey = GlobalKey();
+
   @override
   void initState() {
     super.initState();
@@ -102,9 +107,6 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
 
     _initializeScreen(); // 非同期初期化処理をまとめたメソッド
     _loadSavedArtworks();
-    _checkPermissionAndStartTracking();
-    _initializeBackgroundGeolocation();
-    _setInitialCameraPosition();
 
     // ポリラインを初期化
     _polylines.add(Polyline(
@@ -113,6 +115,102 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
       color: Colors.blue,
       width: 5,
     ));
+
+    // コーチマーク表示後に位置情報の権限リクエストを行う
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _showWalkingCoachMarkIfNeeded();
+    });
+  }
+
+  void _initializeLocationServices() {
+    _checkPermissionAndStartTracking();
+    _initializeBackgroundGeolocation();
+    _setInitialCameraPosition();
+  }
+
+  Future<void> _showWalkingCoachMarkIfNeeded() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (prefs.getBool('coach_mark_walking_shown') ?? false) {
+      _initializeLocationServices();
+      return;
+    }
+    if (!mounted) return;
+
+    void markShown() {
+      prefs.setBool('coach_mark_walking_shown', true);
+      _initializeLocationServices();
+    }
+
+    final targets = [
+      TargetFocus(
+        identify: 'record_button',
+        keyTarget: _recordButtonKey,
+        shape: ShapeLightFocus.RRect,
+        radius: 12,
+        paddingFocus: 8,
+        enableOverlayTab: true,
+        contents: [
+          TargetContent(
+            align: ContentAlign.top,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: const [
+                Text('記録開始',
+                    style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold)),
+                SizedBox(height: 8),
+                Text('ボタンを押して軌跡の記録を開始しよう',
+                    style: TextStyle(color: Colors.white, fontSize: 14)),
+              ],
+            ),
+          ),
+        ],
+      ),
+      TargetFocus(
+        identify: 'mode_toggle',
+        keyTarget: _modeToggleKey,
+        shape: ShapeLightFocus.RRect,
+        radius: 12,
+        paddingFocus: 8,
+        enableOverlayTab: true,
+        contents: [
+          TargetContent(
+            align: ContentAlign.top,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: const [
+                Text('記録モード',
+                    style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold)),
+                SizedBox(height: 8),
+                Text(
+                    'フリーモードは自由に歩いて軌跡を記録、\nルートモードはルートに沿って記録します',
+                    style: TextStyle(color: Colors.white, fontSize: 14)),
+              ],
+            ),
+          ),
+        ],
+      ),
+    ];
+
+    TutorialCoachMark(
+      targets: targets,
+      colorShadow: Colors.black,
+      textSkip: 'スキップ',
+      paddingFocus: 10,
+      opacityShadow: 0.8,
+      onFinish: markShown,
+      onSkip: () {
+        markShown();
+        return true;
+      },
+    ).show(context: context);
   }
 
   // 非同期初期化処理をまとめたメソッド
@@ -973,6 +1071,7 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
               children: [
                 // モード切り替えトグル
                 Container(
+                  key: _modeToggleKey,
                   decoration: BoxDecoration(
                     color: Colors.grey[200],
                     borderRadius: BorderRadius.circular(12),
@@ -1074,9 +1173,10 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
                     ],
                   ),
                 ),
-                SizedBox(height: 12),
+                const SizedBox(height: 12),
                 // アクションボタン
                 SizedBox(
+                  key: _recordButtonKey,
                   width: 200,
                   child: ElevatedButton.icon(
                     onPressed: _isRecording
@@ -1088,12 +1188,12 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
                             : _startRecording,
                     icon: Icon(
                       _isRecording
-                          ? Icons.stop
+                          ? Icons.stop_rounded
                           : (_recordingMode == RecordingMode.routeFollowMode &&
                                   (_suggestedRoutePath == null ||
                                       _suggestedRoutePath!.isEmpty))
                               ? Icons.add_location
-                              : Icons.play_arrow,
+                              : Icons.play_arrow_rounded,
                     ),
                     label: Text(
                       _isRecording
@@ -1106,13 +1206,18 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
                     ),
                     style: ElevatedButton.styleFrom(
                       backgroundColor: _isRecording
-                          ? Colors.red
+                          ? Colors.red[600]
                           : (_recordingMode == RecordingMode.routeFollowMode &&
                                   (_suggestedRoutePath == null ||
                                       _suggestedRoutePath!.isEmpty))
-                              ? Colors.orange
-                              : Colors.blue,
-                      padding: EdgeInsets.symmetric(vertical: 12),
+                              ? Colors.orange[700]
+                              : Colors.blue[700],
+                      foregroundColor: Colors.white,
+                      elevation: 0,
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
                     ),
                   ),
                 ),

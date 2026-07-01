@@ -11,6 +11,8 @@ import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart' as gmaps;
 import 'package:intl/intl.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:tutorial_coach_mark/tutorial_coach_mark.dart';
 import 'auth_service.dart';
 import 'database_helper.dart';
 import 'draft_list_screen.dart';
@@ -33,6 +35,12 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
   List<TransformablePolyline> selectedTrajectories = [];
   TransformablePolyline? selectedItem;
   final GlobalKey _boundaryKey = GlobalKey();
+
+  // コーチマーク用 GlobalKey
+  final GlobalKey _trajectoryListKey = GlobalKey();
+  final GlobalKey _rightButtonsKey = GlobalKey();
+  final GlobalKey _scaleBarKey = GlobalKey();
+  final GlobalKey _menuButtonKey = GlobalKey();
   List<List<Position>> recordedTrajectories = [];
   Set<int> usedTrajectoryIndices = {}; // 保存済みの軌跡インデックスを保持（互換性のため保持）
   Set<int> temporarilyUsedIndices = {}; // 一時的に使用された軌跡インデックス（legacy）
@@ -93,6 +101,144 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
   void initState() {
     super.initState();
     _loadRecordTrajectories();
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _showArtworkCoachMarkIfNeeded();
+    });
+  }
+
+  Future<void> _showArtworkCoachMarkIfNeeded() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (prefs.getBool('coach_mark_artwork_shown') ?? false) return;
+    if (!mounted) return;
+
+    void markShown() {
+      prefs.setBool('coach_mark_artwork_shown', true);
+    }
+
+    final targets = [
+      TargetFocus(
+        identify: 'trajectory_list',
+        keyTarget: _trajectoryListKey,
+        shape: ShapeLightFocus.RRect,
+        radius: 12,
+        paddingFocus: 8,
+        enableOverlayTab: true,
+        contents: [
+          TargetContent(
+            align: ContentAlign.top,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: const [
+                Text('軌跡リスト',
+                    style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold)),
+                SizedBox(height: 8),
+                Text('軌跡をドラッグしてキャンバスに配置しよう',
+                    style: TextStyle(color: Colors.white, fontSize: 14)),
+              ],
+            ),
+          ),
+        ],
+      ),
+      TargetFocus(
+        identify: 'right_buttons',
+        keyTarget: _rightButtonsKey,
+        shape: ShapeLightFocus.RRect,
+        radius: 12,
+        paddingFocus: 8,
+        enableOverlayTab: true,
+        contents: [
+          TargetContent(
+            align: ContentAlign.bottom,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: const [
+                Text('ツールボタン',
+                    style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold)),
+                SizedBox(height: 8),
+                Text('ガイド画像の設定、ルート提案、レイヤーの確認ができます',
+                    style: TextStyle(color: Colors.white, fontSize: 14)),
+              ],
+            ),
+          ),
+        ],
+      ),
+      TargetFocus(
+        identify: 'scale_bar',
+        keyTarget: _scaleBarKey,
+        shape: ShapeLightFocus.RRect,
+        radius: 12,
+        paddingFocus: 8,
+        enableOverlayTab: true,
+        contents: [
+          TargetContent(
+            align: ContentAlign.bottom,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: const [
+                Text('スケールバー',
+                    style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold)),
+                SizedBox(height: 8),
+                Text('±ボタンで縮尺を変更できます。\n軌跡の大きさがスケールに合わせて自動調整されます',
+                    style: TextStyle(color: Colors.white, fontSize: 14)),
+              ],
+            ),
+          ),
+        ],
+      ),
+      TargetFocus(
+        identify: 'menu_button',
+        keyTarget: _menuButtonKey,
+        shape: ShapeLightFocus.RRect,
+        radius: 12,
+        paddingFocus: 8,
+        enableOverlayTab: true,
+        contents: [
+          TargetContent(
+            align: ContentAlign.bottom,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: const [
+                Text('メニュー',
+                    style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold)),
+                SizedBox(height: 8),
+                Text('作品の保存や下書き保存はここから',
+                    style: TextStyle(color: Colors.white, fontSize: 14)),
+              ],
+            ),
+          ),
+        ],
+      ),
+    ];
+
+    TutorialCoachMark(
+      targets: targets,
+      colorShadow: Colors.black,
+      textSkip: 'スキップ',
+      paddingFocus: 10,
+      opacityShadow: 0.8,
+      onFinish: markShown,
+      onSkip: () {
+        markShown();
+        return true;
+      },
+    ).show(context: context);
   }
 
   // データベースから保存済みの軌跡を読み込む
@@ -1093,6 +1239,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
         title: Text('作品の制作'),
         actions: [
           PopupMenuButton<String>(
+            key: _menuButtonKey,
             onSelected: (value) {
               if (value == 'save') {
                 _saveArtwork(); // 作品の保存
@@ -1568,7 +1715,10 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                 Positioned(
                   top: 8,
                   left: 8,
-                  child: _buildScaleBar(),
+                  child: Container(
+                    key: _scaleBarKey,
+                    child: _buildScaleBar(),
+                  ),
                 ),
                 // ガイド画像コントロールUI（スケールバーの下）- メニューから有効化された場合のみ表示
                 if (_showGuideImageControl)
@@ -1724,6 +1874,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                   top: 8,
                   right: 8,
                   child: Row(
+                    key: _rightButtonsKey,
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       // \u30ac\u30a4\u30c9\u753b\u50cf\u8a2d\u5b9a\u30dc\u30bf\u30f3
@@ -1826,7 +1977,10 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
             ),
           ),
           // \u4e0b\u90e8: \u8ecc\u8de1\u30ea\u30b9\u30c8
-          _buildTrajectoryList(),
+          Container(
+            key: _trajectoryListKey,
+            child: _buildTrajectoryList(),
+          ),
         ],
       ),
     );
