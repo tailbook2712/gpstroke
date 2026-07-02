@@ -1,0 +1,82 @@
+{
+  "project_info": {
+    "project_number": "36151156004",
+    "project_id": "walktrackerapp-9e00e",
+    "storage_bucket": "walktrackerapp-9e00e.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:36151156004:android:7fa5bfef935ba4514f27b1",
+        "android_client_info": {
+          "package_name": "com.example.app"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "36151156004-ki2gh4scu1d2kgsud2k98eifutrtr3kh.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyC6DJzKfyXr3Fo7bRZbVC8gImRV_D0w9LM"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "36151156004-ki2gh4scu1d2kgsud2k98eifutrtr3kh.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "36151156004-of566rvj7394eakf5vt043dbj0c11j4k.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.example.walkTrackerApp"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:36151156004:android:58b7017109d67a604f27b1",
+        "android_client_info": {
+          "package_name": "com.example.walk_tracker_app"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "36151156004-ki2gh4scu1d2kgsud2k98eifutrtr3kh.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyC6DJzKfyXr3Fo7bRZbVC8gImRV_D0w9LM"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "36151156004-ki2gh4scu1d2kgsud2k98eifutrtr3kh.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "36151156004-of566rvj7394eakf5vt043dbj0c11j4k.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.example.walkTrackerApp"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

@@ -27,6 +27,7 @@ ios/Flutter/Flutter.podspec
 ios/Runner.xcworkspace/
 ios/Flutter/App.framework
 ios/Flutter/Flutter.podspec.lock
+*ios/Runner/Environment.swift
 
 # Android関連
 android/.gradle/
@@ -37,6 +38,7 @@ android/app/app.iml
 
 # Firebase関連
 firebase_app_id_file.json
+firease.json
 
 # その他のキャッシュファイルやエディタ関連ファイル
 *.log
@@ -47,3 +49,13 @@ firebase_app_id_file.json
 # Web関連
 web/.dart_tool/
 web/build/
+
+# 使わないプラットフォームは無視
+macos/
+linux/
+windows/
+web/
+
+!*.gitignore
+docs/
+.env
