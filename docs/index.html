@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>プライバシーポリシー | GPStroke</title>
+<style>
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Yu Gothic", sans-serif;
+    max-width: 720px;
+    margin: 0 auto;
+    padding: 40px 20px 80px;
+    line-height: 1.8;
+    color: #1d1d1f;
+    background-color: #fafafa;
+  }
+  h1 {
+    font-size: 1.8em;
+    border-bottom: 2px solid #333;
+    padding-bottom: 0.3em;
+    margin-bottom: 1em;
+  }
+  h2 {
+    font-size: 1.25em;
+    margin-top: 2em;
+    border-left: 4px solid #555;
+    padding-left: 0.5em;
+  }
+  h3 {
+    font-size: 1.05em;
+    margin-top: 1.5em;
+    color: #333;
+  }
+  ul {
+    padding-left: 1.5em;
+  }
+  li {
+    margin-bottom: 0.4em;
+  }
+  .meta {
+    color: #666;
+    font-size: 0.9em;
+    margin-top: 3em;
+    border-top: 1px solid #ddd;
+    padding-top: 1em;
+  }
+  code {
+    background: #eee;
+    padding: 2px 5px;
+    border-radius: 3px;
+    font-size: 0.9em;
+  }
+</style>
+</head>
+<body>
+
+<h1>プライバシーポリシー</h1>
+
+<p>GPStroke(以下「本アプリ」といいます)は、本ポリシーに基づき、ユーザーの情報を取り扱います。</p>
+
+<h2>1. 収集する情報</h2>
+<p>本アプリは、本アプリの機能提供および学術研究の目的のため、以下の情報を収集します。</p>
+
+<h3>(1) 位置情報(GPS)</h3>
+<p>緯度・経度・タイムスタンプを、バックグラウンドを含め継続的に記録します。本アプリの中心機能である軌跡記録・作品制作のため、iOS/Androidともに「常に許可(Always Allow)」の位置情報アクセス権限を要求します。</p>
+
+<h3>(2) モーション・歩数データ</h3>
+<p>加速度センサーおよび歩数計データ(歩数)を取得します。</p>
+
+<h3>(3) アカウント情報</h3>
+<p>Googleアカウントによるログイン機能を通じて、以下を取得・保存します。</p>
+<ul>
+  <li>ユーザーID(UID)</li>
+  <li>表示名</li>
+  <li>メールアドレス</li>
+  <li>プロフィール画像URL</li>
+  <li>最終ログイン日時</li>
+</ul>
+
+<h3>(4) 身体情報</h3>
+<p>身長(cm)。歩数から距離・活動量を換算する目的でのみ使用します。</p>
+
+<h3>(5) 画像データ</h3>
+<ul>
+  <li>ユーザーがフォトライブラリから選択したガイド画像</li>
+  <li>本アプリ内で作成された軌跡アート作品</li>
+</ul>
+
+<h3>(6) 外部インポートデータ</h3>
+<p>Garmin等の外部デバイス・サービスから取り込むGPX/TCXファイルに含まれる位置情報、移動距離、活動時間。</p>
+
+<h3>(7) デバイス識別子等</h3>
+<p>Google/Firebaseによる認証識別子。ローカルデータベース内でユーザーIDと紐づけて管理されます。</p>
+
+<h2>2. 情報の保存先</h2>
+<p>収集した情報は、以下のいずれかまたは両方に保存されます。</p>
+<ul>
+  <li><strong>端末内(ローカルSQLite)</strong>: 位置情報データ、身長データ等</li>
+  <li><strong>Googleのクラウドサービス(Firebase / Cloud Firestore)</strong>: 位置情報データ(<code>users/{uid}/walking_data</code>)、アカウント情報(<code>users/{uid}</code>)、作品画像データ</li>
+</ul>
+<p>Firebase / Cloud Firestoreの利用にあたっては、Google社のプライバシーポリシーおよびデータ管理体制に準じます。データはGoogleのサーバー(国外を含む)に保存される場合があります。</p>
+
+<h2>3. 情報の利用目的</h2>
+<ul>
+  <li>移動軌跡の記録、および軌跡を組み合わせた作品制作機能を提供するため</li>
+  <li>歩数・距離・活動量の算出および表示のため</li>
+  <li>Garmin等外部サービスからのデータインポート機能を提供するため</li>
+  <li>ユーザーアカウントの管理、ログイン状態の維持のため</li>
+  <li>本アプリの改善、および学術研究(ヒューマンインタフェース・インタラクションに関する研究)を目的とした分析のため</li>
+</ul>
+<p>本アプリは研究目的で開発されたアプリです。収集されたデータを研究活動に利用する場合は、大学の研究倫理審査の手続きに従い、個人が特定されない形での分析を原則とします。</p>
+
+<h2>4. 第三者提供・第三者サービスの利用</h2>
+<p>法令に基づく場合を除き、収集した情報をユーザーの同意なく第三者に提供することはありません。</p>
+<p>ただし、本アプリは以下の第三者サービスを利用しており、それぞれのサービス提供者にデータが送信されます。</p>
+<ul>
+  <li><strong>Google Firebase / Cloud Firestore</strong>(データ保存、認証基盤)</li>
+  <li><strong>Google Sign-In</strong>(ログイン認証)</li>
+</ul>
+<p>各サービスの詳細は、提供元のプライバシーポリシーをご確認ください。</p>
+
+<h2>5. データの保存期間</h2>
+<p>ユーザーアカウントが存在する限り、またはユーザーが削除を求めるまで保存します。アカウント削除依頼があった場合、合理的な期間内にFirestore上のデータおよび関連画像データを削除します。</p>
+
+<h2>6. ユーザーの権利</h2>
+<p>ユーザーは、自身のデータの確認・修正・削除を求めることができます。ご希望の場合は、下記の問い合わせ先までご連絡ください。</p>
+
+<h2>7. 位置情報の取り扱いに関する重要事項</h2>
+<p>本アプリは、バックグラウンドでも位置情報を継続的に取得する「常時位置情報アクセス」を利用します。この権限は、アプリを使用していない間も移動軌跡を記録し続けるという本アプリの中核機能のために必要です。位置情報の取得は、端末の設定画面からいつでも制限・無効化できます(ただし、その場合は本アプリの主要機能が利用できなくなります)。</p>
+
+<h2>8. 本ポリシーの変更</h2>
+<p>本ポリシーの内容は、必要に応じて予告なく変更することがあります。変更後のポリシーは、本ページに掲載した時点から効力を生じるものとします。</p>
+
+<h2>9. お問い合わせ先</h2>
+<p>本アプリに関するご質問、データの取り扱いに関するお問い合わせは、以下までご連絡ください。</p>
+<p>[問い合わせ先メールアドレスを記載]</p>
+
+<div class="meta">制定日:[YYYY年MM月DD日]</div>
+
+</body>
+</html>
