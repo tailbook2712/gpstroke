@@ -57,5 +57,4 @@ windows/
 web/
 
 !*.gitignore
-docs/
 .env
