@@ -261,26 +261,6 @@ class _GarminImportScreenState extends State<GarminImportScreen> {
     return Scaffold(
       appBar: AppBar(
         title: Text('インポート'),
-        actions: [
-          Padding(
-            padding: EdgeInsets.all(16),
-            child: Center(
-              child: Text(
-                '身長: ${_userHeightCm.toStringAsFixed(1)}cm',
-                style: TextStyle(color: Colors.black),
-              ),
-            ),
-          ),
-          Padding(
-            padding: EdgeInsets.symmetric(horizontal: 8),
-            child: Center(
-              child: IconButton(
-                icon: Icon(Icons.edit),
-                onPressed: _showHeightInputDialog,
-              ),
-            ),
-          ),
-        ],
       ),
       body: Column(
         children: [
@@ -303,9 +283,25 @@ class _GarminImportScreenState extends State<GarminImportScreen> {
                   '1. Garmin Connect からアクティビティをダウンロード\n'
                   '2. ファイルを .tcx 形式で保存\n'
                   '3. 下のボタンからファイルを選択\n'
-                  '4. 身長が正しいか確認（右上で変更可能）\n'
+                  '4. 身長が正しいか確認（下で変更可能）\n'
                   '5. プレビュー後、保存ボタンで完了',
                   style: TextStyle(fontSize: 12),
+                ),
+                SizedBox(height: 12),
+                Row(
+                  children: [
+                    Text(
+                      '身長: ${_userHeightCm.toStringAsFixed(1)}cm',
+                      style: TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    IconButton(
+                      icon: Icon(Icons.edit, size: 20),
+                      padding: EdgeInsets.zero,
+                      constraints: BoxConstraints(),
+                      visualDensity: VisualDensity.compact,
+                      onPressed: _showHeightInputDialog,
+                    ),
+                  ],
                 ),
               ],
             ),
