@@ -639,9 +639,16 @@ _currentTrajectoryIndex = -1;
     if (_currentTrajectoryDetails == null) return;
 
     final mediaQuery = MediaQuery.of(context);
+    // 注意: Scaffold の body（地図・軌跡を描画している Stack）は SafeArea で
+    // 下端を避けていないため、実際の描画領域は画面下部のセーフエリア
+    // （ホームインジケーター等、iOSでは約34pt）まで広がる。ここで
+    // padding.bottom を差し引いてしまうと、画面中心とみなす位置が実際の
+    // 描画領域の中心よりも上にずれてしまい、地図とオーバーレイの間に
+    // padding.bottom / 2 分の一定の縦方向のズレが生じる
+    // （iOSで平均誤差17px前後として観測されたのがこれ。Androidは
+    // padding.bottom がほぼ0のため顕在化しなかった）。
     double currentBodyHeight = mediaQuery.size.height -
         mediaQuery.padding.top -
-        mediaQuery.padding.bottom -
         AppBar().preferredSize.height;
     double currentBodyWidth = mediaQuery.size.width;
 
