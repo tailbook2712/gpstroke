@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 import 'dart:math' as math;
+import 'package:flutter/foundation.dart' show defaultTargetPlatform, TargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
@@ -638,9 +639,16 @@ _currentTrajectoryIndex = -1;
     if (_currentTrajectoryDetails == null) return;
 
     final mediaQuery = MediaQuery.of(context);
+    // 注意: Scaffold の body（地図・軌跡を描画している Stack）は SafeArea で
+    // 下端を避けていないため、実際の描画領域は画面下部のセーフエリア
+    // （ホームインジケーター等、iOSでは約34pt）まで広がる。ここで
+    // padding.bottom を差し引いてしまうと、画面中心とみなす位置が実際の
+    // 描画領域の中心よりも上にずれてしまい、地図とオーバーレイの間に
+    // padding.bottom / 2 分の一定の縦方向のズレが生じる
+    // （iOSで平均誤差17px前後として観測されたのがこれ。Androidは
+    // padding.bottom がほぼ0のため顕在化しなかった）。
     double currentBodyHeight = mediaQuery.size.height -
         mediaQuery.padding.top -
-        mediaQuery.padding.bottom -
         AppBar().preferredSize.height;
     double currentBodyWidth = mediaQuery.size.width;
 
@@ -730,6 +738,66 @@ _currentTrajectoryIndex = -1;
       return Offset(screenX, screenY);
     }
 
+    // transformPointToOverlayScreen の逆変換：画面座標 → 地理座標
+    // （軌跡はキャンバス上で自由に移動・拡大縮小・回転されるため、始点が
+    //   画面中心に描画されるとは限らない。そのため「画面中心に描画される
+    //   地理座標」を逆算し、それを地図中心にすることで地図と重ねる）
+    LatLng inverseTransformScreenToLatLng(double screenX, double screenY) {
+      double minMercatorX = drawingParams['minMercatorX'];
+      double maxMercatorX = drawingParams['maxMercatorX'];
+      double minMercatorY = drawingParams['minMercatorY'];
+      double maxMercatorY = drawingParams['maxMercatorY'];
+      double mercatorXRange = maxMercatorX - minMercatorX;
+      double mercatorYRange = maxMercatorY - minMercatorY;
+
+      double scaleX = drawingParams['scaleX'];
+      double scaleY = drawingParams['scaleY'];
+      double drawingOffsetX = drawingParams['drawingOffsetX'];
+      double drawingOffsetY = drawingParams['drawingOffsetY'];
+
+      // F) の逆変換
+      double rotatedRelativeX = screenX - trajectory.position.dx;
+      double rotatedRelativeY = screenY - trajectory.position.dy;
+
+      // E) の逆変換（回転行列の逆＝転置を適用）
+      double scaledRelativeX, scaledRelativeY;
+      if (trajectory.rotation != 0.0) {
+        double cosAngle = math.cos(trajectory.rotation);
+        double sinAngle = math.sin(trajectory.rotation);
+        scaledRelativeX =
+            rotatedRelativeX * cosAngle + rotatedRelativeY * sinAngle;
+        scaledRelativeY =
+            -rotatedRelativeX * sinAngle + rotatedRelativeY * cosAngle;
+      } else {
+        scaledRelativeX = rotatedRelativeX;
+        scaledRelativeY = rotatedRelativeY;
+      }
+
+      // D) の逆変換
+      double relativeX = scaledRelativeX / trajectory.scale;
+      double relativeY = scaledRelativeY / trajectory.scale;
+
+      // C) の逆変換
+      double containerCenterX = trajectorySize / 2;
+      double containerCenterY = trajectorySize / 2;
+      double basePixelX = relativeX + containerCenterX;
+      double basePixelY = relativeY + containerCenterY;
+
+      // B) の逆変換
+      double normalizedX = (basePixelX - drawingOffsetX) / scaleX;
+      double normalizedY =
+          (trajectorySize - basePixelY - drawingOffsetY) / scaleY;
+
+      double mercatorX = normalizedX * mercatorXRange + minMercatorX;
+      double mercatorY = normalizedY * mercatorYRange + minMercatorY;
+
+      // A) の逆変換
+      double lat = PolylinePainter.webMercatorYToLatitude(mercatorY);
+      double lng = PolylinePainter.webMercatorXToLongitude(mercatorX);
+
+      return LatLng(lat, lng);
+    }
+
     // === 5. オーバーレイの始点位置を正確に計算 ===
     Offset overlayStartPointScreen =
         transformPointToOverlayScreen(startPointLat, startPointLng);
@@ -752,14 +820,18 @@ _currentTrajectoryIndex = -1;
     double zoom = math.log(pixelsPerDegree * 360 / 256) / math.log(2);
     zoom = zoom.clamp(10.0, 19.0);
 
-    // B) 地図中心の計算（始点を画面中心に直接配置）
-    // オーバーレイの始点が画面中心に来るように地図中心を設定
+    // B) 地図中心の計算
+    // オーバーレイは始点が画面中心に描画されるとは限らない（キャンバス上で
+    // 自由に配置・拡大縮小・回転されるため）。「画面中心に描画される地理座標」を
+    // オーバーレイ変換の逆算で求め、それを地図中心にすることで、地図とオーバーレイの
+    // 道路が正しく重なるようにする。
     double screenCenterX = currentBodyWidth / 2;
     double screenCenterY = currentBodyHeight / 2;
 
-    // 始点を画面中心に配置するため、地図中心は始点そのものに設定
-    double mapCenterLat = startPointLat;
-    double mapCenterLng = startPointLng;
+    LatLng mapCenterLatLng =
+        inverseTransformScreenToLatLng(screenCenterX, screenCenterY);
+    double mapCenterLat = mapCenterLatLng.latitude;
+    double mapCenterLng = mapCenterLatLng.longitude;
 
     // C) 回転角度の設定
     double bearing = 0.0;
@@ -797,7 +869,7 @@ _currentTrajectoryIndex = -1;
       print('ピクセル密度: ${pixelsPerDegree.toStringAsFixed(2)} px/degree');
       print('ズームレベル: ${zoom.toStringAsFixed(2)}');
       print('画面中心: (${screenCenterX}, ${screenCenterY})');
-      print('始点を画面中心に直接配置: 地図中心 = 始点座標');
+      print('画面中心に描画される地理座標を逆算して地図中心に設定');
       print(
           '最終地図中心: (${mapCenterLat.toStringAsFixed(8)}, ${mapCenterLng.toStringAsFixed(8)})');
       print('地図回転: ${bearing.toStringAsFixed(1)}°');
@@ -892,15 +964,12 @@ _currentTrajectoryIndex = -1;
     // 整列完了の待機時間（速度調整）
     await Future.delayed(_getScaledDuration(Duration(milliseconds: 200)));
 
-    // 座標比較・検証を実行
+    // 座標比較・検証を実行（デバッグ用ログ出力のみ。カメラは動かさない）
     if (_currentTrajectoryDetails != null) {
       int trajectoryIndex =
           _currentTrajectoryDetails!['actualTrajectoryIndex'] ?? 0;
       await _validateTrajectoryAlignment(trajectoryIndex);
       await _autoCorrectOverlayPosition(trajectoryIndex);
-
-      // 実験的機能：オーバーレイ位置の自動調整
-      await _experimentalMapAlignment(trajectoryIndex);
     }
   }
 
@@ -925,15 +994,12 @@ _currentTrajectoryIndex = -1;
     // 整列完了の待機時間（固定速度）
     await Future.delayed(Duration(milliseconds: 200));
 
-    // 座標比較・検証を実行
+    // 座標比較・検証を実行（デバッグ用ログ出力のみ。カメラは動かさない）
     if (_currentTrajectoryDetails != null) {
       int trajectoryIndex =
           _currentTrajectoryDetails!['actualTrajectoryIndex'] ?? 0;
       await _validateTrajectoryAlignment(trajectoryIndex);
       await _autoCorrectOverlayPosition(trajectoryIndex);
-
-      // 実験的機能：オーバーレイ位置の自動調整
-      await _experimentalMapAlignment(trajectoryIndex);
     }
   }
 
@@ -1079,6 +1145,22 @@ _currentTrajectoryIndex = -1;
     );
 
     return _cachedCameraPosition!;
+  }
+
+  // Android の GoogleMapController.getScreenCoordinate / getLatLng はネイティブ側で
+  // 物理ピクセル基準の座標を扱う（google_maps_flutter_android が dp→px 変換を行わないため）。
+  // 一方 Flutter 側のオーバーレイ座標（trajectory.position 等）は論理ピクセル(dp)であり、
+  // iOS は逆に論理ピクセル基準で動作するため変換不要。
+  // （route_design_canvas_screen.dart の _convertStrokesToLatLngs と同じ対応）
+  double get _mapPixelRatio => defaultTargetPlatform == TargetPlatform.android
+      ? MediaQuery.of(context).devicePixelRatio
+      : 1.0;
+
+  // ネイティブから得たScreenCoordinate（Android=物理px, iOS=論理px）を
+  // Flutterのオーバーレイ座標系（論理px）に変換
+  Offset _toLogicalOffset(ScreenCoordinate coordinate) {
+    final ratio = _mapPixelRatio;
+    return Offset(coordinate.x / ratio, coordinate.y / ratio);
   }
 
   void _onMapCreated(GoogleMapController controller) async {
@@ -1563,14 +1645,15 @@ _currentTrajectoryIndex = -1;
       try {
         ScreenCoordinate screenCoord =
             await _mapController!.getScreenCoordinate(latLng);
-        mapScreenX.add(screenCoord.x.toDouble());
-        mapScreenY.add(screenCoord.y.toDouble());
+        Offset logicalScreenCoord = _toLogicalOffset(screenCoord);
+        mapScreenX.add(logicalScreenCoord.dx);
+        mapScreenY.add(logicalScreenCoord.dy);
 
         if (_debugMode) {
           print(
               '${pointLabels[i]} - 地理座標: (${point.latitude.toStringAsFixed(8)}, ${point.longitude.toStringAsFixed(8)})');
           print(
-              '${pointLabels[i]} - 地図スクリーン座標: (${screenCoord.x}, ${screenCoord.y})');
+              '${pointLabels[i]} - 地図スクリーン座標(論理px): (${logicalScreenCoord.dx.toStringAsFixed(1)}, ${logicalScreenCoord.dy.toStringAsFixed(1)})');
         }
       } catch (e) {
         if (_debugMode) {
@@ -1720,21 +1803,23 @@ _currentTrajectoryIndex = -1;
       LatLng centroidLatLng = LatLng(exactCentroidLat, exactCentroidLng);
       ScreenCoordinate mapCentroidScreen =
           await _mapController!.getScreenCoordinate(centroidLatLng);
+      Offset logicalMapCentroidScreen = _toLogicalOffset(mapCentroidScreen);
 
       // 統一座標変換でオーバーレイの重心位置を計算
       Offset overlayCentroidScreen =
           transformPointToOverlayScreen(exactCentroidLat, exactCentroidLng);
 
       // === 座標ずれの計算 ===
-      double deltaX = mapCentroidScreen.x.toDouble() - overlayCentroidScreen.dx;
-      double deltaY = mapCentroidScreen.y.toDouble() - overlayCentroidScreen.dy;
+      double deltaX = logicalMapCentroidScreen.dx - overlayCentroidScreen.dx;
+      double deltaY = logicalMapCentroidScreen.dy - overlayCentroidScreen.dy;
       double errorMagnitude = math.sqrt(deltaX * deltaX + deltaY * deltaY);
 
       if (_debugMode) {
         print('=== 始点基準による自動補正計算 ===');
         print(
             'データ重心（地理座標）: (${exactCentroidLat.toStringAsFixed(8)}, ${exactCentroidLng.toStringAsFixed(8)})');
-        print('地図重心スクリーン座標: (${mapCentroidScreen.x}, ${mapCentroidScreen.y})');
+        print(
+            '地図重心スクリーン座標(論理px): (${logicalMapCentroidScreen.dx.toStringAsFixed(1)}, ${logicalMapCentroidScreen.dy.toStringAsFixed(1)})');
         print(
             'オーバーレイ重心座標: (${overlayCentroidScreen.dx.toStringAsFixed(1)}, ${overlayCentroidScreen.dy.toStringAsFixed(1)})');
         print(
@@ -1770,371 +1855,6 @@ _currentTrajectoryIndex = -1;
     } catch (e) {
       if (_debugMode) {
         print('統一座標系自動補正計算エラー: $e');
-      }
-    }
-  }
-
-  // 実験的機能：地図位置の自動調整（オーバーレイに合わせる）
-  Future<void> _experimentalMapAlignment(int trajectoryIndex) async {
-    if (_mapController == null || _currentTrajectoryDetails == null) return;
-
-    TransformablePolyline trajectory = _trajectories[trajectoryIndex];
-    if (trajectory.polyline.isEmpty) return;
-
-    int maxIterations = 7; // 最大7回まで調整を試行（精度向上）
-    double toleranceThreshold = 3.0; // 3px以下なら調整完了とみなす（精密化）
-
-    for (int iteration = 1; iteration <= maxIterations; iteration++) {
-      try {
-        if (_debugMode) {
-          print('=== 実験的地図位置調整 (${iteration}回目) ===');
-        }
-
-        // === 1. 現在のオーバーレイ始点座標を計算 ===
-        Position startPoint = trajectory.polyline.first;
-
-        final painter = PolylinePainter(
-          positions: trajectory.polyline,
-          minLat: trajectory.minLat,
-          maxLat: trajectory.maxLat,
-          minLon: trajectory.minLon,
-          maxLon: trajectory.maxLon,
-          color: Colors.blue,
-          preserveAspectRatio: true,
-          strokeWidth: 4.0,
-        );
-
-        final drawingParams =
-            painter.getDrawingParameters(Size(trajectorySize, trajectorySize));
-
-        // 統一座標変換でオーバーレイ始点位置を計算
-        double mercatorX =
-            PolylinePainter.longitudeToWebMercatorX(startPoint.longitude);
-        double mercatorY =
-            PolylinePainter.latitudeToWebMercatorY(startPoint.latitude);
-
-        double minMercatorX = drawingParams['minMercatorX'];
-        double maxMercatorX = drawingParams['maxMercatorX'];
-        double minMercatorY = drawingParams['minMercatorY'];
-        double maxMercatorY = drawingParams['maxMercatorY'];
-        double mercatorXRange = maxMercatorX - minMercatorX;
-        double mercatorYRange = maxMercatorY - minMercatorY;
-
-        double normalizedX = (mercatorX - minMercatorX) / mercatorXRange;
-        double normalizedY = (mercatorY - minMercatorY) / mercatorYRange;
-
-        double scaleX = drawingParams['scaleX'];
-        double scaleY = drawingParams['scaleY'];
-        double drawingOffsetX = drawingParams['drawingOffsetX'];
-        double drawingOffsetY = drawingParams['drawingOffsetY'];
-
-        double basePixelX = normalizedX * scaleX + drawingOffsetX;
-        double basePixelY =
-            trajectorySize - (normalizedY * scaleY + drawingOffsetY);
-
-        // スケールと回転を適用
-        double containerCenterX = trajectorySize / 2;
-        double containerCenterY = trajectorySize / 2;
-        double relativeX = basePixelX - containerCenterX;
-        double relativeY = basePixelY - containerCenterY;
-        double scaledRelativeX = relativeX * trajectory.scale;
-        double scaledRelativeY = relativeY * trajectory.scale;
-
-        double rotatedRelativeX, rotatedRelativeY;
-        if (trajectory.rotation != 0.0) {
-          double cosAngle = math.cos(trajectory.rotation);
-          double sinAngle = math.sin(trajectory.rotation);
-          rotatedRelativeX =
-              scaledRelativeX * cosAngle - scaledRelativeY * sinAngle;
-          rotatedRelativeY =
-              scaledRelativeX * sinAngle + scaledRelativeY * cosAngle;
-        } else {
-          rotatedRelativeX = scaledRelativeX;
-          rotatedRelativeY = scaledRelativeY;
-        }
-
-        // 現在のオーバーレイ始点座標（画面上の絶対位置）
-        // trajectory.position はコンテナの中心座標
-        double overlayStartRelativeX = rotatedRelativeX;
-        double overlayStartRelativeY = rotatedRelativeY;
-        double overlayStartAbsX =
-            trajectory.position.dx + overlayStartRelativeX;
-        double overlayStartAbsY =
-            trajectory.position.dy + overlayStartRelativeY;
-
-        // === 2. 座標系補正のための実験的オフセット ===
-        // デバッグログから、Y方向に約50-52ピクセルの一定誤差があることが判明
-        // これは地図ウィジェットの座標系とオーバーレイ座標系の違いによるもの
-        double experimentalYOffset = 52.0; // 実験的Y補正値
-
-        // オーバーレイ始点の絶対座標（画面全体基準）
-        double overlayAbsX = overlayStartAbsX;
-        double overlayAbsY = overlayStartAbsY + experimentalYOffset; // Y補正を適用
-
-        // 地図ウィジェット内での相対座標に変換
-        double overlayMapRelativeX = overlayAbsX;
-        double overlayMapRelativeY = overlayAbsY;
-
-        if (_debugMode) {
-          print(
-              '目標オーバーレイ始点座標: (${overlayStartAbsX.toStringAsFixed(1)}, ${overlayStartAbsY.toStringAsFixed(1)})');
-          print(
-              '実験的Y補正後座標: (${overlayMapRelativeX.toStringAsFixed(1)}, ${overlayMapRelativeY.toStringAsFixed(1)})');
-        }
-
-        // === 3. 地図ウィジェット基準の座標系を取得 ===
-        // 地図ウィジェットの画面上での位置オフセットを考慮
-        final RenderBox? renderBox = context.findRenderObject() as RenderBox?;
-        Size screenSize = renderBox?.size ?? Size(390, 707);
-
-        // より正確な地図領域のサイズ
-        double screenCenterX = screenSize.width / 2;
-        double screenCenterY = screenSize.height / 2;
-
-        if (_debugMode) {
-          print('実際の画面サイズ: ${screenSize.width} x ${screenSize.height}');
-          print(
-              '動的画面中心: (${screenCenterX.toStringAsFixed(1)}, ${screenCenterY.toStringAsFixed(1)})');
-        }
-
-        // === 4. より正確な地図調整計算 ===
-        // 現在の地図の始点座標を取得（地図ウィジェット座標系）
-        LatLng startLatLng = LatLng(startPoint.latitude, startPoint.longitude);
-        ScreenCoordinate currentMapStartCoord =
-            await _mapController!.getScreenCoordinate(startLatLng);
-
-        // 目標位置と現在位置の直接的な差分
-        // オーバーレイ座標を地図座標系に合わせて計算
-        double directOffsetX =
-            overlayMapRelativeX - currentMapStartCoord.x.toDouble();
-        double directOffsetY =
-            overlayMapRelativeY - currentMapStartCoord.y.toDouble();
-
-        if (_debugMode) {
-          print(
-              '現在の地図始点座標: (${currentMapStartCoord.x}, ${currentMapStartCoord.y})');
-          print(
-              '直接オフセット: (${directOffsetX.toStringAsFixed(1)}, ${directOffsetY.toStringAsFixed(1)})');
-        }
-
-        // オフセットが小さい場合は調整完了
-        double directOffsetMagnitude = math.sqrt(
-            directOffsetX * directOffsetX + directOffsetY * directOffsetY);
-        if (directOffsetMagnitude < toleranceThreshold) {
-          if (_debugMode) {
-            print(
-                '地図調整完了: 直接誤差${directOffsetMagnitude.toStringAsFixed(1)}px < ${toleranceThreshold}px');
-          }
-          break;
-        }
-
-        // === 4. 画面座標オフセットを地理座標オフセットに変換 ===
-        // 修正：地図始点をオーバーレイ始点に移動させるため、オフセットの方向を逆転
-        // 地図の始点が目標位置に来るよう、地図を反対方向に移動する
-        double reverseOffsetX = -directOffsetX;
-        double reverseOffsetY = -directOffsetY;
-
-        // 画面中心基準で地理座標の差分を計算
-        LatLng currentCenter = await _mapController!.getLatLng(ScreenCoordinate(
-          x: screenCenterX.round(),
-          y: screenCenterY.round(),
-        ));
-
-        // 逆方向オフセット分だけ離れた点の地理座標を取得
-        LatLng offsetPoint = await _mapController!.getLatLng(ScreenCoordinate(
-          x: (screenCenterX + reverseOffsetX).round(),
-          y: (screenCenterY + reverseOffsetY).round(),
-        ));
-
-        double latOffset = offsetPoint.latitude - currentCenter.latitude;
-        double lngOffset = offsetPoint.longitude - currentCenter.longitude;
-
-        // === 5. 地図の中心を調整 ===
-        // 現在の地図中心から計算したオフセット分だけ移動
-        LatLng currentMapCenter =
-            await _mapController!.getLatLng(ScreenCoordinate(
-          x: screenCenterX.round(),
-          y: screenCenterY.round(),
-        ));
-
-        LatLng newMapCenter = LatLng(
-          currentMapCenter.latitude + latOffset,
-          currentMapCenter.longitude + lngOffset,
-        );
-
-        if (_debugMode) {
-          print(
-              '現在の地図中心: (${currentMapCenter.latitude.toStringAsFixed(8)}, ${currentMapCenter.longitude.toStringAsFixed(8)})');
-          print(
-              '新しい地図中心: (${newMapCenter.latitude.toStringAsFixed(8)}, ${newMapCenter.longitude.toStringAsFixed(8)})');
-          print(
-              '修正後の画面オフセット: (${reverseOffsetX.toStringAsFixed(1)}, ${reverseOffsetY.toStringAsFixed(1)})');
-          print(
-              '地理座標オフセット: (${latOffset.toStringAsFixed(8)}, ${lngOffset.toStringAsFixed(8)})');
-        }
-
-        // === 6. 地図を新しい中心に移動 ===
-        await _mapController!.animateCamera(
-          CameraUpdate.newLatLng(newMapCenter),
-        );
-
-        // 少し待ってから検証
-        await Future.delayed(Duration(milliseconds: 100));
-
-        // === 7. 調整後の検証 ===
-        ScreenCoordinate mapStartCoordAfter =
-            await _mapController!.getScreenCoordinate(startLatLng);
-
-        double adjustmentX = overlayStartAbsX - mapStartCoordAfter.x.toDouble();
-        double adjustmentY = overlayStartAbsY - mapStartCoordAfter.y.toDouble();
-        double adjustmentMagnitude =
-            math.sqrt(adjustmentX * adjustmentX + adjustmentY * adjustmentY);
-
-        if (_debugMode) {
-          print(
-              '調整後の地図始点座標: (${mapStartCoordAfter.x}, ${mapStartCoordAfter.y})');
-          print(
-              '残存誤差: (${adjustmentX.toStringAsFixed(1)}, ${adjustmentY.toStringAsFixed(1)})');
-          print('残存誤差の大きさ: ${adjustmentMagnitude.toStringAsFixed(1)}px');
-        }
-
-        // 調整が十分小さい場合は完了
-        if (adjustmentMagnitude < toleranceThreshold) {
-          if (_debugMode) {
-            print(
-                '地図調整完了: 誤差${adjustmentMagnitude.toStringAsFixed(1)}px < ${toleranceThreshold}px');
-          }
-          break;
-        }
-
-        // 次の反復のために少し待つ
-        if (iteration < maxIterations) {
-          await Future.delayed(Duration(milliseconds: 50));
-        }
-      } catch (e) {
-        if (_debugMode) {
-          print('実験的地図調整エラー (${iteration}回目): $e');
-        }
-        break;
-      }
-    }
-
-    // 最終的な検証
-    if (_debugMode) {
-      Future.delayed(Duration(milliseconds: 100), () {
-        _verifyFinalMapAlignment(trajectoryIndex);
-      });
-    }
-  }
-
-  // 最終的な地図整列状況を検証する機能
-  Future<void> _verifyFinalMapAlignment(int trajectoryIndex) async {
-    if (_mapController == null) return;
-
-    try {
-      TransformablePolyline trajectory = _trajectories[trajectoryIndex];
-      if (trajectory.polyline.isEmpty) return;
-
-      // オーバーレイ始点座標を計算
-      Position startPoint = trajectory.polyline.first;
-
-      final painter = PolylinePainter(
-        positions: trajectory.polyline,
-        minLat: trajectory.minLat,
-        maxLat: trajectory.maxLat,
-        minLon: trajectory.minLon,
-        maxLon: trajectory.maxLon,
-        color: Colors.blue,
-        preserveAspectRatio: true,
-        strokeWidth: 4.0,
-      );
-
-      final drawingParams =
-          painter.getDrawingParameters(Size(trajectorySize, trajectorySize));
-
-      double mercatorX =
-          PolylinePainter.longitudeToWebMercatorX(startPoint.longitude);
-      double mercatorY =
-          PolylinePainter.latitudeToWebMercatorY(startPoint.latitude);
-
-      double minMercatorX = drawingParams['minMercatorX'];
-      double maxMercatorX = drawingParams['maxMercatorX'];
-      double minMercatorY = drawingParams['minMercatorY'];
-      double maxMercatorY = drawingParams['maxMercatorY'];
-      double mercatorXRange = maxMercatorX - minMercatorX;
-      double mercatorYRange = maxMercatorY - minMercatorY;
-
-      double normalizedX = (mercatorX - minMercatorX) / mercatorXRange;
-      double normalizedY = (mercatorY - minMercatorY) / mercatorYRange;
-
-      double scaleX = drawingParams['scaleX'];
-      double scaleY = drawingParams['scaleY'];
-      double drawingOffsetX = drawingParams['drawingOffsetX'];
-      double drawingOffsetY = drawingParams['drawingOffsetY'];
-
-      double basePixelX = normalizedX * scaleX + drawingOffsetX;
-      double basePixelY =
-          trajectorySize - (normalizedY * scaleY + drawingOffsetY);
-
-      double containerCenterX = trajectorySize / 2;
-      double containerCenterY = trajectorySize / 2;
-      double relativeX = basePixelX - containerCenterX;
-      double relativeY = basePixelY - containerCenterY;
-      double scaledRelativeX = relativeX * trajectory.scale;
-      double scaledRelativeY = relativeY * trajectory.scale;
-
-      double rotatedRelativeX, rotatedRelativeY;
-      if (trajectory.rotation != 0.0) {
-        double cosAngle = math.cos(trajectory.rotation);
-        double sinAngle = math.sin(trajectory.rotation);
-        rotatedRelativeX =
-            scaledRelativeX * cosAngle - scaledRelativeY * sinAngle;
-        rotatedRelativeY =
-            scaledRelativeX * sinAngle + scaledRelativeY * cosAngle;
-      } else {
-        rotatedRelativeX = scaledRelativeX;
-        rotatedRelativeY = scaledRelativeY;
-      }
-
-      double overlayStartRelativeX = rotatedRelativeX;
-      double overlayStartRelativeY = rotatedRelativeY;
-
-      double overlayStartAbsX = trajectory.position.dx + overlayStartRelativeX;
-      double overlayStartAbsY = trajectory.position.dy + overlayStartRelativeY;
-
-      // 地図始点座標を取得
-      LatLng startLatLng = LatLng(startPoint.latitude, startPoint.longitude);
-      ScreenCoordinate mapStartCoord =
-          await _mapController!.getScreenCoordinate(startLatLng);
-
-      // 最終的な誤差を計算
-      double finalErrorX = overlayStartAbsX - mapStartCoord.x.toDouble();
-      double finalErrorY = overlayStartAbsY - mapStartCoord.y.toDouble();
-      double finalErrorMagnitude =
-          math.sqrt(finalErrorX * finalErrorX + finalErrorY * finalErrorY);
-
-      if (_debugMode) {
-        print('=== 最終地図整列検証結果 ===');
-        print(
-            '目標オーバーレイ座標: (${overlayStartAbsX.toStringAsFixed(1)}, ${overlayStartAbsY.toStringAsFixed(1)})');
-        print('最終地図座標: (${mapStartCoord.x}, ${mapStartCoord.y})');
-        print(
-            '最終誤差: (${finalErrorX.toStringAsFixed(1)}, ${finalErrorY.toStringAsFixed(1)})');
-        print('最終誤差の大きさ: ${finalErrorMagnitude.toStringAsFixed(1)}px');
-
-        if (finalErrorMagnitude < 5) {
-          print('最終評価: ★★★ 地図整列が優秀です！');
-        } else if (finalErrorMagnitude < 15) {
-          print('最終評価: ★★☆ 地図整列が良好です');
-        } else if (finalErrorMagnitude < 50) {
-          print('最終評価: ★☆☆ 地図整列に改善が見られます');
-        } else {
-          print('最終評価: ☆☆☆ 地図整列にさらなる改善が必要です');
-        }
-      }
-    } catch (e) {
-      if (_debugMode) {
-        print('最終地図整列検証エラー: $e');
       }
     }
   }
