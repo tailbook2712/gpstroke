@@ -1321,6 +1321,68 @@ _currentTrajectoryIndex = -1;
               );
             }).toList(),
 
+            // 個別軌跡の記録日時・歩数・距離表示（スライドショーの再生バーが
+            // 非表示のときに軌跡タップで地図が表示されるケース向け）
+            if (_isShowingMap &&
+                _currentTrajectoryDetails != null &&
+                !_isControlPanelVisible)
+              Positioned(
+                bottom: 24,
+                left: 16,
+                right: 16,
+                child: AnimatedBuilder(
+                  animation: _mapTransitionController,
+                  builder: (context, child) {
+                    return Opacity(
+                      opacity: _mapTransitionController.value,
+                      child: child,
+                    );
+                  },
+                  child: Container(
+                    padding: EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withOpacity(0.7),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                      children: [
+                        Text(
+                          _formatDate(_currentTrajectoryDetails!['date']),
+                          style: TextStyle(color: Colors.white70, fontSize: 12),
+                        ),
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.directions_walk,
+                                size: 14, color: Colors.blue[300]),
+                            SizedBox(width: 4),
+                            Text(
+                              '${_currentTrajectoryDetails!['steps']} 歩',
+                              style: TextStyle(
+                                  color: Colors.white70, fontSize: 12),
+                            ),
+                          ],
+                        ),
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.straighten,
+                                size: 14, color: Colors.green[300]),
+                            SizedBox(width: 4),
+                            Text(
+                              '${(_currentTrajectoryDetails!['distance'] as double).toStringAsFixed(2)} km',
+                              style: TextStyle(
+                                  color: Colors.white70, fontSize: 12),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+
             // 再生コントロールパネル
             if (_trajectories.isNotEmpty && _isControlPanelVisible)
               Positioned(
@@ -1503,7 +1565,7 @@ _currentTrajectoryIndex = -1;
   String _formatDate(String? dateString) {
     if (dateString == null) return '不明';
     try {
-      DateTime? date = DateTime.tryParse(dateString);
+      DateTime? date = DateTime.tryParse(dateString)?.toLocal();
       if (date != null) {
         return '${date.year}/${date.month.toString().padLeft(2, '0')}/${date.day.toString().padLeft(2, '0')} ${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}';
       }
