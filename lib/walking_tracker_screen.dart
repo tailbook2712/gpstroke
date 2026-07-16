@@ -4,8 +4,7 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:flutter_background_geolocation/flutter_background_geolocation.dart'
-    as bg;
+import 'package:flutter_background/flutter_background.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:walk_tracker_app/artwork_list_screen.dart';
@@ -79,8 +78,7 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
   List<List<Position>> trajectories = [];
   late FirestoreService _firestoreService;
   final AuthService _authService = AuthService();
-  // ignore: unused_field
-  StreamSubscription<Position>? _positionStream; // BackgroundGeolocationに一本化したため未使用
+  StreamSubscription<Position>? _positionStream;
   StreamSubscription<StepCount>? _stepStream;
   List<Map<String, dynamic>> savedArtworks = []; // スクリーンショットとキャンバス状態のリスト
 
@@ -124,7 +122,7 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
 
   void _initializeLocationServices() {
     _checkPermissionAndStartTracking();
-    _initializeBackgroundGeolocation();
+    _initializeLocationTracking();
     _setInitialCameraPosition();
   }
 
@@ -383,7 +381,11 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
     setState(() {
       _isTracking = true;
     });
-    bg.BackgroundGeolocation.start();
+    // flutter_background は Android 専用（iOS は OS が背面位置情報更新を
+    // ネイティブに処理するため、常駐通知の仕組みは不要）
+    if (Platform.isAndroid) {
+      FlutterBackground.enableBackgroundExecution();
+    }
   }
 
   // 位置情報の記録を開始
@@ -422,9 +424,8 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
       }
     });
 
-    // ※ Geolocator.getPositionStream() は使用しない
-    // BackgroundGeolocation の onLocation コールバック (_checkIfUserIsMoving) が
-    // フォアグラウンド・バックグラウンド両方で位置情報を一元管理する
+    // 位置情報の取得自体は _initializeLocationTracking で継続的に行われている
+    // (Geolocator.getPositionStream 経由、フォアグラウンド・バックグラウンド共通)
   }
 
   // 位置情報の記録を停止
@@ -495,73 +496,74 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
     _positions.clear();
     await _clearPositionsBuffer(); // バッファをクリア
 
-    // 記録終了後、ロック画面通知を待機状態に戻す
-    await bg.BackgroundGeolocation.setConfig(bg.Config(
-      notification: bg.Notification(
-        title: 'GPStroke',
-        text: '待機中',
-        sticky: false,
-      ),
-    ));
+    // 記録終了後、ロック画面通知を待機状態に戻す（Android のみ）
+    if (Platform.isAndroid) {
+      await FlutterBackground.initialize(
+        androidConfig: const FlutterBackgroundAndroidConfig(
+          notificationTitle: 'GPStroke',
+          notificationText: '待機中',
+          notificationImportance: AndroidNotificationImportance.normal,
+        ),
+      );
+      await FlutterBackground.enableBackgroundExecution();
+    }
   }
 
   // ── ロック画面通知の更新 ────────────────────────────────────
 
   /// 記録中の歩数・距離をロック画面通知（Android: フォアグラウンドサービス通知）に反映する。
   /// 距離更新（10m移動ごと）と歩数更新（50歩ごと）の両タイミングで呼ばれる。
+  /// iOS はシステムが背面位置情報更新を管理するため常駐通知の概念がなく、対象外。
   void _updateLockScreenNotification() {
-    if (_isRecording) {
-      bg.BackgroundGeolocation.setConfig(bg.Config(
-        notification: bg.Notification(
-          title: '🚶 GPStroke 記録中',
-          text: '歩数: $_stepCount 歩  |  距離: ${_totalDistance.toStringAsFixed(2)} km',
-          sticky: true,
+    if (_isRecording && Platform.isAndroid) {
+      FlutterBackground.initialize(
+        androidConfig: FlutterBackgroundAndroidConfig(
+          notificationTitle: '🚶 GPStroke 記録中',
+          notificationText:
+              '歩数: $_stepCount 歩  |  距離: ${_totalDistance.toStringAsFixed(2)} km',
+          notificationImportance: AndroidNotificationImportance.normal,
         ),
-      ));
+      ).then((_) => FlutterBackground.enableBackgroundExecution());
     }
   }
 
-  // BackgroundGeolocationの初期化
-  void _initializeBackgroundGeolocation() {
-    bg.BackgroundGeolocation.onLocation((bg.Location location) {
-      _checkIfUserIsMoving(Position(
-        latitude: location.coords.latitude,
-        longitude: location.coords.longitude,
-        timestamp: DateTime.now(),
-        accuracy: location.coords.accuracy,
-        altitude: location.coords.altitude,
-        altitudeAccuracy: location.coords.altitudeAccuracy,
-        heading: location.coords.heading,
-        speed: location.coords.speed,
-        speedAccuracy: location.coords.speedAccuracy,
-        headingAccuracy: location.coords.headingAccuracy,
-      ));
-    }, (bg.LocationError error) {
-      print("[onLocation] ERROR: ${error.code}, ${error.message}");
-    });
+  // 位置情報トラッキングの初期化
+  Future<void> _initializeLocationTracking() async {
+    // flutter_background は Android 専用。iOS は Info.plist の
+    // UIBackgroundModes(location) + AppleSettings.allowBackgroundLocationUpdates
+    // により OS がネイティブに背面位置情報更新を継続してくれる。
+    if (Platform.isAndroid) {
+      await FlutterBackground.initialize(
+        androidConfig: const FlutterBackgroundAndroidConfig(
+          notificationTitle: 'GPStroke',
+          notificationText: '待機中',
+          notificationImportance: AndroidNotificationImportance.normal,
+        ),
+      );
+    }
 
-    // BackgroundGeolocationの設定
     // distanceFilter: 10m ごとにコールバックを発火（バッテリー節約の核心）
-    bg.BackgroundGeolocation.ready(bg.Config(
-      desiredAccuracy: bg.Config.DESIRED_ACCURACY_HIGH,
-      distanceFilter: 10.0, // 5.0m → 10.0m に変更（高頻度更新を削減）
-      stopOnTerminate: false,
-      startOnBoot: true,
-      enableHeadless: true,
-      locationAuthorizationRequest: 'Always', // iOS バックグラウンド動作に必要
-      pausesLocationUpdatesAutomatically: false, // iOS が自動で停止しないよう設定
-      activityRecognitionInterval: 10000, // アクティビティ認識の間隔を10秒に設定
-      // ロック画面・通知領域に表示する常駐通知（Android: フォアグラウンドサービス通知）
-      notification: bg.Notification(
-        title: 'GPStroke',
-        text: '待機中',
-        sticky: false,
-      ),
-    )).then((bg.State state) {
-      if (!state.enabled) {
-        bg.BackgroundGeolocation.start();
-      }
-    });
+    final LocationSettings locationSettings = Platform.isIOS
+        ? AppleSettings(
+            accuracy: LocationAccuracy.high,
+            distanceFilter: 10,
+            activityType: ActivityType.fitness,
+            pauseLocationUpdatesAutomatically: false,
+            showBackgroundLocationIndicator: true,
+          )
+        : AndroidSettings(
+            accuracy: LocationAccuracy.high,
+            distanceFilter: 10,
+          );
+
+    _positionStream = Geolocator.getPositionStream(
+      locationSettings: locationSettings,
+    ).listen(
+      _checkIfUserIsMoving,
+      onError: (Object error) {
+        print("[onLocation] ERROR: $error");
+      },
+    );
   }
 
   // ユーザーが移動しているかどうかをチェック
@@ -963,7 +965,10 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
   @override
   void dispose() {
     _stepStream?.cancel();
-    bg.BackgroundGeolocation.stop();
+    _positionStream?.cancel();
+    if (Platform.isAndroid) {
+      FlutterBackground.disableBackgroundExecution();
+    }
     super.dispose();
   }
 

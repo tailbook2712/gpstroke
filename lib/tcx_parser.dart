@@ -271,7 +271,7 @@ class GarminActivityData {
 
   /// 日付をフォーマットして取得
   String getFormattedDate() {
-    return DateFormat('yyyy-MM-dd HH:mm').format(recordDate);
+    return DateFormat('yyyy-MM-dd HH:mm').format(recordDate.toLocal());
   }
 
   /// グループID を生成（タイムスタンプベース）

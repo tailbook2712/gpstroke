@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show defaultTargetPlatform, TargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
@@ -107,11 +108,20 @@ class _RouteDesignCanvasScreenState extends State<RouteDesignCanvasScreen> {
   Future<List<LatLng>> _convertStrokesToLatLngs() async {
     List<LatLng> allPoints = [];
 
+    // Android の GoogleMapController.getLatLng はネイティブ側で物理ピクセル基準の
+    // 座標として解釈される（google_maps_flutter_android の Convert.pointFromPigeon
+    // が dp→px 変換を行わないため）。一方 Flutter の GestureDetector が返す
+    // localPosition は論理ピクセル(dp)であり、iOS は逆に論理ピクセル基準で動作するため
+    // 変換不要。Android でのみ devicePixelRatio を掛けて物理ピクセルに変換する。
+    final double pixelRatio = defaultTargetPlatform == TargetPlatform.android
+        ? MediaQuery.of(context).devicePixelRatio
+        : 1.0;
+
     for (final stroke in _strokes) {
       for (final offset in stroke) {
         ScreenCoordinate screenCoordinate = ScreenCoordinate(
-          x: offset.dx.round(),
-          y: offset.dy.round(),
+          x: (offset.dx * pixelRatio).round(),
+          y: (offset.dy * pixelRatio).round(),
         );
         LatLng latLng = await _mapController.getLatLng(screenCoordinate);
         allPoints.add(latLng);

@@ -102,14 +102,33 @@ class _GarminImportScreenState extends State<GarminImportScreen> {
   Future<void> _pickAndImportTcxFile() async {
     try {
       print('📂 ファイルピッカーを開く');
+      // Android では拡張子 'tcx' を MIME タイプに解決できず
+      // FileType.custom + allowedExtensions が
+      // PlatformException(Unsupported filter) を投げる端末があるため、
+      // FileType.any で選択させ、拡張子は選択後に検証する。
       final result = await FilePicker.platform.pickFiles(
-        type: FileType.custom,
-        allowedExtensions: ['tcx'],
+        type: FileType.any,
         allowMultiple: false,
       );
 
       if (result != null && result.files.isNotEmpty) {
-        print('📄 ファイルを選択: ${result.files.single.name}');
+        final pickedName = result.files.single.name;
+        if (!pickedName.toLowerCase().endsWith('.tcx')) {
+          print('⚠️ TCX以外のファイルが選択されました: $pickedName');
+          setState(() {
+            _isLoading = false;
+          });
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('.tcx 形式のファイルを選択してください'),
+              backgroundColor: Colors.red,
+            ),
+          );
+          return;
+        }
+
+        print('📄 ファイルを選択: $pickedName');
         final file = File(result.files.single.path!);
         final tcxContent = await file.readAsString();
         print('📖 ファイル読み込み完了: ${tcxContent.length} bytes');
@@ -261,26 +280,6 @@ class _GarminImportScreenState extends State<GarminImportScreen> {
     return Scaffold(
       appBar: AppBar(
         title: Text('インポート'),
-        actions: [
-          Padding(
-            padding: EdgeInsets.all(16),
-            child: Center(
-              child: Text(
-                '身長: ${_userHeightCm.toStringAsFixed(1)}cm',
-                style: TextStyle(color: Colors.black),
-              ),
-            ),
-          ),
-          Padding(
-            padding: EdgeInsets.symmetric(horizontal: 8),
-            child: Center(
-              child: IconButton(
-                icon: Icon(Icons.edit),
-                onPressed: _showHeightInputDialog,
-              ),
-            ),
-          ),
-        ],
       ),
       body: Column(
         children: [
@@ -303,9 +302,25 @@ class _GarminImportScreenState extends State<GarminImportScreen> {
                   '1. Garmin Connect からアクティビティをダウンロード\n'
                   '2. ファイルを .tcx 形式で保存\n'
                   '3. 下のボタンからファイルを選択\n'
-                  '4. 身長が正しいか確認（右上で変更可能）\n'
+                  '4. 身長が正しいか確認（下で変更可能）\n'
                   '5. プレビュー後、保存ボタンで完了',
                   style: TextStyle(fontSize: 12),
+                ),
+                SizedBox(height: 12),
+                Row(
+                  children: [
+                    Text(
+                      '身長: ${_userHeightCm.toStringAsFixed(1)}cm',
+                      style: TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    IconButton(
+                      icon: Icon(Icons.edit, size: 20),
+                      padding: EdgeInsets.zero,
+                      constraints: BoxConstraints(),
+                      visualDensity: VisualDensity.compact,
+                      onPressed: _showHeightInputDialog,
+                    ),
+                  ],
                 ),
               ],
             ),
