@@ -1188,8 +1188,13 @@ _currentTrajectoryIndex = -1;
           if (_trajectories.isNotEmpty)
             IconButton(
               icon: const Icon(Icons.animation),
-              onPressed: () =>
-                  setState(() => _isControlPanelVisible = !_isControlPanelVisible),
+              onPressed: () {
+                setState(() =>
+                    _isControlPanelVisible = !_isControlPanelVisible);
+                if (_isControlPanelVisible && !_isSlideshowPlaying) {
+                  _startSlideshow();
+                }
+              },
             ),
         ],
       ),
