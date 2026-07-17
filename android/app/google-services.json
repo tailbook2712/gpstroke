@@ -50,6 +50,14 @@
       },
       "oauth_client": [
         {
+          "client_id": "36151156004-kppech59i09q4t6ilt9gifffelje9f29.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.example.walk_tracker_app",
+            "certificate_hash": "967af41fd9b8eab22334722243a89fc638943044"
+          }
+        },
+        {
           "client_id": "36151156004-ki2gh4scu1d2kgsud2k98eifutrtr3kh.apps.googleusercontent.com",
           "client_type": 3
         }
