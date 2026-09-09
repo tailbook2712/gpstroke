@@ -5,8 +5,11 @@ import 'dart:math' as math;
 import 'package:flutter/foundation.dart' show defaultTargetPlatform, TargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:cloud_firestore/cloud_firestore.dart' show FirebaseException;
 import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:share_plus/share_plus.dart';
 import 'artwork_creation_screen.dart';
+import 'artwork_share_service.dart';
 import 'database_helper.dart';
 import 'utils/utils.dart';
 import 'polyline_painter.dart';
@@ -69,6 +72,9 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
   // 地図整列の状態管理
   bool _isMapAligned = false;
   CameraPosition? _alignedCameraPosition;
+
+  // 作品共有（共有リンク生成中フラグ）
+  bool _isSharing = false;
 
   @override
   void initState() {
@@ -347,6 +353,42 @@ _currentTrajectoryIndex = -1;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text("アニメーションエラーが発生しました: $e")),
       );
+    }
+  }
+
+  // 作品のスライドショーを再生できる共有リンクを生成し、OS の共有シートを開く
+  Future<void> _shareArtwork() async {
+    if (_isSharing) return;
+    setState(() => _isSharing = true);
+
+    try {
+      final result = await ArtworkShareService().shareArtwork(widget.canvasFile);
+      if (!mounted) return;
+
+      // iPad では共有シートの表示位置が必要
+      final box = context.findRenderObject() as RenderBox?;
+      final origin = box != null
+          ? box.localToGlobal(Offset.zero) & box.size
+          : null;
+
+      await SharePlus.instance.share(
+        ShareParams(
+          text: result.shareText,
+          subject: '「${result.artworkName}」- GPStroke',
+          sharePositionOrigin: origin,
+        ),
+      );
+    } catch (e) {
+      print("❌ 作品の共有リンク生成に失敗: $e");
+      if (!mounted) return;
+      final message = e is FirebaseException && e.code == 'permission-denied'
+          ? '共有データの保存が許可されていません。Firestore のセキュリティルール（firestore.rules）が反映されているか確認してください。'
+          : '共有リンクの生成に失敗しました: $e';
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(message)),
+      );
+    } finally {
+      if (mounted) setState(() => _isSharing = false);
     }
   }
 
@@ -1185,6 +1227,18 @@ _currentTrajectoryIndex = -1;
       appBar: AppBar(
         title: Text(_artworkName),
         actions: [
+          if (_trajectories.isNotEmpty)
+            IconButton(
+              icon: _isSharing
+                  ? const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.share),
+              tooltip: '作品を共有',
+              onPressed: _isSharing ? null : _shareArtwork,
+            ),
           if (_trajectories.isNotEmpty)
             IconButton(
               icon: const Icon(Icons.animation),

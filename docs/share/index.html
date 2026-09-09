@@ -1,0 +1,842 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>GPStroke 作品</title>
+<meta name="description" content="日常の歩行の軌跡（ストローク）を集めて描いた GPS アートのスライドショー">
+<meta property="og:title" content="GPStroke で歩いて描いた作品">
+<meta property="og:description" content="歩いた軌跡を集めて描いた GPS アートです。各ストロークがいつ・どこで歩いたものかをアニメーションで見られます。">
+<meta property="og:type" content="website">
+<meta name="twitter:card" content="summary">
+<style>
+  :root {
+    --bg: #111318;
+    --panel: rgba(0, 0, 0, 0.72);
+    --text: #f2f2f2;
+    --muted: rgba(255, 255, 255, 0.65);
+    --stage-bg: #eeeeee;
+    --accent: #ff5252;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Yu Gothic", "Noto Sans JP", sans-serif;
+    -webkit-font-smoothing: antialiased;
+    overflow: hidden;
+  }
+  #app {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  }
+  header {
+    flex: none;
+    padding: 12px 16px 8px;
+    text-align: center;
+  }
+  header h1 {
+    margin: 0;
+    font-size: 18px;
+    font-weight: 600;
+    line-height: 1.3;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  header .summary {
+    margin-top: 2px;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  #stage-wrap {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 8px;
+  }
+  #stage {
+    position: relative;
+    overflow: hidden;
+    background: var(--stage-bg);
+    border-radius: 10px;
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.45);
+  }
+  #map-layer {
+    position: absolute;
+    left: 0; top: 0;
+    width: 0; height: 0;
+    opacity: 0;
+    transform-origin: center center;
+    will-change: opacity, transform;
+    pointer-events: none;
+  }
+  #map { width: 100%; height: 100%; }
+  #art {
+    position: absolute;
+    left: 0; top: 0;
+    width: 100%; height: 100%;
+    pointer-events: none;
+  }
+  #info-card {
+    position: absolute;
+    left: 12px; right: 12px; bottom: 12px;
+    padding: 10px 14px;
+    background: var(--panel);
+    border-radius: 12px;
+    color: var(--text);
+    font-size: 12px;
+    display: flex;
+    justify-content: space-around;
+    align-items: center;
+    gap: 8px;
+    opacity: 0;
+    transition: opacity 0.4s ease;
+    pointer-events: none;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+  }
+  #info-card .item { display: flex; align-items: center; gap: 4px; white-space: nowrap; }
+  #info-card .item svg { width: 14px; height: 14px; }
+  #info-card .date { color: #fff; font-weight: 600; }
+  #info-card .steps svg { fill: #64b5f6; }
+  #info-card .distance svg { fill: #81c784; }
+  #controls {
+    flex: none;
+    padding: 10px 16px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    align-items: center;
+  }
+  #progress {
+    width: 100%;
+    max-width: 480px;
+    display: flex;
+    gap: 4px;
+    height: 4px;
+  }
+  #progress span {
+    flex: 1;
+    background: rgba(255, 255, 255, 0.22);
+    border-radius: 2px;
+    overflow: hidden;
+    position: relative;
+  }
+  #progress span::after {
+    content: "";
+    position: absolute;
+    left: 0; top: 0; bottom: 0;
+    width: 0;
+    background: var(--accent);
+    transition: width 0.3s ease;
+  }
+  #progress span.done::after { width: 100%; background: #fff; }
+  #progress span.active::after { width: 100%; }
+  .buttons {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .buttons button {
+    appearance: none;
+    border: 0;
+    background: rgba(255, 255, 255, 0.12);
+    color: #fff;
+    width: 40px; height: 40px;
+    border-radius: 20px;
+    font-size: 16px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .buttons button:active { background: rgba(255, 255, 255, 0.28); }
+  .buttons button.wide { width: auto; padding: 0 14px; font-size: 13px; font-weight: 600; }
+  .buttons button svg { width: 18px; height: 18px; fill: #fff; }
+  .buttons .counter {
+    min-width: 56px;
+    text-align: center;
+    font-size: 13px;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+  footer {
+    flex: none;
+    text-align: center;
+    font-size: 11px;
+    color: var(--muted);
+    padding: 0 16px 10px;
+  }
+  footer a { color: inherit; }
+  #status {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 24px;
+    background: var(--bg);
+    z-index: 10;
+    font-size: 14px;
+    line-height: 1.7;
+  }
+  #status.hidden { display: none; }
+  #status .spinner {
+    width: 28px; height: 28px;
+    border: 3px solid rgba(255,255,255,0.2);
+    border-top-color: #fff;
+    border-radius: 50%;
+    margin: 0 auto 14px;
+    animation: spin 0.9s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1 id="artwork-name">GPStroke</h1>
+    <div class="summary" id="artwork-summary"></div>
+  </header>
+  <div id="stage-wrap">
+    <div id="stage">
+      <div id="map-layer"><div id="map"></div></div>
+      <canvas id="art"></canvas>
+      <div id="info-card">
+        <div class="item date" id="info-date"></div>
+        <div class="item steps">
+          <svg viewBox="0 0 24 24"><path d="M13.5 5.5c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zM9.8 8.9 7 23h2.1l1.8-8 2.1 2v6h2v-7.5l-2.1-2 .6-3C14.8 12 16.8 13 19 13v-2c-1.9 0-3.5-1-4.3-2.4l-1-1.6c-.4-.6-1-1-1.7-1-.3 0-.5.1-.8.1L6 8.3V13h2V9.6l1.8-.7"/></svg>
+          <span id="info-steps"></span>
+        </div>
+        <div class="item distance">
+          <svg viewBox="0 0 24 24"><path d="M21 6H3c-1.1 0-2 .9-2 2v8c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm0 10H3V8h2v4h2V8h2v4h2V8h2v4h2V8h2v4h2V8h2v8z"/></svg>
+          <span id="info-distance"></span>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div id="controls">
+    <div id="progress"></div>
+    <div class="buttons">
+      <button id="btn-prev" title="前のストローク" aria-label="前のストローク">
+        <svg viewBox="0 0 24 24"><path d="M15.41 7.41 14 6l-6 6 6 6 1.41-1.41L10.83 12z"/></svg>
+      </button>
+      <button id="btn-play" title="再生 / 停止" aria-label="再生 / 停止">
+        <svg id="icon-play" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+        <svg id="icon-pause" viewBox="0 0 24 24" style="display:none"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+      </button>
+      <button id="btn-next" title="次のストローク" aria-label="次のストローク">
+        <svg viewBox="0 0 24 24"><path d="M10 6 8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/></svg>
+      </button>
+      <span class="counter" id="counter">- / -</span>
+      <button id="btn-speed" class="wide" title="再生速度">1倍速</button>
+    </div>
+  </div>
+  <footer>GPStroke — 日常の歩行を集めて描く GPS アート</footer>
+</div>
+<div id="status"><div><div class="spinner"></div><div id="status-text">作品を読み込んでいます…</div></div></div>
+
+<script>
+/* =========================================================================
+ * 設定
+ * ---------------------------------------------------------------------- */
+const CONFIG = {
+  // Firebase プロジェクト（Firestore REST API の読み取りに使用）
+  FIREBASE_PROJECT_ID: 'walktrackerapp-9e00e',
+  // Firebase の Web API キー（公開前提のキー。Firestore ルール側で保護する）
+  FIREBASE_API_KEY: 'AIzaSyC6DJzKfyXr3Fo7bRZbVC8gImRV_D0w9LM',
+  // Google Maps JavaScript API のブラウザ用キー
+  // （Google Cloud Console で「HTTP リファラー: https://tailbook2712.github.io/*」に
+  //   制限した Maps JavaScript API 用キーを発行して設定する。
+  //   未設定の場合は地図なしでストロークと記録情報のみ再生する）
+  MAPS_API_KEY: '',
+  COLLECTION: 'shared_artworks',
+};
+
+/* スライドショーのタイミング（ミリ秒、1 倍速時） */
+const TIMING = {
+  intro: 1200,        // 作品全体を表示
+  highlight: 900,     // ストロークを赤くハイライト
+  mapFadeIn: 600,     // 地図のフェードイン
+  align: 900,         // 地図をストロークに整列（移動・回転）
+  hold: 2400,         // 整列状態で表示
+  mapFadeOut: 500,    // 地図のフェードアウト
+  gap: 300,           // 次のストロークまでの間
+  outro: 2000,        // 全ストローク再生後に作品全体を表示してからループ
+};
+
+/* アプリ側 PolylinePainter と同じ描画パラメータ */
+const TRAJECTORY_SIZE = 100;   // ストロークのコンテナサイズ（論理 px）
+const PADDING = 0.1;           // コンテナ内の余白（10%）
+const COLOR_NORMAL = '#2196F3';     // Colors.blue
+const COLOR_HIGHLIGHT = '#F44336';  // Colors.red
+const COLOR_DIMMED = '#B0BEC5';     // グレーアウト
+const MAP_OPACITY = 0.85;
+
+/* =========================================================================
+ * Encoded Polyline のデコード（lib/utils/polyline_codec.dart と対）
+ * ---------------------------------------------------------------------- */
+function decodePolyline(encoded, precision = 5) {
+  const factor = Math.pow(10, precision);
+  const points = [];
+  let index = 0, lat = 0, lng = 0;
+  while (index < encoded.length) {
+    let shift = 0, result = 0, byte;
+    do {
+      byte = encoded.charCodeAt(index++) - 63;
+      result |= (byte & 0x1f) << shift;
+      shift += 5;
+    } while (byte >= 0x20);
+    lat += (result & 1) ? ~(result >> 1) : (result >> 1);
+    shift = 0; result = 0;
+    do {
+      byte = encoded.charCodeAt(index++) - 63;
+      result |= (byte & 0x1f) << shift;
+      shift += 5;
+    } while (byte >= 0x20);
+    lng += (result & 1) ? ~(result >> 1) : (result >> 1);
+    points.push({ lat: lat / factor, lng: lng / factor });
+  }
+  return points;
+}
+
+/* =========================================================================
+ * Web Mercator（アプリ側 PolylinePainter と同じ式）
+ * ---------------------------------------------------------------------- */
+const mercX = lng => lng * Math.PI / 180;
+const mercY = lat => Math.log(Math.tan(Math.PI / 4 + (lat * Math.PI / 180) / 2));
+const invMercX = x => x * 180 / Math.PI;
+const invMercY = y => (2 * (Math.atan(Math.exp(y)) - Math.PI / 4)) * 180 / Math.PI;
+
+/** PolylinePainter.getDrawingParameters + 座標変換の移植 */
+function computeDrawing(points) {
+  const coords = points.map(p => ({ x: mercX(p.lng), y: mercY(p.lat) }));
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const c of coords) {
+    if (c.x < minX) minX = c.x; if (c.x > maxX) maxX = c.x;
+    if (c.y < minY) minY = c.y; if (c.y > maxY) maxY = c.y;
+  }
+  const xr = Math.abs(maxX - minX) > 0 ? maxX - minX : 0.001;
+  const yr = Math.abs(maxY - minY) > 0 ? maxY - minY : 0.001;
+  const aspect = xr / yr;
+  let scaleX, scaleY;
+  if (aspect > 1) {          // 横長：幅基準
+    scaleX = TRAJECTORY_SIZE * (1 - PADDING * 2);
+    scaleY = scaleX / aspect;
+  } else {                   // 縦長：高さ基準
+    scaleY = TRAJECTORY_SIZE * (1 - PADDING * 2);
+    scaleX = scaleY * aspect;
+  }
+  const offX = (TRAJECTORY_SIZE - scaleX) / 2;
+  const offY = (TRAJECTORY_SIZE - scaleY) / 2;
+  const pixels = coords.map(c => ({
+    x: (c.x - minX) / xr * scaleX + offX,
+    y: TRAJECTORY_SIZE - ((c.y - minY) / yr * scaleY + offY),
+  }));
+  let minLat = Infinity, maxLat = -Infinity, minLng = Infinity, maxLng = -Infinity;
+  for (const p of points) {
+    if (p.lat < minLat) minLat = p.lat; if (p.lat > maxLat) maxLat = p.lat;
+    if (p.lng < minLng) minLng = p.lng; if (p.lng > maxLng) maxLng = p.lng;
+  }
+  return { minX, maxX, minY, maxY, xr, yr, scaleX, scaleY, offX, offY, pixels,
+           minLat, maxLat, minLng, maxLng };
+}
+
+/**
+ * ステージ上の点（アプリのキャンバス座標系）→ 地理座標
+ * （artwork_detail_screen.dart の inverseTransformScreenToLatLng の移植）
+ */
+function screenToLatLng(stroke, sx, sy) {
+  const d = stroke.drawing;
+  const rx = sx - stroke.x, ry = sy - stroke.y;
+  let scx, scy;
+  if (stroke.rotation !== 0) {
+    const c = Math.cos(stroke.rotation), s = Math.sin(stroke.rotation);
+    scx = rx * c + ry * s;
+    scy = -rx * s + ry * c;
+  } else { scx = rx; scy = ry; }
+  const relX = scx / stroke.scale, relY = scy / stroke.scale;
+  const baseX = relX + TRAJECTORY_SIZE / 2, baseY = relY + TRAJECTORY_SIZE / 2;
+  const normX = (baseX - d.offX) / d.scaleX;
+  const normY = (TRAJECTORY_SIZE - baseY - d.offY) / d.scaleY;
+  return { lat: invMercY(normY * d.yr + d.minY), lng: invMercX(normX * d.xr + d.minX) };
+}
+
+/* =========================================================================
+ * Firestore REST
+ * ---------------------------------------------------------------------- */
+function fromFirestoreValue(v) {
+  if (v == null) return null;
+  if ('stringValue' in v) return v.stringValue;
+  if ('integerValue' in v) return parseInt(v.integerValue, 10);
+  if ('doubleValue' in v) return v.doubleValue;
+  if ('booleanValue' in v) return v.booleanValue;
+  if ('nullValue' in v) return null;
+  if ('timestampValue' in v) return v.timestampValue;
+  if ('arrayValue' in v) return (v.arrayValue.values || []).map(fromFirestoreValue);
+  if ('mapValue' in v) return fromFirestoreFields(v.mapValue.fields || {});
+  return null;
+}
+function fromFirestoreFields(fields) {
+  const out = {};
+  for (const k of Object.keys(fields)) out[k] = fromFirestoreValue(fields[k]);
+  return out;
+}
+async function fetchSharedArtwork(id) {
+  const url = `https://firestore.googleapis.com/v1/projects/${CONFIG.FIREBASE_PROJECT_ID}` +
+    `/databases/(default)/documents/${CONFIG.COLLECTION}/${encodeURIComponent(id)}?key=${CONFIG.FIREBASE_API_KEY}`;
+  const res = await fetch(url);
+  if (res.status === 404) throw new Error('NOT_FOUND');
+  if (res.status === 403) throw new Error('FORBIDDEN');
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const json = await res.json();
+  return fromFirestoreFields(json.fields || {});
+}
+
+/* =========================================================================
+ * 表示ユーティリティ
+ * ---------------------------------------------------------------------- */
+const $ = id => document.getElementById(id);
+const pad2 = n => String(n).padStart(2, '0');
+function formatDate(iso) {
+  if (!iso) return '記録日時不明';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '記録日時不明';
+  return `${d.getFullYear()}/${pad2(d.getMonth() + 1)}/${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+}
+const formatSteps = n => `${(n || 0).toLocaleString('ja-JP')} 歩`;
+const formatKm = km => `${(km || 0).toFixed(2)} km`;
+const easeInOutCubic = t => t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+const easeOutCubic = t => 1 - Math.pow(1 - t, 3);
+const lerp = (a, b, t) => a + (b - a) * t;
+
+/* =========================================================================
+ * ビューア本体
+ * ---------------------------------------------------------------------- */
+const viewer = {
+  artwork: null,
+  strokes: [],
+  // ステージ
+  stage: $('stage'), canvas: $('art'), ctx: null,
+  k: 1, stageW: 0, stageH: 0,
+  // 描画状態
+  highlightIndex: -1,   // 赤くハイライト中のストローク
+  dimOthers: false,
+  pulse: 0,
+  // 地図
+  map: null, mapPolyline: null, mapsReady: false, mapsFailed: false,
+  mapRotation: 0, mapResidualScale: 1,
+  // 再生
+  playing: false, speed: 1, speedOptions: [1, 2, 3],
+  currentIndex: -1, run: 0,
+};
+
+function setStatus(text, spinner) {
+  $('status').classList.remove('hidden');
+  $('status-text').innerHTML = text;
+  document.querySelector('#status .spinner').style.display = spinner ? '' : 'none';
+}
+function hideStatus() { $('status').classList.add('hidden'); }
+
+function loadArtwork(doc) {
+  viewer.artwork = doc;
+  viewer.strokes = (doc.strokes || []).map((s, i) => {
+    const points = decodePolyline(s.polyline || '');
+    return {
+      index: i,
+      points,
+      x: Number(s.x), y: Number(s.y),
+      scale: Number(s.scale) || 1, rotation: Number(s.rotation) || 0,
+      date: s.date, steps: Number(s.steps) || 0, distance: Number(s.distance) || 0,
+      drawing: points.length ? computeDrawing(points) : null,
+    };
+  }).filter(s => s.drawing);
+
+  $('artwork-name').textContent = doc.artworkName || 'GPStroke';
+  document.title = `${doc.artworkName || '作品'} | GPStroke`;
+  $('artwork-summary').textContent =
+    `${viewer.strokes.length} ストローク · ${formatSteps(doc.totalSteps)} · ${formatKm(doc.totalDistance)}`;
+
+  const progress = $('progress');
+  progress.innerHTML = '';
+  viewer.strokes.forEach(() => progress.appendChild(document.createElement('span')));
+  updateCounter();
+}
+
+/* ---- ステージのサイズ調整（キャンバス比率を保ってフィット） ---- */
+function layout() {
+  const wrap = $('stage-wrap');
+  const cw = viewer.artwork.canvasWidth, ch = viewer.artwork.canvasHeight;
+  const availW = wrap.clientWidth - 16, availH = wrap.clientHeight - 8;
+  const k = Math.max(0.05, Math.min(availW / cw, availH / ch));
+  viewer.k = k;
+  viewer.stageW = Math.round(cw * k);
+  viewer.stageH = Math.round(ch * k);
+  viewer.stage.style.width = viewer.stageW + 'px';
+  viewer.stage.style.height = viewer.stageH + 'px';
+
+  const dpr = window.devicePixelRatio || 1;
+  viewer.canvas.width = Math.round(viewer.stageW * dpr);
+  viewer.canvas.height = Math.round(viewer.stageH * dpr);
+  viewer.ctx = viewer.canvas.getContext('2d');
+  viewer.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  // 地図レイヤー：回転してもステージを覆えるよう対角線長の正方形にする
+  const side = Math.ceil(Math.hypot(viewer.stageW, viewer.stageH));
+  const layer = $('map-layer');
+  layer.style.width = side + 'px';
+  layer.style.height = side + 'px';
+  layer.style.left = ((viewer.stageW - side) / 2) + 'px';
+  layer.style.top = ((viewer.stageH - side) / 2) + 'px';
+  applyMapTransform();
+  if (viewer.map) google.maps.event.trigger(viewer.map, 'resize');
+  draw();
+}
+
+/* ---- 作品の描画（アプリの Positioned + Transform.rotate/scale + PolylinePainter と同じ変換） ---- */
+function draw() {
+  const ctx = viewer.ctx;
+  if (!ctx) return;
+  ctx.clearRect(0, 0, viewer.stageW, viewer.stageH);
+  const k = viewer.k;
+  const drawStroke = (s, highlighted) => {
+    const pulseScale = highlighted ? 1 + viewer.pulse * 0.05 : 1;
+    const scale = s.scale * pulseScale;
+    ctx.save();
+    ctx.translate(s.x * k, s.y * k);
+    ctx.rotate(s.rotation);
+    ctx.scale(scale * k, scale * k);
+    ctx.translate(-TRAJECTORY_SIZE / 2, -TRAJECTORY_SIZE / 2);
+    ctx.lineWidth = (highlighted ? 5 : 4) / scale;
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = highlighted ? COLOR_HIGHLIGHT
+      : (viewer.dimOthers ? COLOR_DIMMED : COLOR_NORMAL);
+    ctx.beginPath();
+    s.drawing.pixels.forEach((p, i) => i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y));
+    ctx.stroke();
+    ctx.restore();
+  };
+  viewer.strokes.forEach(s => { if (s.index !== viewer.highlightIndex) drawStroke(s, false); });
+  const h = viewer.strokes.find(s => s.index === viewer.highlightIndex);
+  if (h) drawStroke(h, true);
+}
+
+/* ---- Google Maps ---- */
+function loadMapsApi() {
+  if (!CONFIG.MAPS_API_KEY) { viewer.mapsFailed = true; return; }
+  window.gm_authFailure = () => {
+    console.warn('Google Maps の認証に失敗しました。MAPS_API_KEY と HTTP リファラー制限を確認してください。');
+    viewer.mapsFailed = true;
+    viewer.map = null;
+    $('map-layer').style.opacity = 0;
+  };
+  window.onMapsReady = () => {
+    viewer.mapsReady = true;
+    try {
+      viewer.map = new google.maps.Map($('map'), {
+        center: { lat: 35.0, lng: 135.0 },
+        zoom: 15,
+        disableDefaultUI: true,
+        gestureHandling: 'none',
+        keyboardShortcuts: false,
+        clickableIcons: false,
+        isFractionalZoomEnabled: true,
+        mapTypeId: 'roadmap',
+      });
+    } catch (e) {
+      console.warn('Google Maps の初期化に失敗:', e);
+      viewer.mapsFailed = true;
+    }
+  };
+  const script = document.createElement('script');
+  script.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(CONFIG.MAPS_API_KEY)}` +
+    `&callback=onMapsReady&loading=async&language=ja&region=JP&v=weekly`;
+  script.async = true;
+  script.onerror = () => { viewer.mapsFailed = true; };
+  document.head.appendChild(script);
+}
+
+function applyMapTransform() {
+  $('map-layer').style.transform =
+    `rotate(${viewer.mapRotation}rad) scale(${viewer.mapResidualScale})`;
+}
+
+/**
+ * ストロークに地図を重ねるためのカメラ位置
+ * （artwork_detail_screen.dart の _calculateWebMercatorMapAlignment の移植）
+ *  - 中心: ステージ中心に描画される地理座標（オーバーレイ変換の逆算）
+ *  - ズーム: 1 mercator ラジアンあたりの表示ピクセル数から算出
+ *  - 回転: ストロークの回転角をそのまま地図レイヤーに適用
+ */
+function alignedCamera(stroke) {
+  const cw = viewer.artwork.canvasWidth, ch = viewer.artwork.canvasHeight;
+  const center = screenToLatLng(stroke, cw / 2, ch / 2);
+  const pxPerRadian = stroke.drawing.scaleX * stroke.scale * viewer.k / stroke.drawing.xr;
+  const zoom = Math.log2(pxPerRadian * 2 * Math.PI / 256);
+  return { center, zoom: Math.min(21, Math.max(3, zoom)), rotation: stroke.rotation };
+}
+
+/** 整列前の導入カメラ（ストローク全体を少し引いた位置で、回転なし） */
+function introCamera(stroke, aligned) {
+  const d = stroke.drawing;
+  return {
+    center: { lat: (d.minLat + d.maxLat) / 2, lng: (d.minLng + d.maxLng) / 2 },
+    zoom: Math.max(3, aligned.zoom - 1.2),
+    rotation: 0,
+  };
+}
+
+function setCamera(cam) {
+  if (!viewer.map) return;
+  viewer.map.moveCamera({ center: cam.center, zoom: cam.zoom });
+  const actual = viewer.map.getZoom();
+  // フラクショナルズームが効かない環境向けに、残差を CSS スケールで補正
+  viewer.mapResidualScale = (typeof actual === 'number') ? Math.pow(2, cam.zoom - actual) : 1;
+  viewer.mapRotation = cam.rotation;
+  applyMapTransform();
+}
+
+function showMapPolyline(stroke) {
+  if (!viewer.map) return;
+  if (viewer.mapPolyline) viewer.mapPolyline.setMap(null);
+  viewer.mapPolyline = new google.maps.Polyline({
+    path: stroke.points,
+    strokeColor: COLOR_HIGHLIGHT,
+    strokeOpacity: 0.4,
+    strokeWeight: 4,
+    map: viewer.map,
+  });
+}
+
+/* ---- アニメーション制御 ---- */
+const sleep = (ms) => new Promise(r => setTimeout(r, ms / viewer.speed));
+
+// requestAnimationFrame はバックグラウンドタブ等で停止するため、タイマー駆動にしている
+function animate(duration, onFrame) {
+  return new Promise(resolve => {
+    const start = performance.now();
+    const total = duration / viewer.speed;
+    const tick = () => {
+      const t = Math.min(1, (performance.now() - start) / total);
+      onFrame(t);
+      if (t < 1) setTimeout(tick, 16); else resolve();
+    };
+    tick();
+  });
+}
+
+function fadeMap(to, duration) {
+  const layer = $('map-layer');
+  layer.style.transition = `opacity ${duration / viewer.speed}ms ease`;
+  layer.style.opacity = to;
+  return sleep(duration);
+}
+
+function setInfoCard(stroke, visible) {
+  if (stroke) {
+    $('info-date').textContent = formatDate(stroke.date);
+    $('info-steps').textContent = formatSteps(stroke.steps);
+    $('info-distance').textContent = formatKm(stroke.distance);
+  }
+  $('info-card').style.opacity = visible ? 1 : 0;
+}
+
+function updateCounter() {
+  const n = viewer.strokes.length;
+  const i = viewer.currentIndex;
+  $('counter').textContent = `${i < 0 ? '-' : i + 1} / ${n}`;
+  Array.from($('progress').children).forEach((el, j) => {
+    el.classList.toggle('done', j < i);
+    el.classList.toggle('active', j === i);
+  });
+}
+
+function resetVisual() {
+  viewer.highlightIndex = -1;
+  viewer.dimOthers = false;
+  viewer.pulse = 0;
+  const layer = $('map-layer');
+  layer.style.transition = 'none';
+  layer.style.opacity = 0;
+  setInfoCard(null, false);
+  if (viewer.mapPolyline) { viewer.mapPolyline.setMap(null); viewer.mapPolyline = null; }
+  draw();
+}
+
+/** 1 ストローク分のシーケンス。run が変わったら途中で中断する */
+async function playStroke(i, run) {
+  const alive = () => run === viewer.run;
+  const stroke = viewer.strokes[i];
+  viewer.currentIndex = i;
+  updateCounter();
+
+  // 2. ハイライト（他はグレーアウト、パルス）
+  viewer.highlightIndex = stroke.index;
+  viewer.dimOthers = true;
+  await animate(TIMING.highlight, t => {
+    viewer.pulse = (Math.sin(t * 2 * Math.PI) + 1) / 2;
+    draw();
+  });
+  viewer.pulse = 0; draw();
+  if (!alive()) return;
+
+  // 3. 地図と記録情報を表示
+  const hasMap = !!viewer.map;
+  const aligned = alignedCamera(stroke);
+  const intro = introCamera(stroke, aligned);
+  if (hasMap) {
+    setCamera(intro);
+    showMapPolyline(stroke);
+    await sleep(150);
+    if (!alive()) return;
+    await fadeMap(MAP_OPACITY, TIMING.mapFadeIn);
+    if (!alive()) return;
+    setInfoCard(stroke, true);
+    // 地図をストロークに整列（移動・ズーム・回転をトゥイーン）
+    await animate(TIMING.align, t => {
+      const e = easeInOutCubic(t);
+      setCamera({
+        center: { lat: lerp(intro.center.lat, aligned.center.lat, e),
+                  lng: lerp(intro.center.lng, aligned.center.lng, e) },
+        zoom: lerp(intro.zoom, aligned.zoom, e),
+        rotation: lerp(intro.rotation, aligned.rotation, e),
+      });
+    });
+    if (!alive()) return;
+    setCamera(aligned);
+  } else {
+    setInfoCard(stroke, true);
+    await sleep(TIMING.mapFadeIn);
+    if (!alive()) return;
+  }
+
+  await sleep(TIMING.hold);
+  if (!alive()) return;
+
+  // 4. 次へ
+  setInfoCard(null, false);
+  if (hasMap) await fadeMap(0, TIMING.mapFadeOut); else await sleep(TIMING.mapFadeOut);
+  if (!alive()) return;
+  viewer.highlightIndex = -1;
+  viewer.dimOthers = false;
+  draw();
+  if (viewer.mapPolyline) { viewer.mapPolyline.setMap(null); viewer.mapPolyline = null; }
+  await sleep(TIMING.gap);
+}
+
+async function playFrom(startIndex) {
+  const run = ++viewer.run;
+  const alive = () => run === viewer.run;
+  viewer.playing = true;
+  updatePlayButton();
+  resetVisual();
+
+  if (startIndex <= 0) {
+    // 1. 作品全体を表示した状態から開始
+    viewer.currentIndex = -1; updateCounter();
+    await sleep(TIMING.intro);
+    if (!alive()) return;
+    startIndex = 0;
+  }
+  for (let i = startIndex; i < viewer.strokes.length; i++) {
+    await playStroke(i, run);
+    if (!alive()) return;
+  }
+  // 5. すべて再生し終えたら作品全体を見せてループ
+  viewer.currentIndex = viewer.strokes.length - 1; updateCounter();
+  await sleep(TIMING.outro);
+  if (!alive()) return;
+  playFrom(0);
+}
+
+function pause() {
+  viewer.run++;
+  viewer.playing = false;
+  updatePlayButton();
+  // 停止時は現在のストロークをハイライトしたまま止める
+  const layer = $('map-layer');
+  layer.style.transition = 'none';
+}
+
+function updatePlayButton() {
+  $('icon-play').style.display = viewer.playing ? 'none' : '';
+  $('icon-pause').style.display = viewer.playing ? '' : 'none';
+}
+
+function bindControls() {
+  $('btn-play').addEventListener('click', () => {
+    if (viewer.playing) pause();
+    else playFrom(Math.max(0, viewer.currentIndex));
+  });
+  $('btn-prev').addEventListener('click', () => {
+    playFrom(Math.max(0, viewer.currentIndex - 1));
+  });
+  $('btn-next').addEventListener('click', () => {
+    if (viewer.currentIndex + 1 >= viewer.strokes.length) playFrom(0);
+    else playFrom(viewer.currentIndex + 1);
+  });
+  $('btn-speed').addEventListener('click', () => {
+    const idx = viewer.speedOptions.indexOf(viewer.speed);
+    viewer.speed = viewer.speedOptions[(idx + 1) % viewer.speedOptions.length];
+    $('btn-speed').textContent = `${viewer.speed}倍速`;
+  });
+  let resizeTimer;
+  window.addEventListener('resize', () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => {
+      if (!viewer.artwork) return;
+      layout();
+      const s = viewer.strokes[viewer.currentIndex];
+      if (s && viewer.map && $('map-layer').style.opacity !== '0') setCamera(alignedCamera(s));
+    }, 120);
+  });
+}
+
+/* ---- 起動 ---- */
+async function main() {
+  bindControls();
+  const id = new URLSearchParams(location.search).get('id');
+  if (!id) {
+    setStatus('共有リンクが正しくありません。<br>GPStroke アプリの作品画面から共有されたリンクを開いてください。', false);
+    return;
+  }
+  loadMapsApi();
+  let doc;
+  try {
+    doc = await fetchSharedArtwork(id);
+  } catch (e) {
+    console.error(e);
+    if (e.message === 'NOT_FOUND' || e.message === 'FORBIDDEN') {
+      setStatus('作品が見つかりませんでした。<br>共有が解除されたか、リンクが正しくない可能性があります。', false);
+    } else {
+      setStatus('作品の読み込みに失敗しました。<br>通信環境を確認して再読み込みしてください。', false);
+    }
+    return;
+  }
+  if (!doc.strokes || !doc.strokes.length || !doc.canvasWidth || !doc.canvasHeight) {
+    setStatus('この作品には再生できるストロークがありません。', false);
+    return;
+  }
+  loadArtwork(doc);
+  hideStatus();
+  layout();
+  // 地図 API の準備を少し待ってから再生開始（未設定・失敗時は地図なしで再生）
+  const started = performance.now();
+  while (!viewer.map && !viewer.mapsFailed && performance.now() - started < 4000) {
+    await new Promise(r => setTimeout(r, 100));
+  }
+  playFrom(0);
+}
+main();
+</script>
+</body>
+</html>
