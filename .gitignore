@@ -40,6 +40,9 @@ android/app/app.iml
 firebase_app_id_file.json
 firease.json
 
+# Firestoreエクスポート分析用（サービスアカウント鍵・出力データ・venvを含む）
+gpstroke_analysis/
+
 # その他のキャッシュファイルやエディタ関連ファイル
 *.log
 *.tmp
