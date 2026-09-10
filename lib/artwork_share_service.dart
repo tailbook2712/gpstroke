@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
@@ -83,7 +84,17 @@ class ArtworkShareService {
     );
     payload['sharedAt'] = FieldValue.serverTimestamp();
 
-    await _db.collection(collectionName).doc(shareId).set(payload);
+    // オフライン時は Firestore が書き込みをキューに溜めて完了を待ち続けるため、
+    // 一定時間で打ち切ってユーザーに通信環境の確認を促す
+    try {
+      await _db
+          .collection(collectionName)
+          .doc(shareId)
+          .set(payload)
+          .timeout(const Duration(seconds: 20));
+    } on TimeoutException {
+      throw StateError('サーバーに接続できませんでした。通信環境を確認して再度お試しください');
+    }
 
     // 共有 ID を作品ファイルに保存して、再共有時に同じリンクを再利用する
     if (existingShareId != shareId) {

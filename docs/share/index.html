@@ -265,8 +265,8 @@ const CONFIG = {
 const TIMING = {
   intro: 1200,        // 作品全体を表示
   highlight: 900,     // ストロークを赤くハイライト
-  mapFadeIn: 600,     // 地図のフェードイン
-  align: 900,         // 地図をストロークに整列（移動・回転）
+  mapFadeIn: 600,     // 地図のフェードイン（整列済みの状態で表示）
+  align: 900,         // 整列の余韻（アプリと同じ微細なスケール効果）
   hold: 2400,         // 整列状態で表示
   mapFadeOut: 500,    // 地図のフェードアウト
   gap: 300,           // 次のストロークまでの間
@@ -414,9 +414,7 @@ function formatDate(iso) {
 }
 const formatSteps = n => `${(n || 0).toLocaleString('ja-JP')} 歩`;
 const formatKm = km => `${(km || 0).toFixed(2)} km`;
-const easeInOutCubic = t => t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
 const easeOutCubic = t => 1 - Math.pow(1 - t, 3);
-const lerp = (a, b, t) => a + (b - a) * t;
 
 /* =========================================================================
  * ビューア本体
@@ -433,7 +431,7 @@ const viewer = {
   pulse: 0,
   // 地図
   map: null, mapPolyline: null, mapsReady: false, mapsFailed: false,
-  mapRotation: 0, mapResidualScale: 1,
+  mapRotation: 0, mapResidualScale: 1, mapEffectScale: 1,
   // 再生
   playing: false, speed: 1, speedOptions: [1, 2, 3],
   currentIndex: -1, run: 0,
@@ -567,7 +565,7 @@ function loadMapsApi() {
 
 function applyMapTransform() {
   $('map-layer').style.transform =
-    `rotate(${viewer.mapRotation}rad) scale(${viewer.mapResidualScale})`;
+    `rotate(${viewer.mapRotation}rad) scale(${viewer.mapResidualScale * viewer.mapEffectScale})`;
 }
 
 /**
@@ -583,16 +581,6 @@ function alignedCamera(stroke) {
   const pxPerRadian = stroke.drawing.scaleX * stroke.scale * viewer.k / stroke.drawing.xr;
   const zoom = Math.log2(pxPerRadian * 2 * Math.PI / 256);
   return { center, zoom: Math.min(21, Math.max(3, zoom)), rotation: stroke.rotation };
-}
-
-/** 整列前の導入カメラ（ストローク全体を少し引いた位置で、回転なし） */
-function introCamera(stroke, aligned) {
-  const d = stroke.drawing;
-  return {
-    center: { lat: (d.minLat + d.maxLat) / 2, lng: (d.minLng + d.maxLng) / 2 },
-    zoom: Math.max(3, aligned.zoom - 1.2),
-    rotation: 0,
-  };
 }
 
 function setCamera(cam) {
@@ -667,6 +655,8 @@ function resetVisual() {
   const layer = $('map-layer');
   layer.style.transition = 'none';
   layer.style.opacity = 0;
+  viewer.mapEffectScale = 1;
+  applyMapTransform();
   setInfoCard(null, false);
   if (viewer.mapPolyline) { viewer.mapPolyline.setMap(null); viewer.mapPolyline = null; }
   draw();
@@ -690,29 +680,27 @@ async function playStroke(i, run) {
   if (!alive()) return;
 
   // 3. 地図と記録情報を表示
+  //    アプリのスライドショーと同様に、地図はストロークにぴったり重なった
+  //    状態（整列済みカメラ）でフェードインし、その後カメラは動かさない。
   const hasMap = !!viewer.map;
-  const aligned = alignedCamera(stroke);
-  const intro = introCamera(stroke, aligned);
   if (hasMap) {
-    setCamera(intro);
+    const aligned = alignedCamera(stroke);
+    viewer.mapEffectScale = 0.98;
+    setCamera(aligned);
     showMapPolyline(stroke);
     await sleep(150);
     if (!alive()) return;
     await fadeMap(MAP_OPACITY, TIMING.mapFadeIn);
     if (!alive()) return;
     setInfoCard(stroke, true);
-    // 地図をストロークに整列（移動・ズーム・回転をトゥイーン）
+    // アプリの整列演出（0.98 → 1.0 の微細なスケール）を再現。位置は変えない
     await animate(TIMING.align, t => {
-      const e = easeInOutCubic(t);
-      setCamera({
-        center: { lat: lerp(intro.center.lat, aligned.center.lat, e),
-                  lng: lerp(intro.center.lng, aligned.center.lng, e) },
-        zoom: lerp(intro.zoom, aligned.zoom, e),
-        rotation: lerp(intro.rotation, aligned.rotation, e),
-      });
+      viewer.mapEffectScale = 0.98 + 0.02 * easeOutCubic(t);
+      applyMapTransform();
     });
     if (!alive()) return;
-    setCamera(aligned);
+    viewer.mapEffectScale = 1;
+    applyMapTransform();
   } else {
     setInfoCard(stroke, true);
     await sleep(TIMING.mapFadeIn);

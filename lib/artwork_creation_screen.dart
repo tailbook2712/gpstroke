@@ -293,6 +293,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
         }
       }
 
+      if (!mounted) return;
       setState(() {
         recordedTrajectories = uniqueTrajectoryList;
       });
@@ -338,6 +339,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
       print("  - ローカル軌跡groupIdマッピング: ${localTrajectoryGroupIds.length}件");
       print("  - 使用済み軌跡: ${recentlyUsedGroupIds.length}件");
 
+      if (!mounted) return;
       setState(() {
         _garminActivities = garminActivities;
         _usedGarminGroupIds = usedGarminGroupIds.toSet();
@@ -347,6 +349,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
       });
     } catch (e) {
       print("❌ 軌跡リスト用データの読み込みエラー: $e");
+      if (!mounted) return;
       setState(() {
         _isTrajectoryListLoading = false;
       });
@@ -395,7 +398,8 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
       print(
           "✅ 使用済みローカル軌跡を読み込みました: ${loadedUsedGroupIds.length}件 - $loadedUsedGroupIds");
 
-      // setState で UI 更新
+      // setState で UI 更新（画面遷移後に完了した場合は無視）
+      if (!mounted) return;
       setState(() {
         usedLocalTrajectoryGroupIds = loadedUsedGroupIds.toSet();
       });
