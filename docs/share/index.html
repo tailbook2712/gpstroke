@@ -278,7 +278,6 @@ const TRAJECTORY_SIZE = 100;   // ストロークのコンテナサイズ（論�
 const PADDING = 0.1;           // コンテナ内の余白（10%）
 const COLOR_NORMAL = '#2196F3';     // Colors.blue
 const COLOR_HIGHLIGHT = '#F44336';  // Colors.red
-const COLOR_DIMMED = '#B0BEC5';     // グレーアウト
 const MAP_OPACITY = 0.85;
 
 /* =========================================================================
@@ -427,7 +426,6 @@ const viewer = {
   k: 1, stageW: 0, stageH: 0,
   // 描画状態
   highlightIndex: -1,   // 赤くハイライト中のストローク
-  dimOthers: false,
   pulse: 0,
   // 地図
   map: null, mapPolyline: null, mapsReady: false, mapsFailed: false,
@@ -516,8 +514,8 @@ function draw() {
     ctx.lineWidth = (highlighted ? 5 : 4) / scale;
     ctx.lineJoin = 'round';
     ctx.lineCap = 'round';
-    ctx.strokeStyle = highlighted ? COLOR_HIGHLIGHT
-      : (viewer.dimOthers ? COLOR_DIMMED : COLOR_NORMAL);
+    // ハイライト中以外のストロークはアプリと同じく青のまま
+    ctx.strokeStyle = highlighted ? COLOR_HIGHLIGHT : COLOR_NORMAL;
     ctx.beginPath();
     s.drawing.pixels.forEach((p, i) => i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y));
     ctx.stroke();
@@ -650,7 +648,6 @@ function updateCounter() {
 
 function resetVisual() {
   viewer.highlightIndex = -1;
-  viewer.dimOthers = false;
   viewer.pulse = 0;
   const layer = $('map-layer');
   layer.style.transition = 'none';
@@ -669,9 +666,8 @@ async function playStroke(i, run) {
   viewer.currentIndex = i;
   updateCounter();
 
-  // 2. ハイライト（他はグレーアウト、パルス）
+  // 2. ハイライト（対象を赤に、パルス）
   viewer.highlightIndex = stroke.index;
-  viewer.dimOthers = true;
   await animate(TIMING.highlight, t => {
     viewer.pulse = (Math.sin(t * 2 * Math.PI) + 1) / 2;
     draw();
@@ -715,7 +711,6 @@ async function playStroke(i, run) {
   if (hasMap) await fadeMap(0, TIMING.mapFadeOut); else await sleep(TIMING.mapFadeOut);
   if (!alive()) return;
   viewer.highlightIndex = -1;
-  viewer.dimOthers = false;
   draw();
   if (viewer.mapPolyline) { viewer.mapPolyline.setMap(null); viewer.mapPolyline = null; }
   await sleep(TIMING.gap);

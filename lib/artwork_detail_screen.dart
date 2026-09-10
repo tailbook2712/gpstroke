@@ -5,6 +5,7 @@ import 'dart:math' as math;
 import 'package:flutter/foundation.dart' show defaultTargetPlatform, TargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:intl/intl.dart';
 import 'package:cloud_firestore/cloud_firestore.dart' show FirebaseException;
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:share_plus/share_plus.dart';
@@ -31,6 +32,7 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
   late DatabaseHelper _dbHelper;
 
   String _artworkName = "作品の詳細";
+  String _artworkSummary = "";
   final double canvasPadding = 20.0;
 
   List<Color> _trajectoryColors = [];
@@ -62,9 +64,16 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
   final Duration _mapDisplayDuration = Duration(seconds: 3);
   final Duration _transitionDuration = Duration(milliseconds: 600);
 
-  // スライドショーの速度制御
-  int _playbackSpeed = 1; // 1倍速、2倍速、3倍速、または負の値で早戻し
-  final List<int> _speedOptions = [-3, -2, -1, 1, 2, 3]; // 利用可能な速度オプション
+  // スライドショーの速度制御（共有ページと同じ 1倍速 → 2倍速 → 3倍速 の循環）
+  int _playbackSpeed = 1;
+  final List<int> _speedOptions = [1, 2, 3];
+
+  // スライドショーの世代番号。停止・一時停止・シークで増やし、
+  // 古い再生チェーンが await 後に UI を更新しないようにする
+  int _slideshowRun = 0;
+
+  // 全ストローク再生後、作品全体を表示してからループするまでの時間
+  final Duration _outroDuration = Duration(seconds: 2);
 
   // デバッグフラグ
   final bool _debugMode = true;
@@ -277,6 +286,14 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
           _trajectories.length,
           (_) => Colors.blue,
         );
+
+        // 作品名の下に表示するサマリー（共有ページのヘッダーと同じ）
+        final meta = (data['meta'] as Map<String, dynamic>?) ?? {};
+        final int totalSteps = (meta['totalSteps'] as num?)?.round() ?? 0;
+        final double totalDistance =
+            (meta['totalDistance'] as num?)?.toDouble() ?? 0.0;
+        _artworkSummary =
+            '${_trajectories.length} ストローク · ${NumberFormat('#,###').format(totalSteps)} 歩 · ${totalDistance.toStringAsFixed(2)} km';
       });
 
       // 軌跡を記録順にソート
@@ -395,6 +412,7 @@ _currentTrajectoryIndex = -1;
   void _startSlideshow() async {
     if (_trajectories.isEmpty || _recordedOrder.isEmpty) return;
 
+    _slideshowRun++;
     setState(() {
       _isSlideshowPlaying = true;
 _currentTrajectoryIndex = -1;
@@ -406,6 +424,7 @@ _currentTrajectoryIndex = -1;
   }
 
   void _stopSlideshow() {
+    _slideshowRun++;
     setState(() {
       _isSlideshowPlaying = false;
 _currentTrajectoryIndex = -1;
@@ -430,10 +449,49 @@ _currentTrajectoryIndex = -1;
     });
   }
 
+  // 一時停止（共有ページと同様、現在のストロークのハイライトは残す）
+  void _pauseSlideshow() {
+    _slideshowRun++;
+    _highlightController.stop();
+    _mapTransitionController.stop();
+    _mapAlignmentController.stop();
+
+    setState(() {
+      _isSlideshowPlaying = false;
+      _isShowingMap = false;
+      _isMapAligned = false;
+      _cachedCameraPosition = null;
+      _alignedCameraPosition = null;
+    });
+  }
+
+  // 再生／一時停止ボタン。一時停止後は現在のストロークから再開する
+  void _togglePlayback() {
+    if (_isSlideshowPlaying) {
+      _pauseSlideshow();
+    } else if (_currentTrajectoryIndex >= 0) {
+      _seekToTrajectory(_currentTrajectoryIndex);
+    } else {
+      _startSlideshow();
+    }
+  }
+
+  // 前のストロークへ（先頭では先頭のまま）
+  void _showPrevStroke() {
+    _seekToTrajectory((_currentTrajectoryIndex - 1).clamp(0, _recordedOrder.length - 1));
+  }
+
+  // 次のストロークへ（末尾では先頭に戻る）
+  void _showNextStroke() {
+    final next = _currentTrajectoryIndex + 1;
+    _seekToTrajectory(next >= _recordedOrder.length ? 0 : next);
+  }
+
   void _seekToTrajectory(int index) {
     if (_recordedOrder.isEmpty) return;
     index = index.clamp(0, _recordedOrder.length - 1);
 
+    _slideshowRun++;
     _highlightController.stop();
     _mapTransitionController.stop();
     _mapAlignmentController.stop();
@@ -475,13 +533,7 @@ _currentTrajectoryIndex = -1;
   }
 
   // 速度表示のテキストを取得
-  String _getSpeedText() {
-    if (_playbackSpeed > 0) {
-      return '${_playbackSpeed}倍速';
-    } else {
-      return '${_playbackSpeed.abs()}倍速(早戻し)';
-    }
-  }
+  String _getSpeedText() => '$_playbackSpeed倍速';
 
   // Web Mercator対応の地図データ準備
   Future<void> _prepareMapData(int actualTrajectoryIndex) async {
@@ -1045,68 +1097,27 @@ _currentTrajectoryIndex = -1;
     }
   }
 
-  // 前の軌跡を表示
-  void _showPreviousTrajectory() async {
-    if (!_isSlideshowPlaying) return;
-
-    int prevStepIndex = _currentTrajectoryIndex - 1;
-
-    if (prevStepIndex < 0) {
-      // 最初の軌跡より前に戻ろうとした場合、スライドショーを終了
-      _stopSlideshow();
-      return;
-    }
-
-    // 実際の軌跡インデックス（記録順序に従う）
-    int actualTrajectoryIndex = _recordedOrder[prevStepIndex];
-
-    setState(() {
-      _currentTrajectoryIndex = prevStepIndex;
-      // ハイライトする軌跡を赤色に変更
-      _trajectoryColors[actualTrajectoryIndex] = Colors.red;
-      // 新しい軌跡に変わったのでキャッシュをクリア
-      _cachedCameraPosition = null;
-      _alignedCameraPosition = null;
-    });
-
-    // ハイライトアニメーション（速度調整）
-    _highlightController.duration = _getScaledDuration(_highlightDuration);
-    _highlightController.reset();
-    await _highlightController.forward();
-
-    // 地図データを準備
-    await _prepareMapData(actualTrajectoryIndex);
-
-    // 地図アニメーションを表示
-    await _showMapAnimation();
-
-    // 軌跡の色を元に戻す
-    setState(() {
-      _trajectoryColors[actualTrajectoryIndex] =
-          Colors.blue;
-    });
-
-    // 速度に応じた次の軌跡への遷移の待機
-    await Future.delayed(_getScaledDuration(_transitionDuration));
-
-    // 続行（早戻しの場合は前の軌跡に進む）
-    if (_isSlideshowPlaying) {
-      if (_playbackSpeed < 0) {
-        _showPreviousTrajectory();
-      } else {
-        _showNextTrajectory();
-      }
-    }
-  }
-
   // 次の軌跡を表示
   void _showNextTrajectory() async {
     if (!_isSlideshowPlaying) return;
+    final int run = _slideshowRun;
+    bool alive() => mounted && run == _slideshowRun && _isSlideshowPlaying;
 
     int nextStepIndex = _currentTrajectoryIndex + 1;
 
     if (nextStepIndex >= _recordedOrder.length) {
-      _stopSlideshow();
+      // すべて再生し終えたら作品全体を見せてから先頭に戻る（共有ページと同じ）
+      await Future.delayed(_getScaledDuration(_outroDuration));
+      if (!alive()) return;
+      setState(() {
+        _currentTrajectoryIndex = -1;
+        _currentTrajectoryDetails = null;
+        _trajectoryColors = List.generate(
+          _trajectories.length,
+          (_) => Colors.blue,
+        );
+      });
+      _showNextTrajectory();
       return;
     }
 
@@ -1126,30 +1137,26 @@ _currentTrajectoryIndex = -1;
     _highlightController.duration = _getScaledDuration(_highlightDuration);
     _highlightController.reset();
     await _highlightController.forward();
+    if (!alive()) return;
 
     // 地図データを準備
     await _prepareMapData(actualTrajectoryIndex);
+    if (!alive()) return;
 
     // 地図アニメーションを表示
     await _showMapAnimation();
+    if (!alive()) return;
 
     // 軌跡の色を元に戻す
     setState(() {
-      _trajectoryColors[actualTrajectoryIndex] =
-          Colors.blue;
+      _trajectoryColors[actualTrajectoryIndex] = Colors.blue;
     });
 
     // 速度に応じた次の軌跡への遷移の待機
     await Future.delayed(_getScaledDuration(_transitionDuration));
+    if (!alive()) return;
 
-    // 続行（早戻しの場合は前の軌跡に進む）
-    if (_isSlideshowPlaying) {
-      if (_playbackSpeed < 0) {
-        _showPreviousTrajectory();
-      } else {
-        _showNextTrajectory();
-      }
-    }
+    _showNextTrajectory();
   }
 
   // 現在のカメラ位置をキャッシュ
@@ -1225,7 +1232,22 @@ _currentTrajectoryIndex = -1;
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text(_artworkName),
+        title: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              _artworkName,
+              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+              overflow: TextOverflow.ellipsis,
+            ),
+            if (_artworkSummary.isNotEmpty)
+              Text(
+                _artworkSummary,
+                style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                overflow: TextOverflow.ellipsis,
+              ),
+          ],
+        ),
         actions: [
           if (_trajectories.isNotEmpty)
             IconButton(
@@ -1242,11 +1264,15 @@ _currentTrajectoryIndex = -1;
           if (_trajectories.isNotEmpty)
             IconButton(
               icon: const Icon(Icons.animation),
+              tooltip: 'スライドショー',
               onPressed: () {
                 setState(() =>
                     _isControlPanelVisible = !_isControlPanelVisible);
-                if (_isControlPanelVisible && !_isSlideshowPlaying) {
-                  _startSlideshow();
+                if (_isControlPanelVisible) {
+                  if (!_isSlideshowPlaying) _startSlideshow();
+                } else {
+                  // 再生 UI を閉じたらスライドショーを終了して作品全体の表示に戻す
+                  _stopSlideshow();
                 }
               },
             ),
@@ -1375,242 +1401,188 @@ _currentTrajectoryIndex = -1;
               );
             }).toList(),
 
-            // 個別軌跡の記録日時・歩数・距離表示（スライドショーの再生バーが
-            // 非表示のときに軌跡タップで地図が表示されるケース向け）
-            if (_isShowingMap &&
-                _currentTrajectoryDetails != null &&
-                !_isControlPanelVisible)
-              Positioned(
-                bottom: 24,
-                left: 16,
-                right: 16,
-                child: AnimatedBuilder(
-                  animation: _mapTransitionController,
-                  builder: (context, child) {
-                    return Opacity(
-                      opacity: _mapTransitionController.value,
-                      child: child,
-                    );
-                  },
-                  child: Container(
-                    padding: EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                    decoration: BoxDecoration(
-                      color: Colors.black.withOpacity(0.7),
-                      borderRadius: BorderRadius.circular(12),
+            // 記録日時・歩数・距離カードと再生コントロール（共有ページと同じ UI）
+            Positioned(
+              bottom: 0,
+              left: 0,
+              right: 0,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (_isShowingMap && _currentTrajectoryDetails != null)
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+                      child: _buildInfoCard(),
                     ),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                      children: [
-                        Text(
-                          _formatDate(_currentTrajectoryDetails!['date']),
-                          style: TextStyle(color: Colors.white70, fontSize: 12),
-                        ),
-                        Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(Icons.directions_walk,
-                                size: 14, color: Colors.blue[300]),
-                            SizedBox(width: 4),
-                            Text(
-                              '${_currentTrajectoryDetails!['steps']} 歩',
-                              style: TextStyle(
-                                  color: Colors.white70, fontSize: 12),
-                            ),
-                          ],
-                        ),
-                        Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(Icons.straighten,
-                                size: 14, color: Colors.green[300]),
-                            SizedBox(width: 4),
-                            Text(
-                              '${(_currentTrajectoryDetails!['distance'] as double).toStringAsFixed(2)} km',
-                              style: TextStyle(
-                                  color: Colors.white70, fontSize: 12),
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
+                  if (_trajectories.isNotEmpty && _isControlPanelVisible)
+                    _buildControlPanel(),
+                ],
               ),
-
-            // 再生コントロールパネル
-            if (_trajectories.isNotEmpty && _isControlPanelVisible)
-              Positioned(
-                bottom: 0,
-                left: 0,
-                right: 0,
-                child: Container(
-                  decoration: BoxDecoration(
-                    color: Colors.black.withOpacity(0.85),
-                    borderRadius:
-                        BorderRadius.vertical(top: Radius.circular(16)),
-                  ),
-                  padding: EdgeInsets.fromLTRB(16, 4, 16, 24),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      // 閉じるハンドル
-                      GestureDetector(
-                        onTap: () =>
-                            setState(() => _isControlPanelVisible = false),
-                        child: Padding(
-                          padding: EdgeInsets.symmetric(vertical: 6),
-                          child: Icon(Icons.keyboard_arrow_down,
-                              color: Colors.white54, size: 20),
-                        ),
-                      ),
-                      // 上段：情報表示エリア
-                      if (_currentTrajectoryDetails != null) ...[
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                          children: [
-                            Text(
-                              '記録日時: ${_formatDate(_currentTrajectoryDetails!['date'])}',
-                              style: TextStyle(
-                                color: Colors.white70,
-                                fontSize: 12,
-                              ),
-                            ),
-                            Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Icon(Icons.directions_walk,
-                                    size: 14, color: Colors.blue[300]),
-                                SizedBox(width: 4),
-                                Text(
-                                  '${_currentTrajectoryDetails!['steps']} 歩',
-                                  style: TextStyle(
-                                      color: Colors.white70, fontSize: 12),
-                                ),
-                              ],
-                            ),
-                            Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Icon(Icons.straighten,
-                                    size: 14, color: Colors.green[300]),
-                                SizedBox(width: 4),
-                                Text(
-                                  '${(_currentTrajectoryDetails!['distance'] as double).toStringAsFixed(2)} km',
-                                  style: TextStyle(
-                                      color: Colors.white70, fontSize: 12),
-                                ),
-                              ],
-                            ),
-                          ],
-                        ),
-                        SizedBox(height: 8),
-                      ],
-                      // 下段：再生コントロールエリア（停止ボタン + シークバー）
-                      Row(
-                        children: [
-                          IconButton(
-                            icon: Icon(
-                              _isSlideshowPlaying
-                                  ? Icons.stop
-                                  : Icons.play_arrow,
-                              color: Colors.white,
-                            ),
-                            onPressed: _isSlideshowPlaying
-                                ? _stopSlideshow
-                                : _startSlideshow,
-                            padding: EdgeInsets.all(4),
-                            constraints:
-                                BoxConstraints(minWidth: 36, minHeight: 36),
-                          ),
-                          Expanded(
-                            child: SliderTheme(
-                              data: SliderTheme.of(context).copyWith(
-                                trackHeight: 3.0,
-                                thumbShape: RoundSliderThumbShape(
-                                    enabledThumbRadius: 7),
-                                activeTrackColor: Colors.white,
-                                inactiveTrackColor: Colors.white30,
-                                thumbColor: Colors.white,
-                                overlayColor: Colors.white24,
-                              ),
-                              child: Slider(
-                                value: _recordedOrder.isEmpty
-                                    ? 0.0
-                                    : _currentTrajectoryIndex
-                                        .clamp(0, _recordedOrder.length - 1)
-                                        .toDouble(),
-                                min: 0,
-                                max: _recordedOrder.length <= 1
-                                    ? 1.0
-                                    : (_recordedOrder.length - 1).toDouble(),
-                                divisions: _recordedOrder.length > 1
-                                    ? _recordedOrder.length - 1
-                                    : null,
-                                onChanged: _recordedOrder.length > 1
-                                    ? (value) =>
-                                        _seekToTrajectory(value.round())
-                                    : null,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                      // ストローク操作エリア（コマ送り + ストローク番号 + 速度）
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          IconButton(
-                            icon: Icon(Icons.navigate_before,
-                                color: Colors.white),
-                            onPressed: () => _seekToTrajectory(
-                                (_currentTrajectoryIndex - 1)
-                                    .clamp(0, _recordedOrder.length - 1)),
-                            padding: EdgeInsets.all(4),
-                            constraints:
-                                BoxConstraints(minWidth: 36, minHeight: 36),
-                          ),
-                          Text(
-                            '${(_currentTrajectoryIndex + 1).clamp(1, _recordedOrder.length)} / ${_recordedOrder.length}',
-                            style: TextStyle(
-                              fontSize: 13,
-                              fontWeight: FontWeight.w500,
-                              color: Colors.white70,
-                            ),
-                          ),
-                          IconButton(
-                            icon:
-                                Icon(Icons.navigate_next, color: Colors.white),
-                            onPressed: () => _seekToTrajectory(
-                                (_currentTrajectoryIndex + 1)
-                                    .clamp(0, _recordedOrder.length - 1)),
-                            padding: EdgeInsets.all(4),
-                            constraints:
-                                BoxConstraints(minWidth: 36, minHeight: 36),
-                          ),
-                          SizedBox(width: 8),
-                          TextButton(
-                            onPressed: _increaseSpeed,
-                            style: TextButton.styleFrom(
-                              foregroundColor: Colors.white,
-                              padding: EdgeInsets.symmetric(
-                                  horizontal: 12, vertical: 4),
-                              minimumSize: Size(0, 36),
-                            ),
-                            child: Text(
-                              _getSpeedText(),
-                              style: TextStyle(
-                                fontSize: 14,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
-              ),
+            ),
           ],
+        ),
+      ),
+    );
+  }
+
+  static const TextStyle _infoTextStyle =
+      TextStyle(color: Colors.white70, fontSize: 12);
+
+  // 記録日時・歩数・距離カード（共有ページの info-card と同じ見た目）
+  Widget _buildInfoCard() {
+    final details = _currentTrajectoryDetails!;
+    final int steps = (details['steps'] as num?)?.round() ?? 0;
+    final double distance = (details['distance'] as num?)?.toDouble() ?? 0.0;
+    return AnimatedBuilder(
+      animation: _mapTransitionController,
+      builder: (context, child) => Opacity(
+        opacity: _mapTransitionController.value,
+        child: child,
+      ),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        decoration: BoxDecoration(
+          color: Colors.black.withOpacity(0.72),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceAround,
+          children: [
+            Text(
+              _formatDate(details['date']),
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.directions_walk,
+                    size: 14, color: Color(0xFF64B5F6)),
+                const SizedBox(width: 4),
+                Text('${NumberFormat('#,###').format(steps)} 歩',
+                    style: _infoTextStyle),
+              ],
+            ),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.straighten,
+                    size: 14, color: Color(0xFF81C784)),
+                const SizedBox(width: 4),
+                Text('${distance.toStringAsFixed(2)} km',
+                    style: _infoTextStyle),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // 再生コントロールパネル（共有ページの controls と同じ構成）
+  Widget _buildControlPanel() {
+    final int strokeCount = _recordedOrder.length;
+    final int current = _currentTrajectoryIndex;
+    return Container(
+      width: double.infinity,
+      color: const Color(0xFF111318),
+      padding: EdgeInsets.fromLTRB(
+          16, 10, 16, 14 + MediaQuery.of(context).padding.bottom),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // 進行バー（ストロークごとのセグメント。タップでそのストロークへ移動）
+          Row(
+            children: List.generate(strokeCount, (i) {
+              final Color color = i < current
+                  ? Colors.white
+                  : i == current
+                      ? const Color(0xFFFF5252)
+                      : Colors.white.withOpacity(0.22);
+              return Expanded(
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: () => _seekToTrajectory(i),
+                  child: Padding(
+                    padding: EdgeInsets.only(
+                      left: i == 0 ? 0 : 2,
+                      right: i == strokeCount - 1 ? 0 : 2,
+                      top: 6,
+                      bottom: 6,
+                    ),
+                    child: Container(
+                      height: 4,
+                      decoration: BoxDecoration(
+                        color: color,
+                        borderRadius: BorderRadius.circular(2),
+                      ),
+                    ),
+                  ),
+                ),
+              );
+            }),
+          ),
+          const SizedBox(height: 4),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              _buildRoundButton(Icons.chevron_left, _showPrevStroke),
+              const SizedBox(width: 6),
+              _buildRoundButton(
+                _isSlideshowPlaying ? Icons.pause : Icons.play_arrow,
+                _togglePlayback,
+              ),
+              const SizedBox(width: 6),
+              _buildRoundButton(Icons.chevron_right, _showNextStroke),
+              const SizedBox(width: 6),
+              SizedBox(
+                width: 56,
+                child: Text(
+                  '${current < 0 ? '-' : current + 1} / $strokeCount',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Colors.white.withOpacity(0.65),
+                    fontSize: 13,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 6),
+              TextButton(
+                onPressed: _increaseSpeed,
+                style: TextButton.styleFrom(
+                  foregroundColor: Colors.white,
+                  backgroundColor: Colors.white.withOpacity(0.12),
+                  padding: const EdgeInsets.symmetric(horizontal: 14),
+                  minimumSize: const Size(0, 40),
+                  shape: const StadiumBorder(),
+                ),
+                child: Text(
+                  _getSpeedText(),
+                  style: const TextStyle(
+                      fontSize: 13, fontWeight: FontWeight.w600),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildRoundButton(IconData icon, VoidCallback onTap) {
+    return Material(
+      color: Colors.white.withOpacity(0.12),
+      shape: const CircleBorder(),
+      child: InkWell(
+        customBorder: const CircleBorder(),
+        onTap: onTap,
+        child: SizedBox(
+          width: 40,
+          height: 40,
+          child: Icon(icon, color: Colors.white, size: 22),
         ),
       ),
     );
