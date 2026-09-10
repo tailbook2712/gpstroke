@@ -82,18 +82,56 @@ class ArtworkShareService {
       ownerUid: uid,
       detailsLookup: _lookupTrajectoryDetails,
     );
+    // 診断用: 共有データのサイズ（Firestore のドキュメント上限は 1 MiB）
+    final int payloadBytes = utf8.encode(jsonEncode(payload)).length;
+    final int totalPoints = (payload['strokes'] as List)
+        .fold<int>(0, (sum, s) => sum + ((s as Map)['pointCount'] as int));
+    print('📤 共有データ: shareId=$shareId, ストローク=${payload['strokeCount']}, '
+        '座標点=$totalPoints, サイズ=${(payloadBytes / 1024).toStringAsFixed(1)} KB');
+    if (payloadBytes > 1000 * 1024) {
+      throw StateError(
+          '作品のデータが大きすぎて共有できません（${(payloadBytes / 1024).toStringAsFixed(0)} KB）');
+    }
+
+    // 書き込み前にサーバーへの到達性を確認（オフラインなら書き込みは完了しない）
+    final probe = Stopwatch()..start();
+    try {
+      await _db
+          .collection(collectionName)
+          .doc(shareId)
+          .get(const GetOptions(source: Source.server))
+          .timeout(const Duration(seconds: 15));
+      print('📡 Firestore サーバーに到達 (${probe.elapsedMilliseconds} ms)');
+    } on TimeoutException {
+      print('📡 Firestore サーバー到達確認がタイムアウト (${probe.elapsedMilliseconds} ms)');
+      throw StateError('Firestore に接続できません。Wi-Fi をモバイル通信に切り替えるなど、通信経路を変えて再度お試しください');
+    } on FirebaseException catch (e) {
+      if (e.code == 'unavailable') {
+        print('📡 Firestore サーバーに到達できません: ${e.message}');
+        throw StateError('Firestore に接続できません。Wi-Fi をモバイル通信に切り替えるなど、通信経路を変えて再度お試しください');
+      }
+      // permission-denied など到達はしているエラーはそのまま書き込みへ進める
+      print('📡 Firestore 到達確認: ${e.code}（続行）');
+    }
+
     payload['sharedAt'] = FieldValue.serverTimestamp();
 
     // オフライン時は Firestore が書き込みをキューに溜めて完了を待ち続けるため、
     // 一定時間で打ち切ってユーザーに通信環境の確認を促す
+    final stopwatch = Stopwatch()..start();
     try {
       await _db
           .collection(collectionName)
           .doc(shareId)
           .set(payload)
-          .timeout(const Duration(seconds: 20));
+          .timeout(const Duration(seconds: 60));
+      print('✅ 共有データを保存しました (${stopwatch.elapsedMilliseconds} ms)');
     } on TimeoutException {
+      print('⏱️ 共有データの保存がタイムアウト (${stopwatch.elapsedMilliseconds} ms)');
       throw StateError('サーバーに接続できませんでした。通信環境を確認して再度お試しください');
+    } on FirebaseException catch (e) {
+      print('❌ 共有データの保存に失敗: ${e.code} ${e.message}');
+      rethrow;
     }
 
     // 共有 ID を作品ファイルに保存して、再共有時に同じリンクを再利用する

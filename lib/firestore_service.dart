@@ -135,6 +135,9 @@ class FirestoreService {
   Future<List<Map<String, dynamic>>> getAllArtworks() async {
     try {
       QuerySnapshot snapshot = await _userCollection('artworks').get();
+      // 診断用: サーバーに到達できていない場合はローカルキャッシュから応答される
+      print('📡 作品一覧の取得元: ${snapshot.metadata.isFromCache ? "ローカルキャッシュ（サーバー未到達）" : "サーバー"}'
+          ' (${snapshot.docs.length}件)');
       List<Map<String, dynamic>> result = [];
 
       for (var doc in snapshot.docs) {
