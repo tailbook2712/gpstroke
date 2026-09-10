@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:math';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:crypto/crypto.dart';
 import 'package:geolocator/geolocator.dart';
 
 import 'auth_service.dart';
@@ -47,12 +48,45 @@ class ArtworkShareService {
   /// 共有 ID から閲覧ページの URL を組み立てる
   static String buildShareUrl(String shareId) => '$shareBaseUrl?id=$shareId';
 
-  /// 推測されにくいランダムな共有 ID を生成する（英数字 20 文字）
+  /// 作品ごとに一意で、再共有しても変わらない共有 ID を導出する（URL 安全な 20 文字）。
+  ///
+  /// ユーザー ID と作品 ID のハッシュから作るため、同じ作品を何度共有しても
+  /// 同じリンクになり（Firestore 上のドキュメントは上書き更新される）、
+  /// 端末を変えたり Firestore から作品を復元した後でもリンクが変わらない。
+  /// ユーザー ID を知らなければ推測できない。
+  static String deriveShareId({
+    required String ownerUid,
+    required String artworkKey,
+  }) {
+    final digest = sha256.convert(utf8.encode('gpstroke-share:$ownerUid:$artworkKey'));
+    return base64UrlEncode(digest.bytes.sublist(0, 15)); // 15 bytes → 20 文字
+  }
+
+  /// 推測されにくいランダムな共有 ID を生成する（英数字 20 文字）。
+  /// 作品 ID を持たない古い作品ファイル向けのフォールバック。
   static String generateShareId({Random? random}) {
     const chars =
         'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
     final rng = random ?? Random.secure();
     return List.generate(20, (_) => chars[rng.nextInt(chars.length)]).join();
+  }
+
+  /// 作品ファイルから共有 ID を決める。
+  ///
+  /// 優先順位:
+  /// 1. 作品ファイルの meta に保存済みの shareId（過去に発行したリンクを維持）
+  /// 2. 作品 ID から導出した ID（同じ作品なら常に同じリンク）
+  /// 3. 作品 ID が無い古いファイルはランダム ID
+  static String resolveShareId(Map<String, dynamic> data, String ownerUid) {
+    final meta = (data['meta'] as Map?)?.cast<String, dynamic>() ?? const {};
+    final existing = meta['shareId'] as String?;
+    if (existing != null && existing.isNotEmpty) return existing;
+
+    final artworkId = (meta['artworkId'] as String?) ?? '';
+    if (artworkId.isNotEmpty) {
+      return deriveShareId(ownerUid: ownerUid, artworkKey: artworkId);
+    }
+    return generateShareId();
   }
 
   /// 作品の共有リンクを生成する。
@@ -72,9 +106,7 @@ class ArtworkShareService {
 
     final meta = (data['meta'] as Map<String, dynamic>?) ?? <String, dynamic>{};
     final existingShareId = meta['shareId'] as String?;
-    final shareId = (existingShareId != null && existingShareId.isNotEmpty)
-        ? existingShareId
-        : generateShareId();
+    final shareId = resolveShareId(data, uid);
 
     final payload = await buildSharePayload(
       data,
