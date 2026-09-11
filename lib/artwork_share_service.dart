@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:math';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:crypto/crypto.dart';
 import 'package:geolocator/geolocator.dart';
 
 import 'auth_service.dart';
@@ -47,12 +48,45 @@ class ArtworkShareService {
   /// 共有 ID から閲覧ページの URL を組み立てる
   static String buildShareUrl(String shareId) => '$shareBaseUrl?id=$shareId';
 
-  /// 推測されにくいランダムな共有 ID を生成する（英数字 20 文字）
+  /// 作品ごとに一意で、再共有しても変わらない共有 ID を導出する（URL 安全な 20 文字）。
+  ///
+  /// ユーザー ID と作品 ID のハッシュから作るため、同じ作品を何度共有しても
+  /// 同じリンクになり（Firestore 上のドキュメントは上書き更新される）、
+  /// 端末を変えたり Firestore から作品を復元した後でもリンクが変わらない。
+  /// ユーザー ID を知らなければ推測できない。
+  static String deriveShareId({
+    required String ownerUid,
+    required String artworkKey,
+  }) {
+    final digest = sha256.convert(utf8.encode('gpstroke-share:$ownerUid:$artworkKey'));
+    return base64UrlEncode(digest.bytes.sublist(0, 15)); // 15 bytes → 20 文字
+  }
+
+  /// 推測されにくいランダムな共有 ID を生成する（英数字 20 文字）。
+  /// 作品 ID を持たない古い作品ファイル向けのフォールバック。
   static String generateShareId({Random? random}) {
     const chars =
         'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
     final rng = random ?? Random.secure();
     return List.generate(20, (_) => chars[rng.nextInt(chars.length)]).join();
+  }
+
+  /// 作品ファイルから共有 ID を決める。
+  ///
+  /// 優先順位:
+  /// 1. 作品ファイルの meta に保存済みの shareId（過去に発行したリンクを維持）
+  /// 2. 作品 ID から導出した ID（同じ作品なら常に同じリンク）
+  /// 3. 作品 ID が無い古いファイルはランダム ID
+  static String resolveShareId(Map<String, dynamic> data, String ownerUid) {
+    final meta = (data['meta'] as Map?)?.cast<String, dynamic>() ?? const {};
+    final existing = meta['shareId'] as String?;
+    if (existing != null && existing.isNotEmpty) return existing;
+
+    final artworkId = (meta['artworkId'] as String?) ?? '';
+    if (artworkId.isNotEmpty) {
+      return deriveShareId(ownerUid: ownerUid, artworkKey: artworkId);
+    }
+    return generateShareId();
   }
 
   /// 作品の共有リンクを生成する。
@@ -72,9 +106,7 @@ class ArtworkShareService {
 
     final meta = (data['meta'] as Map<String, dynamic>?) ?? <String, dynamic>{};
     final existingShareId = meta['shareId'] as String?;
-    final shareId = (existingShareId != null && existingShareId.isNotEmpty)
-        ? existingShareId
-        : generateShareId();
+    final shareId = resolveShareId(data, uid);
 
     final payload = await buildSharePayload(
       data,
@@ -82,18 +114,56 @@ class ArtworkShareService {
       ownerUid: uid,
       detailsLookup: _lookupTrajectoryDetails,
     );
+    // 診断用: 共有データのサイズ（Firestore のドキュメント上限は 1 MiB）
+    final int payloadBytes = utf8.encode(jsonEncode(payload)).length;
+    final int totalPoints = (payload['strokes'] as List)
+        .fold<int>(0, (sum, s) => sum + ((s as Map)['pointCount'] as int));
+    print('📤 共有データ: shareId=$shareId, ストローク=${payload['strokeCount']}, '
+        '座標点=$totalPoints, サイズ=${(payloadBytes / 1024).toStringAsFixed(1)} KB');
+    if (payloadBytes > 1000 * 1024) {
+      throw StateError(
+          '作品のデータが大きすぎて共有できません（${(payloadBytes / 1024).toStringAsFixed(0)} KB）');
+    }
+
+    // 書き込み前にサーバーへの到達性を確認（オフラインなら書き込みは完了しない）
+    final probe = Stopwatch()..start();
+    try {
+      await _db
+          .collection(collectionName)
+          .doc(shareId)
+          .get(const GetOptions(source: Source.server))
+          .timeout(const Duration(seconds: 15));
+      print('📡 Firestore サーバーに到達 (${probe.elapsedMilliseconds} ms)');
+    } on TimeoutException {
+      print('📡 Firestore サーバー到達確認がタイムアウト (${probe.elapsedMilliseconds} ms)');
+      throw StateError('Firestore に接続できません。Wi-Fi をモバイル通信に切り替えるなど、通信経路を変えて再度お試しください');
+    } on FirebaseException catch (e) {
+      if (e.code == 'unavailable') {
+        print('📡 Firestore サーバーに到達できません: ${e.message}');
+        throw StateError('Firestore に接続できません。Wi-Fi をモバイル通信に切り替えるなど、通信経路を変えて再度お試しください');
+      }
+      // permission-denied など到達はしているエラーはそのまま書き込みへ進める
+      print('📡 Firestore 到達確認: ${e.code}（続行）');
+    }
+
     payload['sharedAt'] = FieldValue.serverTimestamp();
 
     // オフライン時は Firestore が書き込みをキューに溜めて完了を待ち続けるため、
     // 一定時間で打ち切ってユーザーに通信環境の確認を促す
+    final stopwatch = Stopwatch()..start();
     try {
       await _db
           .collection(collectionName)
           .doc(shareId)
           .set(payload)
-          .timeout(const Duration(seconds: 20));
+          .timeout(const Duration(seconds: 60));
+      print('✅ 共有データを保存しました (${stopwatch.elapsedMilliseconds} ms)');
     } on TimeoutException {
+      print('⏱️ 共有データの保存がタイムアウト (${stopwatch.elapsedMilliseconds} ms)');
       throw StateError('サーバーに接続できませんでした。通信環境を確認して再度お試しください');
+    } on FirebaseException catch (e) {
+      print('❌ 共有データの保存に失敗: ${e.code} ${e.message}');
+      rethrow;
     }
 
     // 共有 ID を作品ファイルに保存して、再共有時に同じリンクを再利用する
