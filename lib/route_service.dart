@@ -8,10 +8,20 @@ import 'package:flutter_dotenv/flutter_dotenv.dart';
 
 /// ルート生成とルート類似度計算を担当するサービス
 class RouteService {
-  // Google Maps Routes API Key (初期化時に読み込み)
+  // Google Maps API Key (初期化時に読み込み)
   static late final String _apiKey;
   static const String _routesApiUrl =
       'https://routes.googleapis.com/directions/v2:computeRoutes';
+
+  // API キーは iOS アプリ制限付き。Dart の http からのリクエストには
+  // Bundle ID が自動で付かないため、ヘッダで明示する
+  static const String _iosBundleId = 'jp.ac.fun.tsukalab.gpstroke';
+  // ※ key をクエリ (?key=) で渡すとこのヘッダは無視されるため，
+  //   key も X-Goog-Api-Key ヘッダで送ること
+  static Map<String, String> get _restHeaders => {
+        'X-Ios-Bundle-Identifier': _iosBundleId,
+        'X-Goog-Api-Key': _apiKey,
+      };
 
   /// API キーの初期化
   static void initializeApiKey() {
@@ -217,7 +227,7 @@ class RouteService {
       print(
           '🔍 API キー (最初の20文字): ${_apiKey.substring(0, min(20, _apiKey.length))}...');
 
-      final url = Uri.parse('$_routesApiUrl?key=$_apiKey');
+      final url = Uri.parse(_routesApiUrl);
 
       final requestBody = {
         'origin': {
@@ -261,8 +271,8 @@ class RouteService {
           .post(
             url,
             headers: {
+              ..._restHeaders,
               'Content-Type': 'application/json',
-              'X-Goog-Api-Key': _apiKey,
               'X-Goog-FieldMask':
                   'routes.distanceMeters,routes.duration,routes.polyline.encodedPolyline',
             },
@@ -635,13 +645,14 @@ class RouteService {
               .map((p) => '${p.latitude},${p.longitude}')
               .join('|'),
           'interpolate': 'true',
-          'key': _apiKey,
         },
       );
 
       print('📍 API リクエスト送信: ${chunkedPoints.length}個のポイント');
 
-      final response = await http.get(uri).timeout(Duration(seconds: 15));
+      final response = await http
+          .get(uri, headers: _restHeaders)
+          .timeout(Duration(seconds: 15));
 
       if (response.statusCode == 200) {
         final json = jsonDecode(response.body);
@@ -728,11 +739,10 @@ class RouteService {
     try {
       final url = Uri.parse(
         'https://roads.googleapis.com/v1/nearestRoads'
-        '?points=${point.latitude},${point.longitude}'
-        '&key=$_apiKey',
+        '?points=${point.latitude},${point.longitude}',
       );
 
-      final response = await http.get(url);
+      final response = await http.get(url, headers: _restHeaders);
 
       if (response.statusCode == 200) {
         final data = json.decode(response.body);
