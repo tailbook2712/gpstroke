@@ -35,6 +35,10 @@
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSHealthShareUsageDescription</key>
+	<string>Apple WatchやGarminで記録したワークアウトのルートを軌跡として取り込むために，ヘルスケアのデータを読み取ります。</string>
+	<key>NSHealthUpdateUsageDescription</key>
+	<string>このアプリはヘルスケアへのデータの書き込みは行いません。</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
 	<string>アプリがバックグラウンドでも位置情報を記録します。</string>
 	<key>NSLocationTemporaryUsageDescriptionDictionary</key>
