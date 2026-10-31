@@ -6,11 +6,13 @@ import 'auth_service.dart';
 import 'firestore_service.dart';
 
 class DatabaseHelper {
-  static final _databaseVersion = 1;
+  // v2: saved_routes テーブルを追加
+  static final _databaseVersion = 2;
 
   static final tableWalkingData = 'walking_data';
   static final usedTrajectoriesTable = 'used_trajectories';
   static final usedGarminActivitiesTable = 'used_garmin_activities';
+  static final savedRoutesTable = 'saved_routes';
 
   // walking_data テーブルのカラム
   static final columnId = '_id';
@@ -26,6 +28,13 @@ class DatabaseHelper {
 
   // used_garmin_activities テーブルのカラム
   static final columnUsedGarminGroupId = 'group_id';
+
+  // saved_routes テーブルのカラム
+  static final columnRouteId = '_id';
+  static final columnRouteName = 'name';
+  static final columnRouteCreatedAt = 'created_at';
+  static final columnRouteDistance = 'distance'; // メートル単位
+  static final columnRoutePoints = 'points'; // JSON形式でルート座標を保存
 
   // ユーザーIDごとにDBインスタンスをキャッシュ
   static final Map<String, Database> _databases = {};
@@ -52,7 +61,26 @@ class DatabaseHelper {
       path,
       version: _databaseVersion,
       onCreate: _onCreate,
+      onUpgrade: _onUpgrade,
     );
+  }
+
+  Future _onUpgrade(Database db, int oldVersion, int newVersion) async {
+    if (oldVersion < 2) {
+      await _createSavedRoutesTable(db);
+    }
+  }
+
+  Future _createSavedRoutesTable(Database db) async {
+    await db.execute('''
+      CREATE TABLE $savedRoutesTable (
+        $columnRouteId INTEGER PRIMARY KEY AUTOINCREMENT,
+        $columnRouteName TEXT NOT NULL,
+        $columnRouteCreatedAt TEXT NOT NULL,
+        $columnRouteDistance REAL NOT NULL,
+        $columnRoutePoints TEXT NOT NULL
+      )
+    ''');
   }
 
   Future _onCreate(Database db, int version) async {
@@ -79,6 +107,8 @@ class DatabaseHelper {
         $columnUsedGarminGroupId TEXT PRIMARY KEY
       )
     ''');
+
+    await _createSavedRoutesTable(db);
   }
 
   // 歩行データを保存
@@ -261,6 +291,45 @@ class DatabaseHelper {
       tableWalkingData,
       orderBy: '$columnDate DESC',
     );
+  }
+
+  // ルート提案で生成したルートを保存
+  Future<int> insertSavedRoute({
+    required String name,
+    required double distance,
+    required List<Map<String, double>> points,
+  }) async {
+    Database db = await database;
+    return await db.insert(savedRoutesTable, {
+      columnRouteName: name,
+      columnRouteCreatedAt: DateTime.now().toIso8601String(),
+      columnRouteDistance: distance,
+      columnRoutePoints: jsonEncode(points),
+    });
+  }
+
+  // 保存済みルートを新しい順に取得（points はデコード済み）
+  Future<List<Map<String, dynamic>>> getSavedRoutes() async {
+    Database db = await database;
+    final rows = await db.query(
+      savedRoutesTable,
+      orderBy: '$columnRouteCreatedAt DESC',
+    );
+    return rows.map((row) {
+      return {
+        ...row,
+        columnRoutePoints: (jsonDecode(row[columnRoutePoints] as String)
+                as List<dynamic>)
+            .cast<Map<String, dynamic>>(),
+      };
+    }).toList();
+  }
+
+  // 保存済みルートを削除
+  Future<void> deleteSavedRoute(int id) async {
+    Database db = await database;
+    await db.delete(savedRoutesTable,
+        where: '$columnRouteId = ?', whereArgs: [id]);
   }
 
   // データ削除 (指定したグループIDのデータを削除)

@@ -18,7 +18,8 @@ import 'database_helper.dart';
 import 'draft_list_screen.dart';
 import 'polyline_painter.dart';
 import 'firestore_service.dart';
-import 'route_design_canvas_screen.dart';
+import 'route_generation_screen.dart';
+import 'route_service.dart';
 
 import 'utils/utils.dart';
 
@@ -89,6 +90,11 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
   double _guideImageLastScale = 1.0; // スケール操作用
   bool _guideImageLocked = false; // ガイド画像の位置・サイズ固定
   bool _showLayerPanel = false;
+
+  // ルート提案用スケッチモード（キャンバス上で歩きたい形をなぞる）
+  bool _isRouteSketchMode = false;
+  List<List<Offset>> _routeSketchStrokes = [];
+  bool _isLocatingForRoute = false; // 現在地取得中
 
   // 軌跡リスト用のデータ（画面下部に常時表示）
   List<Map<String, dynamic>> _garminActivities = [];
@@ -752,7 +758,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
   }
 
   // 作品の途中保存
-  void _saveDraft({String? draftFilePath}) async {
+  Future<void> _saveDraft({String? draftFilePath}) async {
     try {
       final directory = await getApplicationDocumentsDirectory();
       final draftsDirectory = Directory('${directory.path}/drafts');
@@ -933,62 +939,268 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
     }
   }
 
-  /// ルート提案画面へ遷移
+  // ─── ルート提案（キャンバス上でスケッチ） ───
+
+  /// スケッチモードを開始する
   ///
-  /// 既存のルート提案フロー（出発地・目的地選択 → キャンバス描画 → ルート生成）を使用
-  Future<void> _navigateToRouteSuggestion() async {
-    // 現在制作中のキャンバス状態をルート提案画面に渡す
-    Map<String, dynamic>? currentCanvasData;
-    if (selectedTrajectories.isNotEmpty) {
-      final renderBox =
-          _boundaryKey.currentContext?.findRenderObject() as RenderBox?;
-      final canvasSize = renderBox?.size ?? MediaQuery.of(context).size;
-      currentCanvasData = {
-        'canvasWidth': canvasSize.width,
-        'canvasHeight': canvasSize.height,
-        'scaleBarDistance': _scaleBarDistanceMeters,
-        'trajectories': selectedTrajectories.map((item) {
-          return {
-            'positions': item.polyline
-                .map((p) => {
-                      'latitude': p.latitude,
-                      'longitude': p.longitude,
-                    })
-                .toList(),
-            'position': {
-              'dx': item.position.dx / canvasSize.width,
-              'dy': item.position.dy / canvasSize.height,
-            },
-            'scale': item.scale,
-            'rotation': item.rotation,
-          };
-        }).toList(),
-      };
+  /// キャンバス上でなぞった形を、スケールバーの縮尺で実寸に変換し、
+  /// 現在地を始点としたルートを提案する
+  void _enterRouteSketchMode() {
+    setState(() {
+      _isRouteSketchMode = true;
+      _routeSketchStrokes = [];
+      selectedItem = null;
+      _showLayerPanel = false;
+    });
+  }
+
+  void _exitRouteSketchMode() {
+    setState(() {
+      _isRouteSketchMode = false;
+      _routeSketchStrokes = [];
+    });
+  }
+
+  /// 現在のキャンバス状態（ルート提案画面の作品プレビュー用）
+  Map<String, dynamic> _buildCurrentCanvasData() {
+    final renderBox =
+        _boundaryKey.currentContext?.findRenderObject() as RenderBox?;
+    final canvasSize = renderBox?.size ?? MediaQuery.of(context).size;
+    return {
+      'canvasWidth': canvasSize.width,
+      'canvasHeight': canvasSize.height,
+      'scaleBarDistance': _scaleBarDistanceMeters,
+      'trajectories': selectedTrajectories.map((item) {
+        return {
+          'positions': item.polyline
+              .map((p) => {
+                    'latitude': p.latitude,
+                    'longitude': p.longitude,
+                  })
+              .toList(),
+          'position': {
+            'dx': item.position.dx / canvasSize.width,
+            'dy': item.position.dy / canvasSize.height,
+          },
+          'scale': item.scale,
+          'rotation': item.rotation,
+        };
+      }).toList(),
+    };
+  }
+
+  /// スケールバー上の 1px が表す実距離（メートル）
+  double get _metersPerPixel => _scaleBarDistanceMeters / _scaleBarPixelLength;
+
+  /// スケッチの長さ（実寸換算、メートル）
+  double _routeSketchLengthMeters() {
+    double length = 0.0;
+    for (final stroke in _routeSketchStrokes) {
+      for (int i = 0; i < stroke.length - 1; i++) {
+        length += (stroke[i + 1] - stroke[i]).distance;
+      }
     }
+    return length * _metersPerPixel;
+  }
+
+  /// スケッチを確定し、現在地を始点としたルート提案画面へ遷移
+  Future<void> _proceedToRouteGeneration() async {
+    final points = _routeSketchStrokes.expand((s) => s).toList();
+    if (points.length < 2) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('歩きたい形をキャンバスになぞってください')),
+      );
+      return;
+    }
+
+    setState(() => _isLocatingForRoute = true);
+    Position current;
+    try {
+      current = await Geolocator.getCurrentPosition();
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _isLocatingForRoute = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('現在地を取得できませんでした: $e')),
+      );
+      return;
+    }
+    if (!mounted) return;
+    setState(() => _isLocatingForRoute = false);
+
+    final tracedPath = RouteService.convertCanvasSketchToLatLngs(
+      points,
+      gmaps.LatLng(current.latitude, current.longitude),
+      _metersPerPixel,
+    );
+
+    // 作品プレビューでスケッチと同じ位置にルートを置くため、スケッチ中心を正規化して渡す
+    final canvasData = _buildCurrentCanvasData();
+    final xs = points.map((p) => p.dx);
+    final ys = points.map((p) => p.dy);
+    final sketchCenter = Offset(
+      (xs.reduce(math.min) + xs.reduce(math.max)) /
+          2 /
+          (canvasData['canvasWidth'] as double),
+      (ys.reduce(math.min) + ys.reduce(math.max)) /
+          2 /
+          (canvasData['canvasHeight'] as double),
+    );
 
     final routeResult = await Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (context) =>
-            RouteDesignCanvasScreen(initialCanvasData: currentCanvasData),
+        builder: (context) => RouteGenerationScreen(
+          startingPoint: tracedPath.first,
+          destination: tracedPath.last,
+          tracedPath: tracedPath,
+          initialCanvasData: canvasData,
+          initialPreviewCenter: sketchCenter,
+        ),
       ),
     );
 
-    // 歩行終了後、新しい軌跡が記録されていれば再読み込み
-    if (mounted) {
-      await _loadRecordTrajectories();
-
-      if (!mounted) return;
-
-      if (routeResult != null) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('ルートが選択されました。'),
-            duration: Duration(seconds: 2),
-          ),
-        );
-      }
+    if (!mounted) return;
+    // 戻るで戻ってきた場合はスケッチを残したまま描き直せるようにする
+    if (routeResult is! Map<String, dynamic> ||
+        routeResult['routePath'] == null) {
+      return;
     }
+
+    if (!await _confirmLeaveForWalking()) return;
+    if (!mounted) return;
+
+    // 軌跡の記録画面に戻り、ルート追従モードで歩けるようにする
+    Navigator.pop(context, routeResult);
+  }
+
+  /// 歩きに行く前に、制作中のキャンバスを下書き保存するか確認する
+  ///
+  /// Returns: 歩行に進む場合 true
+  Future<bool> _confirmLeaveForWalking() async {
+    if (selectedTrajectories.isEmpty) return true;
+
+    final choice = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('このルートで歩く'),
+        content: const Text('作品の制作画面を閉じて軌跡の記録画面に戻ります。\n'
+            '制作中のキャンバスを下書き保存しますか？'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('キャンセル'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, 'discard'),
+            child: const Text('保存しない'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, 'save'),
+            child: const Text('下書き保存'),
+          ),
+        ],
+      ),
+    );
+
+    if (choice == 'save') {
+      await _saveDraft(draftFilePath: _currentDraftFilePath);
+    }
+    return choice != null;
+  }
+
+  /// スケッチモード中の下部操作パネル（軌跡リストの代わりに表示）
+  Widget _buildRouteSketchControls() {
+    final lengthKm = _routeSketchLengthMeters() / 1000;
+    // スケッチ中の戻る操作は画面を閉じずにスケッチモードを終了する
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) _exitRouteSketchMode();
+      },
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+        color: Colors.white,
+        child: SafeArea(
+          top: false,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                children: [
+                  Icon(Icons.info_outline, size: 18, color: Colors.grey[700]),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      '描き始めが現在地になります。スケールバーの縮尺で実際の大きさに換算されます',
+                      style: TextStyle(fontSize: 12, color: Colors.grey[700]),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Text(
+                '歩く距離の目安: 約 ${lengthKm.toStringAsFixed(2)} km',
+                style: const TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.orange,
+                ),
+              ),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: _isLocatingForRoute ? null : _exitRouteSketchMode,
+                      child: const Text('やめる'),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: _routeSketchStrokes.isEmpty
+                          ? null
+                          : () => setState(() => _routeSketchStrokes.removeLast()),
+                      icon: const Icon(Icons.undo, size: 18),
+                      label: const Text('戻る'),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: _routeSketchStrokes.isEmpty
+                          ? null
+                          : () => setState(() => _routeSketchStrokes.clear()),
+                      icon: const Icon(Icons.delete_sweep, size: 18),
+                      label: const Text('全削除'),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: ElevatedButton(
+                      onPressed:
+                          _isLocatingForRoute ? null : _proceedToRouteGeneration,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.blue,
+                        foregroundColor: Colors.white,
+                      ),
+                      child: _isLocatingForRoute
+                          ? const SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Text('決定'),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   // ─── スケールバー関連メソッド ───
@@ -1253,7 +1465,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text('作品の制作'),
+        title: Text(_isRouteSketchMode ? 'ルートの形をスケッチ' : '作品の制作'),
         actions: [
           PopupMenuButton<String>(
             key: _menuButtonKey,
@@ -1716,8 +1928,29 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                     },
                   ),
                 ),
+                // ルート提案用スケッチレイヤー（キャンバス全面でなぞりを受け付ける）
+                if (_isRouteSketchMode)
+                  Positioned.fill(
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onPanStart: (details) {
+                        setState(() {
+                          _routeSketchStrokes.add([details.localPosition]);
+                        });
+                      },
+                      onPanUpdate: (details) {
+                        setState(() {
+                          _routeSketchStrokes.last.add(details.localPosition);
+                        });
+                      },
+                      child: CustomPaint(
+                        painter: _RouteSketchPainter(_routeSketchStrokes),
+                        size: Size.infinite,
+                      ),
+                    ),
+                  ),
                 // 削除ボタンの表示
-                if (selectedItem != null)
+                if (selectedItem != null && !_isRouteSketchMode)
                   Align(
                     alignment: Alignment.bottomCenter,
                     child: Padding(
@@ -1738,7 +1971,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                   ),
                 ),
                 // ガイド画像コントロールUI（スケールバーの下）- メニューから有効化された場合のみ表示
-                if (_showGuideImageControl)
+                if (_showGuideImageControl && !_isRouteSketchMode)
                   Positioned(
                     top: 60,
                     left: 8,
@@ -1887,117 +2120,152 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                     ),
                   ),
                 // \u53f3\u4e0a\u30dc\u30bf\u30f3\u7fa4\uff08\u30ac\u30a4\u30c9\u753b\u50cf\u8a2d\u5b9a\u30fb\u30eb\u30fc\u30c8\u63d0\u6848\u30fb\u30ec\u30a4\u30e4\u30fc\uff09
-                Positioned(
-                  top: 8,
-                  right: 8,
-                  child: Row(
-                    key: _rightButtonsKey,
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      // \u30ac\u30a4\u30c9\u753b\u50cf\u8a2d\u5b9a\u30dc\u30bf\u30f3
-                      GestureDetector(
-                        onTap: () {
-                          setState(() {
-                            _showGuideImageControl = !_showGuideImageControl;
-                            if (_showGuideImageControl) {
-                              _showGuideImagePanel = true;
-                            }
-                          });
-                        },
-                        child: Container(
-                          decoration: BoxDecoration(
-                            color: Colors.white.withOpacity(0.9),
-                            borderRadius: BorderRadius.circular(8),
-                            boxShadow: [
-                              BoxShadow(
-                                color: Colors.black.withOpacity(0.1),
-                                blurRadius: 4,
-                                offset: const Offset(0, 2),
-                              ),
-                            ],
-                          ),
-                          padding: const EdgeInsets.all(8),
-                          child: Icon(
-                            Icons.add_photo_alternate,
-                            size: 22,
-                            color: _showGuideImageControl
-                                ? Colors.blue
-                                : Colors.grey[700],
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      // \u30eb\u30fc\u30c8\u63d0\u6848\u30dc\u30bf\u30f3
-                      GestureDetector(
-                        onTap: () => _navigateToRouteSuggestion(),
-                        child: Container(
-                          decoration: BoxDecoration(
-                            color: Colors.white.withOpacity(0.9),
-                            borderRadius: BorderRadius.circular(8),
-                            boxShadow: [
-                              BoxShadow(
-                                color: Colors.black.withOpacity(0.1),
-                                blurRadius: 4,
-                                offset: const Offset(0, 2),
-                              ),
-                            ],
-                          ),
-                          padding: const EdgeInsets.all(8),
-                          child: Icon(
-                            Icons.route,
-                            size: 22,
-                            color: Colors.grey[700],
+                if (!_isRouteSketchMode)
+                  Positioned(
+                    top: 8,
+                    right: 8,
+                    child: Row(
+                      key: _rightButtonsKey,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        // \u30ac\u30a4\u30c9\u753b\u50cf\u8a2d\u5b9a\u30dc\u30bf\u30f3
+                        GestureDetector(
+                          onTap: () {
+                            setState(() {
+                              _showGuideImageControl = !_showGuideImageControl;
+                              if (_showGuideImageControl) {
+                                _showGuideImagePanel = true;
+                              }
+                            });
+                          },
+                          child: Container(
+                            decoration: BoxDecoration(
+                              color: Colors.white.withOpacity(0.9),
+                              borderRadius: BorderRadius.circular(8),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: Colors.black.withOpacity(0.1),
+                                  blurRadius: 4,
+                                  offset: const Offset(0, 2),
+                                ),
+                              ],
+                            ),
+                            padding: const EdgeInsets.all(8),
+                            child: Icon(
+                              Icons.add_photo_alternate,
+                              size: 22,
+                              color: _showGuideImageControl
+                                  ? Colors.blue
+                                  : Colors.grey[700],
+                            ),
                           ),
                         ),
-                      ),
-                      const SizedBox(width: 8),
-                      // \u30ec\u30a4\u30e4\u30fc\u30dc\u30bf\u30f3
-                      GestureDetector(
-                        onTap: () {
-                          setState(() {
-                            _showLayerPanel = !_showLayerPanel;
-                          });
-                        },
-                        child: Container(
-                          decoration: BoxDecoration(
-                            color: Colors.white.withOpacity(0.9),
-                            borderRadius: BorderRadius.circular(8),
-                            boxShadow: [
-                              BoxShadow(
-                                color: Colors.black.withOpacity(0.1),
-                                blurRadius: 4,
-                                offset: const Offset(0, 2),
-                              ),
-                            ],
-                          ),
-                          padding: const EdgeInsets.all(8),
-                          child: Icon(
-                            Icons.layers,
-                            size: 22,
-                            color: _showLayerPanel
-                                ? Colors.blue
-                                : Colors.grey[700],
+                        const SizedBox(width: 8),
+                        // \u30eb\u30fc\u30c8\u63d0\u6848\u30dc\u30bf\u30f3
+                        GestureDetector(
+                          onTap: _enterRouteSketchMode,
+                          child: Container(
+                            decoration: BoxDecoration(
+                              color: Colors.white.withOpacity(0.9),
+                              borderRadius: BorderRadius.circular(8),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: Colors.black.withOpacity(0.1),
+                                  blurRadius: 4,
+                                  offset: const Offset(0, 2),
+                                ),
+                              ],
+                            ),
+                            padding: const EdgeInsets.all(8),
+                            child: Icon(
+                              Icons.route,
+                              size: 22,
+                              color: Colors.grey[700],
+                            ),
                           ),
                         ),
-                      ),
-                    ],
+                        const SizedBox(width: 8),
+                        // \u30ec\u30a4\u30e4\u30fc\u30dc\u30bf\u30f3
+                        GestureDetector(
+                          onTap: () {
+                            setState(() {
+                              _showLayerPanel = !_showLayerPanel;
+                            });
+                          },
+                          child: Container(
+                            decoration: BoxDecoration(
+                              color: Colors.white.withOpacity(0.9),
+                              borderRadius: BorderRadius.circular(8),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: Colors.black.withOpacity(0.1),
+                                  blurRadius: 4,
+                                  offset: const Offset(0, 2),
+                                ),
+                              ],
+                            ),
+                            padding: const EdgeInsets.all(8),
+                            child: Icon(
+                              Icons.layers,
+                              size: 22,
+                              color: _showLayerPanel
+                                  ? Colors.blue
+                                  : Colors.grey[700],
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
-                ),
                 // \u30ec\u30a4\u30e4\u30fc\u30d1\u30cd\u30eb\uff08\u53f3\u5074\u30aa\u30fc\u30d0\u30fc\u30ec\u30a4\uff09
-                if (_showLayerPanel)
+                if (_showLayerPanel && !_isRouteSketchMode)
                   Positioned(
                     top: 48,
                     right: 8,
                     child: _buildLayerPanel(),
                   ),
+                // スケッチモード表示バッジ（スケールバーと重ならないよう右上）
+                if (_isRouteSketchMode)
+                  Positioned(
+                    top: 8,
+                    right: 8,
+                    child: IgnorePointer(
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 6),
+                        decoration: BoxDecoration(
+                          color: Colors.orange[700],
+                          borderRadius: BorderRadius.circular(16),
+                        ),
+                        child: const Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.edit, color: Colors.white, size: 16),
+                            SizedBox(width: 4),
+                            Text(
+                              'スケッチモード',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.bold,
+                                fontSize: 13,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
               ],
             ),
           ),
           // \u4e0b\u90e8: \u8ecc\u8de1\u30ea\u30b9\u30c8
-          Container(
-            key: _trajectoryListKey,
-            child: _buildTrajectoryList(),
-          ),
+          if (_isRouteSketchMode)
+            _buildRouteSketchControls()
+          else
+            Container(
+              key: _trajectoryListKey,
+              child: _buildTrajectoryList(),
+            ),
         ],
       ),
     );
@@ -2986,4 +3254,38 @@ class DebugBoundsPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(DebugBoundsPainter oldDelegate) => false;
+}
+
+/// ルート提案用スケッチの描画（始点＝現在地を緑、終点を赤で表示）
+class _RouteSketchPainter extends CustomPainter {
+  final List<List<Offset>> strokes;
+
+  _RouteSketchPainter(this.strokes);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final linePaint = Paint()
+      ..color = Colors.orange
+      ..strokeWidth = 4.0
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round;
+
+    for (final stroke in strokes) {
+      if (stroke.length < 2) continue;
+      final path = Path()..moveTo(stroke.first.dx, stroke.first.dy);
+      for (final p in stroke.skip(1)) {
+        path.lineTo(p.dx, p.dy);
+      }
+      canvas.drawPath(path, linePaint);
+    }
+
+    final nonEmpty = strokes.where((s) => s.isNotEmpty);
+    if (nonEmpty.isEmpty) return;
+    canvas.drawCircle(nonEmpty.first.first, 7.0, Paint()..color = Colors.green);
+    canvas.drawCircle(nonEmpty.last.last, 7.0, Paint()..color = Colors.red);
+  }
+
+  @override
+  bool shouldRepaint(_RouteSketchPainter oldDelegate) => true;
 }

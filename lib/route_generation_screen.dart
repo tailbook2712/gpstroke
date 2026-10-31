@@ -1,6 +1,8 @@
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:intl/intl.dart';
+import 'database_helper.dart';
 import 'draft_list_screen.dart';
 import 'route_service.dart';
 
@@ -10,11 +12,16 @@ class RouteGenerationScreen extends StatefulWidget {
   final List<LatLng> tracedPath;
   final Map<String, dynamic>? initialCanvasData;
 
+  /// 作品プレビューでルートを最初に置く位置（キャンバスに対する 0.0〜1.0 の比率）
+  /// 作品キャンバス上でスケッチした位置をそのまま再現するために使う
+  final Offset? initialPreviewCenter;
+
   RouteGenerationScreen({
     required this.startingPoint,
     required this.destination,
     required this.tracedPath,
     this.initialCanvasData,
+    this.initialPreviewCenter,
   });
 
   @override
@@ -22,12 +29,13 @@ class RouteGenerationScreen extends StatefulWidget {
 }
 
 class _RouteGenerationScreenState extends State<RouteGenerationScreen> {
-  // ignore: unused_field
-  late GoogleMapController _mapController;
+  GoogleMapController? _mapController;
+  final DatabaseHelper _dbHelper = DatabaseHelper();
 
   List<LatLng>? _generatedRoute;
-  Map<String, dynamic>? _routeMetadata;
   bool _isLoading = true;
+  bool _isSaved = false;
+  String? _savedRouteName;
   bool _showSketch = false;
 
   // 作品キャンバスプレビュー表示フラグ
@@ -57,6 +65,12 @@ class _RouteGenerationScreenState extends State<RouteGenerationScreen> {
   void initState() {
     super.initState();
     _draftCanvasData = widget.initialCanvasData;
+    // 作品キャンバスのスケールを引き継ぐ（プレビューで同じ縮尺になるように）
+    final initialScale =
+        (widget.initialCanvasData?['scaleBarDistance'] as num?)?.toDouble();
+    if (initialScale != null && _scaleDistanceOptions.contains(initialScale)) {
+      _scaleBarDistanceMeters = initialScale;
+    }
     _generateRoute();
   }
 
@@ -73,6 +87,7 @@ class _RouteGenerationScreenState extends State<RouteGenerationScreen> {
         _generatedRoute = snappedRoute;
         _isLoading = false;
       });
+      _fitCameraToRoute();
 
       print('✅ ルート生成完了');
       print('  - ルート上のポイント数: ${snappedRoute.length}');
@@ -201,6 +216,31 @@ class _RouteGenerationScreenState extends State<RouteGenerationScreen> {
     );
   }
 
+  /// 生成したルート全体が収まるようにカメラを移動
+  void _fitCameraToRoute() {
+    final route = _generatedRoute;
+    if (_mapController == null || route == null || route.length < 2) return;
+    final lats = route.map((p) => p.latitude);
+    final lons = route.map((p) => p.longitude);
+    final bounds = LatLngBounds(
+      southwest: LatLng(lats.reduce(math.min), lons.reduce(math.min)),
+      northeast: LatLng(lats.reduce(math.max), lons.reduce(math.max)),
+    );
+    try {
+      _mapController!.animateCamera(CameraUpdate.newLatLngBounds(bounds, 60));
+    } catch (e) {
+      // 地図のレイアウト前だと失敗することがある（初期位置のまま表示）
+      print('⚠️ カメラ移動に失敗: $e');
+    }
+  }
+
+  Map<String, dynamic> _buildRouteMetadata() {
+    return {
+      'distance': RouteService.calculatePathDistance(_generatedRoute!),
+      if (_savedRouteName != null) 'name': _savedRouteName,
+    };
+  }
+
   void _startWalkingWithRoute() {
     if (_generatedRoute == null) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -211,8 +251,105 @@ class _RouteGenerationScreenState extends State<RouteGenerationScreen> {
 
     Navigator.pop(context, {
       'routePath': _generatedRoute,
-      'metadata': _routeMetadata,
+      'metadata': _buildRouteMetadata(),
     });
+  }
+
+  /// ルートに名前を付けて保存（軌跡の記録画面のルート選択から呼び出せる）
+  Future<void> _saveRoute() async {
+    if (_generatedRoute == null) return;
+
+    final controller = TextEditingController(
+      text: 'ルート ${DateFormat('yyyy/MM/dd HH:mm').format(DateTime.now())}',
+    );
+    final name = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('ルートを保存'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(hintText: 'ルート名'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('キャンセル'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, controller.text),
+            child: const Text('保存'),
+          ),
+        ],
+      ),
+    );
+    // ダイアログの閉じるアニメーション中も参照されるため controller は dispose しない
+    if (name == null) return;
+
+    final routeName = name.trim().isEmpty ? '名称未設定のルート' : name.trim();
+    try {
+      await _dbHelper.insertSavedRoute(
+        name: routeName,
+        distance: RouteService.calculatePathDistance(_generatedRoute!),
+        points: _generatedRoute!
+            .map((p) => {'latitude': p.latitude, 'longitude': p.longitude})
+            .toList(),
+      );
+      if (!mounted) return;
+      setState(() {
+        _isSaved = true;
+        _savedRouteName = routeName;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('「$routeName」を保存しました')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('ルートの保存に失敗しました: $e')),
+      );
+    }
+  }
+
+  /// 下部のアクションボタン（保存・このルートで歩く）
+  Widget _buildActionButtons() {
+    final hasRoute = _generatedRoute != null;
+    return Positioned(
+      bottom: 20,
+      left: 20,
+      right: 20,
+      child: Row(
+        children: [
+          Expanded(
+            child: ElevatedButton.icon(
+              onPressed: hasRoute && !_isSaved ? _saveRoute : null,
+              icon: Icon(_isSaved ? Icons.check : Icons.bookmark_add),
+              label: Text(_isSaved ? '保存済み' : 'ルートを保存'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.white,
+                foregroundColor: Colors.blue,
+                padding: const EdgeInsets.symmetric(vertical: 14),
+                textStyle: const TextStyle(fontSize: 15),
+              ),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: ElevatedButton.icon(
+              onPressed: hasRoute ? _startWalkingWithRoute : null,
+              icon: const Icon(Icons.play_arrow),
+              label: const Text('このルートで歩く'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.blue,
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(vertical: 14),
+                textStyle: const TextStyle(fontSize: 15),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -276,14 +413,15 @@ class _RouteGenerationScreenState extends State<RouteGenerationScreen> {
       children: [
         GoogleMap(
           initialCameraPosition: CameraPosition(
-            target: LatLng(
-              (widget.startingPoint.latitude + widget.destination.latitude) / 2,
-              (widget.startingPoint.longitude + widget.destination.longitude) /
-                  2,
-            ),
-            zoom: 14,
+            target: widget.startingPoint,
+            zoom: 15,
           ),
-          onMapCreated: (controller) => _mapController = controller,
+          onMapCreated: (controller) {
+            _mapController = controller;
+            // 地図のレイアウト完了を待ってからルート全体に合わせる
+            Future.delayed(
+                const Duration(milliseconds: 300), _fitCameraToRoute);
+          },
           polylines: _buildPolylines(),
           markers: _buildMarkers(),
           myLocationEnabled: true,
@@ -327,25 +465,8 @@ class _RouteGenerationScreenState extends State<RouteGenerationScreen> {
             ),
           ),
 
-        // 下部: 歩く開始ボタン
-        Positioned(
-          bottom: 20,
-          left: 20,
-          right: 20,
-          child: SizedBox(
-            width: double.infinity,
-            child: ElevatedButton.icon(
-              onPressed: _startWalkingWithRoute,
-              icon: const Icon(Icons.play_arrow),
-              label: const Text('このルートで歩く'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.blue,
-                padding: const EdgeInsets.symmetric(vertical: 14),
-                textStyle: const TextStyle(fontSize: 16),
-              ),
-            ),
-          ),
-        ),
+        // 下部: 保存・歩く開始ボタン
+        _buildActionButtons(),
       ],
     );
   }
@@ -391,9 +512,11 @@ class _RouteGenerationScreenState extends State<RouteGenerationScreen> {
     final scaleMultiplier = savedScaleBarDistance / _scaleBarDistanceMeters;
 
     return LayoutBuilder(builder: (context, constraints) {
-      // 初回レンダリング時にルートをキャンバス中央に配置
+      // 初回レンダリング時はスケッチした位置（なければキャンバス中央）に配置
+      final initialCenter = widget.initialPreviewCenter ?? const Offset(0.5, 0.5);
       final position = _routePreviewPosition ??
-          Offset(constraints.maxWidth / 2, constraints.maxHeight / 2);
+          Offset(constraints.maxWidth * initialCenter.dx,
+              constraints.maxHeight * initialCenter.dy);
 
       // 回転ハンドルの座標（右上コーナー、回転角度を反映）
       const double handleSize = 28.0;
@@ -583,25 +706,8 @@ class _RouteGenerationScreenState extends State<RouteGenerationScreen> {
             ),
           ),
 
-          // 下部: 歩く開始ボタン
-          Positioned(
-            bottom: 20,
-            left: 20,
-            right: 20,
-            child: SizedBox(
-              width: double.infinity,
-              child: ElevatedButton.icon(
-                onPressed: _startWalkingWithRoute,
-                icon: const Icon(Icons.play_arrow),
-                label: const Text('このルートで歩く'),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.blue,
-                  padding: const EdgeInsets.symmetric(vertical: 14),
-                  textStyle: const TextStyle(fontSize: 16),
-                ),
-              ),
-            ),
-          ),
+          // 下部: 保存・歩く開始ボタン
+          _buildActionButtons(),
         ],
       );
     });
@@ -640,7 +746,7 @@ class _RouteGenerationScreenState extends State<RouteGenerationScreen> {
       Marker(
         markerId: const MarkerId('starting_point'),
         position: widget.startingPoint,
-        infoWindow: const InfoWindow(title: '出発地'),
+        infoWindow: const InfoWindow(title: '出発地（現在地）'),
         icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueBlue),
       ),
       Marker(

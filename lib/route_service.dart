@@ -86,6 +86,31 @@ class RouteService {
     return pathPoints;
   }
 
+  /// 作品キャンバス上のスケッチを、実寸を保ったまま緯度経度に変換
+  ///
+  /// [points]: キャンバス座標（北が上）のスケッチ点列
+  /// [origin]: スケッチの始点を置く地点（現在地）
+  /// [metersPerPixel]: キャンバス 1px が表す実距離（スケールバーから算出）
+  static List<LatLng> convertCanvasSketchToLatLngs(
+    List<Offset> points,
+    LatLng origin,
+    double metersPerPixel,
+  ) {
+    if (points.isEmpty) return [];
+    const metersPerDegreeLat = 111320.0;
+    final metersPerDegreeLon =
+        metersPerDegreeLat * cos(origin.latitude * pi / 180.0);
+    final start = points.first;
+    return points.map((p) {
+      final eastMeters = (p.dx - start.dx) * metersPerPixel;
+      final northMeters = -(p.dy - start.dy) * metersPerPixel;
+      return LatLng(
+        origin.latitude + northMeters / metersPerDegreeLat,
+        origin.longitude + eastMeters / metersPerDegreeLon,
+      );
+    }).toList();
+  }
+
   /// 2点間の距離を計算（Haversine公式）
   ///
   /// Returns: メートル単位の距離

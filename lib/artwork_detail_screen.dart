@@ -1200,7 +1200,6 @@ _currentTrajectoryIndex = -1;
   // 物理ピクセル基準の座標を扱う（google_maps_flutter_android が dp→px 変換を行わないため）。
   // 一方 Flutter 側のオーバーレイ座標（trajectory.position 等）は論理ピクセル(dp)であり、
   // iOS は逆に論理ピクセル基準で動作するため変換不要。
-  // （route_design_canvas_screen.dart の _convertStrokesToLatLngs と同じ対応）
   double get _mapPixelRatio => defaultTargetPlatform == TargetPlatform.android
       ? MediaQuery.of(context).devicePixelRatio
       : 1.0;
