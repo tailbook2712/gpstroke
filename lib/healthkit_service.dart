@@ -17,7 +17,8 @@ class SmartwatchWorkout {
   });
 }
 
-/// Apple Watch / Garmin などがヘルスケアに書き込んだワークアウトを取得するサービス（iOS のみ）
+/// Apple Watch がヘルスケアに書き込んだワークアウトを取得するサービス（iOS のみ）
+/// Garmin はヘルスケアにルートを書き込まないため，ファイルインポートで取り込む
 class HealthKitService {
   static const MethodChannel _channel = MethodChannel('gpstroke/healthkit');
   static const String _connectedKey = 'healthkit_connected';
@@ -112,10 +113,12 @@ class HealthKitService {
       }
     }
 
-    // 歩数がなければ TCX インポートと同じく身長から推定（stride = 0.413 × height）
-    final strideLength = 0.413 * (userHeightCm / 100);
-    final steps = (item['steps'] as num?)?.toInt() ??
-        (strideLength > 0 ? (distanceMeters / strideLength).toInt() : 0);
+    // 歩数がなければ TCX インポートと同じく身長から推定
+    final recordedSteps = (item['steps'] as num?)?.toInt();
+    final isStepsEstimated = recordedSteps == null || recordedSteps <= 0;
+    final steps = isStepsEstimated
+        ? TcxParser.estimateSteps(distanceMeters, userHeightCm)
+        : recordedSteps;
 
     return SmartwatchWorkout(
       uuid: item['uuid'] as String,
@@ -127,6 +130,7 @@ class HealthKitService {
             (item['startDate'] as num).toInt()),
         distance: distanceMeters / 1000,
         steps: steps,
+        isStepsEstimated: isStepsEstimated,
       ),
     );
   }
