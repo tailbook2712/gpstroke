@@ -1,10 +1,15 @@
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'dart:io';
+import 'package:path/path.dart' as p;
+import 'activity_file_loader.dart';
 import 'tcx_parser.dart';
 import 'database_helper.dart';
 import 'firestore_service.dart';
+import 'healthkit_service.dart';
+
+/// インポート方法（セグメントコントロールで切り替え）
+enum _ImportMode { appleWatch, file }
 
 class GarminImportScreen extends StatefulWidget {
   @override
@@ -14,19 +19,184 @@ class GarminImportScreen extends StatefulWidget {
 class _GarminImportScreenState extends State<GarminImportScreen> {
   final DatabaseHelper _dbHelper = DatabaseHelper();
   final FirestoreService _firestoreService = FirestoreService();
-  List<GarminActivityData> _importedActivities = [];
+  final HealthKitService _healthKitService = HealthKitService();
+  List<GarminActivityData> _importedActivities = []; // ファイルから読み込んだもの
   bool _isLoading = false;
+  _ImportMode _mode = _ImportMode.appleWatch;
   double _userHeightCm = 170.0; // デフォルト170cm
+
+  // スマートウォッチ（HealthKit）連携
+  bool _isHealthKitAvailable = false;
+  bool _isHealthKitConnected = false;
+  bool _isSyncing = false;
+  bool _hasSynced = false;
+  List<SmartwatchWorkout> _syncedWorkouts = [];
+  Set<String> _savedGroupIds = {};
+  final Set<String> _selectedWorkoutGroupIds = {}; // 保存対象として選んだワークアウト
+
+  /// 保存対象（選択した Apple Watch のワークアウト + 読み込んだファイル）
+  List<GarminActivityData> get _activitiesToSave => [
+        ..._syncedWorkouts
+            .map((w) => w.activity)
+            .where((a) => _selectedWorkoutGroupIds.contains(a.generateGroupId())),
+        ..._importedActivities,
+      ];
 
   @override
   void initState() {
     super.initState();
     _loadUserHeight();
+    _initHealthKit();
   }
+
+  /// ヘルスケア連携の状態を確認し，初回は接続するか尋ねる
+  Future<void> _initHealthKit() async {
+    final available = await _healthKitService.isAvailable();
+    final connected = available && await _healthKitService.isConnected();
+    if (!mounted) return;
+    setState(() {
+      _isHealthKitAvailable = available;
+      _isHealthKitConnected = connected;
+      if (!available) _mode = _ImportMode.file;
+    });
+
+    if (available &&
+        !connected &&
+        !await _healthKitService.hasShownConnectPrompt()) {
+      await _healthKitService.markConnectPromptShown();
+      if (!mounted) return;
+      _showConnectPromptDialog();
+    }
+  }
+
+  void _showConnectPromptDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Apple Watch と接続'),
+        content: Text(
+          'Apple Watch で記録したアクティビティを，'
+          'ヘルスケア経由で軌跡として取り込めます。\n今すぐ接続しますか？',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text('あとで'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(context);
+              _connectHealthKit();
+            },
+            child: Text('接続する'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _connectHealthKit() async {
+    try {
+      final success = await _healthKitService.connect();
+      if (!mounted) return;
+      setState(() {
+        _isHealthKitConnected = success;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(success ? 'ヘルスケアと接続しました' : '接続できませんでした')),
+      );
+    } catch (e) {
+      print('❌ ヘルスケア接続エラー: $e');
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('接続エラー: $e'), backgroundColor: Colors.red),
+      );
+    }
+  }
+
+  /// 直近のルート付きワークアウトを同期
+  Future<void> _syncWorkouts() async {
+    setState(() {
+      _isSyncing = true;
+    });
+    try {
+      final workouts = await _healthKitService.fetchRecentWorkouts(
+        userHeightCm: _userHeightCm,
+      );
+      final savedGroupIds = <String>{};
+      for (final workout in workouts) {
+        final groupId = workout.activity.generateGroupId();
+        if (await _dbHelper.getWalkingDataByGroupId(groupId) != null) {
+          savedGroupIds.add(groupId);
+        }
+      }
+      if (!mounted) return;
+      setState(() {
+        _syncedWorkouts = workouts;
+        _savedGroupIds = savedGroupIds;
+        _hasSynced = true;
+        _isSyncing = false;
+      });
+    } catch (e) {
+      print('❌ ワークアウト同期エラー: $e');
+      if (!mounted) return;
+      setState(() {
+        _isSyncing = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('同期エラー: $e'), backgroundColor: Colors.red),
+      );
+    }
+  }
+
+  /// 同期したワークアウトの保存対象の選択を切り替え
+  void _toggleSyncedWorkout(SmartwatchWorkout workout) {
+    final groupId = workout.activity.generateGroupId();
+    setState(() {
+      if (!_selectedWorkoutGroupIds.remove(groupId)) {
+        _selectedWorkoutGroupIds.add(groupId);
+      }
+    });
+  }
+
+  /// 読み込んだファイルを保存待ちリストに追加する。取り込み済み（DBに同じgroupIdがある）ものと，
+  /// すでに保存対象にあるものは除外し，除外した件数を返す
+  Future<({int alreadySaved, int alreadyQueued})> _queueActivities(
+      List<GarminActivityData> activities) async {
+    final queuedGroupIds =
+        _activitiesToSave.map((a) => a.generateGroupId()).toSet();
+    final toAdd = <GarminActivityData>[];
+    int alreadySaved = 0;
+    int alreadyQueued = 0;
+
+    for (final activity in activities) {
+      final groupId = activity.generateGroupId();
+      if (queuedGroupIds.contains(groupId)) {
+        alreadyQueued++;
+      } else if (await _dbHelper.getWalkingDataByGroupId(groupId) != null) {
+        alreadySaved++;
+        _savedGroupIds.add(groupId);
+      } else {
+        queuedGroupIds.add(groupId);
+        toAdd.add(activity);
+      }
+    }
+
+    if (mounted) {
+      setState(() {
+        _importedActivities.addAll(toAdd);
+      });
+    }
+    return (alreadySaved: alreadySaved, alreadyQueued: alreadyQueued);
+  }
+
+  bool _isSelected(SmartwatchWorkout workout) =>
+      _selectedWorkoutGroupIds.contains(workout.activity.generateGroupId());
 
   /// SharedPreferencesから身長を読み込み
   Future<void> _loadUserHeight() async {
     final prefs = await SharedPreferences.getInstance();
+    if (!mounted) return;
     setState(() {
       _userHeightCm = prefs.getDouble('user_height_cm') ?? 170.0;
     });
@@ -64,7 +234,7 @@ class _GarminImportScreenState extends State<GarminImportScreen> {
             ),
             SizedBox(height: 8),
             Text(
-              '身長から歩幅を計算し、距離から歩数を推定します',
+              'ファイルに歩数が記録されていない場合，身長から歩幅を計算し、距離から歩数を推定します',
               style: TextStyle(fontSize: 12, color: Colors.grey),
             ),
           ],
@@ -98,8 +268,8 @@ class _GarminImportScreenState extends State<GarminImportScreen> {
     );
   }
 
-  /// TCX ファイルを選択してインポート
-  Future<void> _pickAndImportTcxFile() async {
+  /// アクティビティファイルを選択してインポート
+  Future<void> _pickAndImportFile() async {
     try {
       print('📂 ファイルピッカーを開く');
       // Android では拡張子 'tcx' を MIME タイプに解決できず
@@ -108,77 +278,31 @@ class _GarminImportScreenState extends State<GarminImportScreen> {
       // FileType.any で選択させ、拡張子は選択後に検証する。
       final result = await FilePicker.platform.pickFiles(
         type: FileType.any,
-        allowMultiple: false,
+        allowMultiple: true,
       );
+      if (result == null || result.files.isEmpty) return;
 
-      if (result != null && result.files.isNotEmpty) {
-        final pickedName = result.files.single.name;
-        if (!pickedName.toLowerCase().endsWith('.tcx')) {
-          print('⚠️ TCX以外のファイルが選択されました: $pickedName');
-          setState(() {
-            _isLoading = false;
-          });
-          if (!mounted) return;
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('.tcx 形式のファイルを選択してください'),
-              backgroundColor: Colors.red,
-            ),
-          );
-          return;
-        }
-
-        print('📄 ファイルを選択: $pickedName');
-        final file = File(result.files.single.path!);
-        final tcxContent = await file.readAsString();
-        print('📖 ファイル読み込み完了: ${tcxContent.length} bytes');
-
-        setState(() {
-          _isLoading = true;
-        });
-
-        // TCX ファイルをパース（身長を渡す）
-        print('🔄 TCXパース開始 (身長: ${_userHeightCm.toStringAsFixed(1)}cm)');
-        final activityData = await TcxParser.parseTcxFile(
-          tcxContent,
-          userHeightCm: _userHeightCm,
-        );
-
-        if (!mounted) return;
-
-        if (activityData != null) {
-          setState(() {
-            _importedActivities.add(activityData);
-            _isLoading = false;
-          });
-
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(
-                '${activityData.activityName} をインポートしました\n'
-                '距離: ${activityData.distance.toStringAsFixed(2)}km, '
-                '歩数: ${activityData.steps}',
-              ),
-            ),
-          );
+      final paths = <String>[];
+      for (final file in result.files) {
+        if (file.path != null && ActivityFileLoader.isSupported(file.name)) {
+          paths.add(file.path!);
         } else {
-          setState(() {
-            _isLoading = false;
-          });
-
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('TCX ファイルの解析に失敗しました'),
-              backgroundColor: Colors.red,
-            ),
-          );
+          print('⚠️ 対応していないファイルが選択されました: ${file.name}');
         }
       }
-    } catch (e) {
-      setState(() {
-        _isLoading = false;
-      });
+      if (paths.isEmpty) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('.tcx / .fit / .zip 形式のファイルを選択してください'),
+            backgroundColor: Colors.red,
+          ),
+        );
+        return;
+      }
 
+      await _importFiles(paths);
+    } catch (e) {
       print('❌ ファイルピッカーエラー: $e');
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -190,6 +314,53 @@ class _GarminImportScreenState extends State<GarminImportScreen> {
     }
   }
 
+  /// ファイルを解析して保存待ちリストに追加
+  Future<void> _importFiles(List<String> paths) async {
+    setState(() {
+      _isLoading = true;
+    });
+
+    final activities = <GarminActivityData>[];
+    final failedFiles = <String>[];
+    for (final path in paths) {
+      print('📄 ファイルを読み込み: $path (身長: ${_userHeightCm.toStringAsFixed(1)}cm)');
+      try {
+        final parsed = await ActivityFileLoader.load(
+          path,
+          userHeightCm: _userHeightCm,
+        );
+        if (parsed.isEmpty) {
+          failedFiles.add(p.basename(path));
+        }
+        activities.addAll(parsed);
+      } catch (e) {
+        print('❌ ファイル読み込みエラー: $e');
+        failedFiles.add(p.basename(path));
+      }
+    }
+
+    final skipped = await _queueActivities(activities);
+    if (!mounted) return;
+    setState(() {
+      _isLoading = false;
+    });
+
+    final addedCount =
+        activities.length - skipped.alreadySaved - skipped.alreadyQueued;
+    final messages = [
+      if (addedCount > 0) '$addedCount 件のアクティビティを読み込みました',
+      if (skipped.alreadySaved > 0) '取り込み済みのため除外: ${skipped.alreadySaved} 件',
+      if (skipped.alreadyQueued > 0) 'リストに追加済みのため除外: ${skipped.alreadyQueued} 件',
+      if (failedFiles.isNotEmpty) '解析に失敗: ${failedFiles.join(', ')}',
+    ];
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(messages.join('\n')),
+        backgroundColor: activities.isEmpty ? Colors.red : null,
+      ),
+    );
+  }
+
   /// インポートしたアクティビティを削除
   void _removeActivity(int index) {
     setState(() {
@@ -197,9 +368,10 @@ class _GarminImportScreenState extends State<GarminImportScreen> {
     });
   }
 
-  /// すべてのインポート済みアクティビティをデータベースに保存
+  /// 保存対象のアクティビティをすべてデータベースに保存
   Future<void> _saveAllActivities() async {
-    if (_importedActivities.isEmpty) {
+    final activitiesToSave = _activitiesToSave;
+    if (activitiesToSave.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('インポートするアクティビティがありません')),
       );
@@ -213,7 +385,7 @@ class _GarminImportScreenState extends State<GarminImportScreen> {
 
       int savedCount = 0;
 
-      for (final activity in _importedActivities) {
+      for (final activity in activitiesToSave) {
         // Position オブジェクトを Map に変換
         final positions = activity.positions.map((pos) {
           return {
@@ -226,14 +398,15 @@ class _GarminImportScreenState extends State<GarminImportScreen> {
         final groupId = activity.generateGroupId();
         final date = activity.getFormattedDate();
 
-        // ローカルDBに保存
-        await _dbHelper.insertWalkingData(
+        // ローカルDBに保存（同じgroupIdが既にあれば挿入されないので，Firestoreも上書きしない）
+        final inserted = await _dbHelper.insertWalkingData(
           groupId: groupId,
           date: date,
           steps: activity.steps,
           distance: activity.distance,
           positions: positions,
         );
+        if (inserted == 0) continue;
 
         // Firestoreにも保存
         await _firestoreService.saveWalkingData(
@@ -249,6 +422,7 @@ class _GarminImportScreenState extends State<GarminImportScreen> {
       setState(() {
         _isLoading = false;
         _importedActivities.clear();
+        _selectedWorkoutGroupIds.clear();
       });
 
       if (!mounted) return;
@@ -257,8 +431,8 @@ class _GarminImportScreenState extends State<GarminImportScreen> {
         SnackBar(content: Text('$savedCount 個のアクティビティを保存しました')),
       );
 
-      // 画面を閉じる
-      Navigator.pop(context);
+      // 画面を閉じる（呼び出し元で軌跡を再読み込みさせる）
+      Navigator.pop(context, true);
     } catch (e) {
       setState(() {
         _isLoading = false;
@@ -275,127 +449,282 @@ class _GarminImportScreenState extends State<GarminImportScreen> {
     }
   }
 
+  /// 「Apple Watch と同期」タブ
+  List<Widget> _buildAppleWatchTab() {
+    return [
+      Container(
+        padding: EdgeInsets.all(16),
+        color: Colors.green[50],
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.watch, size: 20),
+                SizedBox(width: 8),
+                Text(
+                  'ヘルスケアと同期',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                ),
+                Spacer(),
+                Text(
+                  _isHealthKitConnected ? '接続済み' : '未接続',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: _isHealthKitConnected ? Colors.green : Colors.grey,
+                  ),
+                ),
+              ],
+            ),
+            SizedBox(height: 8),
+            Text(
+              'ヘルスケアに保存された直近30日のワークアウトのうち，'
+              'ルート付きのものを表示します。保存するものを選んでください',
+              style: TextStyle(fontSize: 12),
+            ),
+            SizedBox(height: 12),
+            if (!_isHealthKitConnected)
+              ElevatedButton.icon(
+                onPressed: _connectHealthKit,
+                icon: Icon(Icons.link),
+                label: Text('ヘルスケアと接続'),
+                style: ElevatedButton.styleFrom(
+                  minimumSize: Size(double.infinity, 48),
+                ),
+              )
+            else
+              ElevatedButton.icon(
+                onPressed: _isSyncing || _isLoading ? null : _syncWorkouts,
+                icon: _isSyncing
+                    ? SizedBox(
+                        height: 20,
+                        width: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : Icon(Icons.sync),
+                label: Text(_isSyncing ? '同期中...' : 'データを同期'),
+                style: ElevatedButton.styleFrom(
+                  minimumSize: Size(double.infinity, 48),
+                ),
+              ),
+          ],
+        ),
+      ),
+      if (_hasSynced && _syncedWorkouts.isEmpty)
+        Padding(
+          padding: EdgeInsets.all(16),
+          child: Text(
+            'ルート付きのワークアウトが見つかりませんでした。\n'
+            '「設定 > ヘルスケア > データアクセスとデバイス」で'
+            'ワークアウトとワークアウトルートの読み取りが許可されているか確認してください',
+            style: TextStyle(fontSize: 12, color: Colors.grey[700]),
+          ),
+        )
+      else if (!_hasSynced && _isHealthKitConnected)
+        Padding(
+          padding: EdgeInsets.all(24),
+          child: Center(child: Text('「データを同期」を押してください')),
+        ),
+      for (final workout in _syncedWorkouts)
+        Padding(
+          padding: EdgeInsets.symmetric(horizontal: 16),
+          child: _buildSyncedWorkoutTile(workout),
+        ),
+      SizedBox(height: 16),
+    ];
+  }
+
+  Widget _buildSyncedWorkoutTile(SmartwatchWorkout workout) {
+    final activity = workout.activity;
+    final isSaved = _savedGroupIds.contains(activity.generateGroupId());
+    final isSelected = _isSelected(workout);
+
+    return Card(
+      margin: EdgeInsets.only(top: 12),
+      child: ListTile(
+        title: Text('${activity.activityName}（${workout.sourceName}）'),
+        subtitle: Text(
+          '${activity.getFormattedDate()}\n'
+          '${activity.distance.toStringAsFixed(2)} km・${activity.steps} 歩'
+          '${activity.isStepsEstimated ? '（推定）' : ''}・'
+          '${activity.positions.length} ポイント',
+          style: TextStyle(fontSize: 12),
+        ),
+        isThreeLine: true,
+        enabled: !isSaved,
+        onTap: isSaved || _isLoading ? null : () => _toggleSyncedWorkout(workout),
+        trailing: isSaved
+            ? Text('取り込み済み', style: TextStyle(color: Colors.grey))
+            : Icon(
+                isSelected ? Icons.check_circle : Icons.radio_button_unchecked,
+                color: isSelected ? Colors.green : Colors.grey,
+              ),
+      ),
+    );
+  }
+
+  /// 「ファイルをインポート」タブ
+  List<Widget> _buildFileTab() {
+    return [
+      Container(
+        padding: EdgeInsets.all(16),
+        color: Colors.blue[50],
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'ファイルをインポート',
+              style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            SizedBox(height: 8),
+            Text(
+              '1. Garmin Connect からアクティビティをエクスポート\n'
+              '   （.tcx / .fit / オリジナルの .zip に対応）\n'
+              '2. 下のボタンからファイルを選択\n'
+              '3. 身長が正しいか確認（下で変更可能）\n'
+              '4. プレビュー後、保存ボタンで完了',
+              style: TextStyle(fontSize: 12),
+            ),
+            SizedBox(height: 12),
+            Row(
+              children: [
+                Text(
+                  '身長: ${_userHeightCm.toStringAsFixed(1)}cm',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+                IconButton(
+                  icon: Icon(Icons.edit, size: 20),
+                  padding: EdgeInsets.zero,
+                  constraints: BoxConstraints(),
+                  visualDensity: VisualDensity.compact,
+                  onPressed: _showHeightInputDialog,
+                ),
+              ],
+            ),
+            SizedBox(height: 12),
+            ElevatedButton.icon(
+              onPressed: _isLoading ? null : _pickAndImportFile,
+              icon: Icon(Icons.folder_open),
+              label: Text('ファイルを選択'),
+              style: ElevatedButton.styleFrom(
+                minimumSize: Size(double.infinity, 48),
+              ),
+            ),
+          ],
+        ),
+      ),
+      SizedBox(height: 16),
+
+      // 読み込んだファイルのアクティビティ
+      if (_importedActivities.isNotEmpty) ...[
+        Padding(
+          padding: EdgeInsets.fromLTRB(16, 0, 16, 8),
+          child: Text(
+            '保存するアクティビティ',
+            style: TextStyle(fontWeight: FontWeight.bold),
+          ),
+        ),
+        for (int i = 0; i < _importedActivities.length; i++)
+          Padding(
+            padding: EdgeInsets.symmetric(horizontal: 16),
+            child: _buildImportedActivityCard(i),
+          ),
+      ] else if (!_isLoading)
+        Padding(
+          padding: EdgeInsets.all(24),
+          child: Center(child: Text('ファイルを選択してください')),
+        ),
+    ];
+  }
+
+  Widget _buildImportedActivityCard(int index) {
+    final activity = _importedActivities[index];
+    return Card(
+      margin: EdgeInsets.only(bottom: 12),
+      child: ListTile(
+        title: Text(activity.activityName),
+        subtitle: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SizedBox(height: 4),
+            Text(
+              '日時: ${activity.getFormattedDate()}',
+              style: TextStyle(fontSize: 12),
+            ),
+            Text(
+              '距離: ${activity.distance.toStringAsFixed(2)} km',
+              style: TextStyle(fontSize: 12),
+            ),
+            Text(
+              '歩数: ${activity.steps} 歩'
+              '${activity.isStepsEstimated ? '（身長から推定）' : ''}',
+              style: TextStyle(fontSize: 12),
+            ),
+            Text(
+              'ポイント数: ${activity.positions.length}',
+              style: TextStyle(fontSize: 12),
+            ),
+          ],
+        ),
+        trailing: IconButton(
+          icon: Icon(Icons.delete, color: Colors.red),
+          onPressed: () => _removeActivity(index),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    final saveCount = _activitiesToSave.length;
+
     return Scaffold(
       appBar: AppBar(
         title: Text('インポート'),
       ),
       body: Column(
         children: [
-          // インストラクション
-          Container(
-            padding: EdgeInsets.all(16),
-            color: Colors.blue[50],
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'TCX ファイルをインポート',
-                  style: TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                SizedBox(height: 8),
-                Text(
-                  '1. Garmin Connect からアクティビティをダウンロード\n'
-                  '2. ファイルを .tcx 形式で保存\n'
-                  '3. 下のボタンからファイルを選択\n'
-                  '4. 身長が正しいか確認（下で変更可能）\n'
-                  '5. プレビュー後、保存ボタンで完了',
-                  style: TextStyle(fontSize: 12),
-                ),
-                SizedBox(height: 12),
-                Row(
-                  children: [
-                    Text(
-                      '身長: ${_userHeightCm.toStringAsFixed(1)}cm',
-                      style: TextStyle(fontWeight: FontWeight.bold),
+          // インポート方法の切り替え（ヘルスケアが使えない端末ではファイルのみ）
+          if (_isHealthKitAvailable)
+            Padding(
+              padding: EdgeInsets.fromLTRB(16, 8, 16, 8),
+              child: SizedBox(
+                width: double.infinity,
+                child: SegmentedButton<_ImportMode>(
+                  segments: [
+                    ButtonSegment(
+                      value: _ImportMode.appleWatch,
+                      label: Text('Apple Watch と同期'),
                     ),
-                    IconButton(
-                      icon: Icon(Icons.edit, size: 20),
-                      padding: EdgeInsets.zero,
-                      constraints: BoxConstraints(),
-                      visualDensity: VisualDensity.compact,
-                      onPressed: _showHeightInputDialog,
+                    ButtonSegment(
+                      value: _ImportMode.file,
+                      label: Text('ファイルをインポート'),
                     ),
                   ],
+                  selected: {_mode},
+                  showSelectedIcon: false,
+                  onSelectionChanged: (selection) {
+                    setState(() {
+                      _mode = selection.first;
+                    });
+                  },
                 ),
-              ],
-            ),
-          ),
-          SizedBox(height: 16),
-
-          // ファイルピッカーボタン
-          Padding(
-            padding: EdgeInsets.symmetric(horizontal: 16),
-            child: ElevatedButton.icon(
-              onPressed: _isLoading ? null : _pickAndImportTcxFile,
-              icon: Icon(Icons.folder_open),
-              label: Text('TCX ファイルを選択'),
-              style: ElevatedButton.styleFrom(
-                minimumSize: Size(double.infinity, 48),
               ),
+            ),
+
+          Expanded(
+            child: ListView(
+              children: _mode == _ImportMode.appleWatch
+                  ? _buildAppleWatchTab()
+                  : _buildFileTab(),
             ),
           ),
 
-          SizedBox(height: 16),
-
-          // インポート済みアクティビティのリスト
-          if (_importedActivities.isNotEmpty)
-            Expanded(
-              child: ListView.builder(
-                padding: EdgeInsets.symmetric(horizontal: 16),
-                itemCount: _importedActivities.length,
-                itemBuilder: (context, index) {
-                  final activity = _importedActivities[index];
-                  return Card(
-                    margin: EdgeInsets.only(bottom: 12),
-                    child: ListTile(
-                      title: Text(activity.activityName),
-                      subtitle: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          SizedBox(height: 4),
-                          Text(
-                            '日時: ${activity.getFormattedDate()}',
-                            style: TextStyle(fontSize: 12),
-                          ),
-                          Text(
-                            '距離: ${activity.distance.toStringAsFixed(2)} km',
-                            style: TextStyle(fontSize: 12),
-                          ),
-                          Text(
-                            '歩数: ${activity.steps} 歩',
-                            style: TextStyle(fontSize: 12),
-                          ),
-                          Text(
-                            'ポイント数: ${activity.positions.length}',
-                            style: TextStyle(fontSize: 12),
-                          ),
-                        ],
-                      ),
-                      trailing: IconButton(
-                        icon: Icon(Icons.delete, color: Colors.red),
-                        onPressed: () => _removeActivity(index),
-                      ),
-                    ),
-                  );
-                },
-              ),
-            )
-          else if (!_isLoading)
-            Expanded(
-              child: Center(
-                child: Text('ファイルを選択してください'),
-              ),
-            ),
-
-          SizedBox(height: 16),
-
-          // 保存ボタン
-          if (_importedActivities.isNotEmpty)
+          // 保存ボタン（両タブで選んだものをまとめて保存）
+          if (saveCount > 0)
             Padding(
               padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
               child: Column(
@@ -415,7 +744,7 @@ class _GarminImportScreenState extends State<GarminImportScreen> {
                             ),
                           )
                         : Text(
-                            '${_importedActivities.length} 個のアクティビティを保存',
+                            '$saveCount 個のアクティビティを保存',
                             style: TextStyle(color: Colors.white),
                           ),
                   ),

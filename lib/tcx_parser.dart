@@ -90,9 +90,16 @@ class TcxParser {
       final laps = _findElementsByLocalName(activity, 'Lap');
       print('📍 Lap数: ${laps.length}');
 
+      int recordedSteps = 0; // Lap の拡張要素（LX/Steps）に記録された歩数の合計
+
       int lapIndex = 0;
       for (final lap in laps) {
         lapIndex++;
+        final lapSteps = _findLapSteps(lap);
+        if (lapSteps != null) {
+          recordedSteps += lapSteps;
+          print('  Lap$lapIndex 歩数: $lapSteps');
+        }
         // Lapの距離を加算
         final distanceElement = _findElementByLocalName(lap, 'DistanceMeters');
         if (distanceElement != null) {
@@ -210,12 +217,15 @@ class TcxParser {
       recordDate ??=
           positions.isNotEmpty ? positions.first.timestamp : DateTime.now();
 
-      // 歩数を計算
-      final steps = _calculateSteps(totalDistance, userHeightCm);
+      // 記録された歩数があればそれを使い，なければ身長から推定
+      final isStepsEstimated = recordedSteps <= 0;
+      final steps = isStepsEstimated
+          ? estimateSteps(totalDistance, userHeightCm)
+          : recordedSteps;
       print('📊 計算結果:');
       print('  距離: ${(totalDistance / 1000).toStringAsFixed(2)}km');
       print('  身長: ${userHeightCm.toStringAsFixed(1)}cm');
-      print('  歩数: $steps');
+      print('  歩数: $steps${isStepsEstimated ? '（推定）' : '（記録値）'}');
 
       final result = GarminActivityData(
         activityName: activityName,
@@ -223,6 +233,7 @@ class TcxParser {
         recordDate: recordDate,
         distance: totalDistance / 1000, // メートルからキロメートルに変換
         steps: steps,
+        isStepsEstimated: isStepsEstimated,
       );
 
       print('✅ TCXパース完了');
@@ -235,6 +246,16 @@ class TcxParser {
   }
 
   /// ストライド長を身長から計算（Grubbs公式）
+  /// Lap/Extensions/LX/Steps から歩数を取得（なければ null）
+  static int? _findLapSteps(xml.XmlElement lap) {
+    final extensions = _findElementByLocalName(lap, 'Extensions');
+    if (extensions == null) return null;
+    final lx = _findElementByLocalName(extensions, 'LX');
+    if (lx == null) return null;
+    final steps = _findElementByLocalName(lx, 'Steps');
+    return steps == null ? null : int.tryParse(steps.innerText.trim());
+  }
+
   /// stride_length = 0.413 × height(m)
   static double _calculateStrideLength(double heightCm) {
     return 0.413 * (heightCm / 100);
@@ -242,7 +263,7 @@ class TcxParser {
 
   /// 歩数を計算
   /// steps = distance(m) / stride_length(m)
-  static int _calculateSteps(double distanceMeters, double userHeightCm) {
+  static int estimateSteps(double distanceMeters, double userHeightCm) {
     final strideLength = _calculateStrideLength(userHeightCm);
     if (strideLength <= 0) {
       print('警告: ストライド長が不正です');
@@ -260,6 +281,7 @@ class GarminActivityData {
   final DateTime recordDate;
   final double distance; // キロメートル
   final int steps;
+  final bool isStepsEstimated; // 記録された歩数がなく，身長から推定した場合 true
 
   GarminActivityData({
     required this.activityName,
@@ -267,6 +289,7 @@ class GarminActivityData {
     required this.recordDate,
     required this.distance,
     required this.steps,
+    this.isStepsEstimated = false,
   });
 
   /// 日付をフォーマットして取得
