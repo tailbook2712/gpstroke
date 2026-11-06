@@ -6,6 +6,36 @@ import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 
+/// スケッチから生成したルート候補
+class RouteCandidate {
+  /// 道路に沿ったルート
+  final List<LatLng> route;
+
+  /// この候補が目指した形（回転した候補では回転後のスケッチ）
+  final List<LatLng> targetPath;
+
+  /// 候補の作り方を表すラベル（例: スケッチに忠実）
+  final String label;
+
+  /// スケッチに対する回転角度（度、反時計回りが正）
+  final double rotationDegrees;
+
+  /// 形の一致度（0.0 ～ 1.0）
+  final double shapeScore;
+
+  /// ルートの距離（メートル）
+  final double distance;
+
+  RouteCandidate({
+    required this.route,
+    required this.targetPath,
+    required this.label,
+    required this.rotationDegrees,
+    required this.shapeScore,
+    required this.distance,
+  });
+}
+
 /// ルート生成とルート類似度計算を担当するサービス
 class RouteService {
   // Google Maps API Key (初期化時に読み込み)
@@ -84,6 +114,31 @@ class RouteService {
     }).toList();
 
     return pathPoints;
+  }
+
+  /// 作品キャンバス上のスケッチを、実寸を保ったまま緯度経度に変換
+  ///
+  /// [points]: キャンバス座標（北が上）のスケッチ点列
+  /// [origin]: スケッチの始点を置く地点（現在地）
+  /// [metersPerPixel]: キャンバス 1px が表す実距離（スケールバーから算出）
+  static List<LatLng> convertCanvasSketchToLatLngs(
+    List<Offset> points,
+    LatLng origin,
+    double metersPerPixel,
+  ) {
+    if (points.isEmpty) return [];
+    const metersPerDegreeLat = 111320.0;
+    final metersPerDegreeLon =
+        metersPerDegreeLat * cos(origin.latitude * pi / 180.0);
+    final start = points.first;
+    return points.map((p) {
+      final eastMeters = (p.dx - start.dx) * metersPerPixel;
+      final northMeters = -(p.dy - start.dy) * metersPerPixel;
+      return LatLng(
+        origin.latitude + northMeters / metersPerDegreeLat,
+        origin.longitude + eastMeters / metersPerDegreeLon,
+      );
+    }).toList();
   }
 
   /// 2点間の距離を計算（Haversine公式）
@@ -215,8 +270,9 @@ class RouteService {
     LatLng startingPoint,
     LatLng destination,
     List<LatLng> designPath,
-    double targetDistance,
-  ) async {
+    double targetDistance, {
+    int maxWaypoints = 25,
+  }) async {
     try {
       // API キーのチェック
       if (_apiKey.isEmpty) {
@@ -251,7 +307,8 @@ class RouteService {
         // デザインパスをウェイポイント（経由地）として追加
         // ※ Google Maps Routes API は最大25個のウェイポイントまで対応
         if (designPath.isNotEmpty)
-          'intermediates': _selectWaypoints(designPath, maxWaypoints: 25)
+          'intermediates': _selectWaypoints(designPath,
+                  maxWaypoints: maxWaypoints)
               .map((point) => {
                     'location': {
                       'latLng': {
@@ -575,6 +632,211 @@ class RouteService {
     double v2Lng = p2.longitude - p1.longitude;
 
     return (v1Lat * v2Lng - v1Lng * v2Lat).abs();
+  }
+
+  // ============================================================
+  // スケッチからの複数ルート候補生成
+  // ============================================================
+
+  /// 回転候補の角度（度、反時計回りが正）
+  static const List<double> _rotationAngles = [15, -15];
+
+  /// 候補が足りないときに追加で試す回転角度
+  static const List<double> _fallbackRotationAngles = [30, -30];
+
+  /// スケッチから複数のルート候補を生成し、形の一致度が高い順に返す
+  ///
+  /// 作り方の異なる候補を並行して生成し、ほぼ同じルートは1つにまとめる
+  /// - スケッチに忠実: スケッチをそのまま Roads API で道路にスナップ
+  /// - 歩きやすい道を優先: スケッチの要所を経由地にして Routes API（徒歩）で検索
+  /// - 回転: スケッチを始点（現在地）中心に少し回転させてからスナップ
+  ///
+  /// [designPath]: スケッチを緯度経度に変換したもの（始点＝現在地）
+  /// [maxCandidates]: 返す候補の最大数
+  static Future<List<RouteCandidate>> generateSketchRouteCandidates({
+    required List<LatLng> designPath,
+    int maxCandidates = 3,
+  }) async {
+    if (designPath.length < 2) return [];
+
+    final raw = await Future.wait([
+      _buildSnapCandidate(designPath, 0),
+      _buildWalkingRouteCandidate(designPath),
+      for (final angle in _rotationAngles) _buildSnapCandidate(designPath, angle),
+    ]);
+    var candidates = _rankAndDedupe(
+        raw.whereType<RouteCandidate>().toList(), maxCandidates);
+
+    // 似たルートばかりで候補が2つに満たない場合は回転を大きくして追加
+    if (candidates.length < 2) {
+      final extra = await Future.wait([
+        for (final angle in _fallbackRotationAngles)
+          _buildSnapCandidate(designPath, angle),
+      ]);
+      candidates = _rankAndDedupe(
+        [...candidates, ...extra.whereType<RouteCandidate>()],
+        maxCandidates,
+      );
+    }
+
+    print('✅ ルート候補: ${candidates.length}件');
+    for (final c in candidates) {
+      print('  - ${c.label}: ${(c.distance / 1000).toStringAsFixed(2)}km, '
+          '一致度 ${(c.shapeScore * 100).toStringAsFixed(0)}%');
+    }
+    return candidates;
+  }
+
+  /// スケッチ（必要なら回転）を Roads API でスナップした候補
+  static Future<RouteCandidate?> _buildSnapCandidate(
+    List<LatLng> designPath,
+    double rotationDegrees,
+  ) async {
+    final target = rotationDegrees == 0
+        ? designPath
+        : rotatePathAroundStart(designPath, rotationDegrees);
+    final route = await snapSketchToRoads(
+      designPath: target,
+      startingPoint: target.first,
+      destination: target.last,
+    );
+    if (route.length < 2) return null;
+
+    final String label;
+    if (rotationDegrees == 0) {
+      label = 'スケッチに忠実';
+    } else {
+      final direction = rotationDegrees > 0 ? '反時計回り' : '時計回り';
+      label = '$directionに${rotationDegrees.abs().toStringAsFixed(0)}°回転';
+    }
+    return _makeCandidate(route, target, label, rotationDegrees);
+  }
+
+  /// スケッチの要所を経由地にした徒歩ルートの候補
+  static Future<RouteCandidate?> _buildWalkingRouteCandidate(
+    List<LatLng> designPath,
+  ) async {
+    if (_apiKey.isEmpty) return null;
+    // 経由地が多すぎると細かく行き来するルートになるため絞る
+    final route = await _fetchRouteFromAPI(
+      designPath.first,
+      designPath.last,
+      designPath,
+      calculatePathDistance(designPath),
+      maxWaypoints: 10,
+    );
+    if (route == null || route.length < 2) return null;
+    return _makeCandidate(route, designPath, '歩きやすい道を優先', 0);
+  }
+
+  static RouteCandidate _makeCandidate(
+    List<LatLng> route,
+    List<LatLng> target,
+    String label,
+    double rotationDegrees,
+  ) {
+    return RouteCandidate(
+      route: route,
+      targetPath: target,
+      label: label,
+      rotationDegrees: rotationDegrees,
+      shapeScore: calculateShapeMatchScore(target, route),
+      distance: calculatePathDistance(route),
+    );
+  }
+
+  /// 一致度の高い順に並べ、ほぼ同じルートを除いて上位 [maxCandidates] 件を返す
+  static List<RouteCandidate> _rankAndDedupe(
+    List<RouteCandidate> candidates,
+    int maxCandidates,
+  ) {
+    final sorted = [...candidates]
+      ..sort((a, b) => b.shapeScore.compareTo(a.shapeScore));
+    final result = <RouteCandidate>[];
+    for (final candidate in sorted) {
+      final isDuplicate =
+          result.any((kept) => _isSimilarRoute(kept.route, candidate.route));
+      if (!isDuplicate) result.add(candidate);
+      if (result.length >= maxCandidates) break;
+    }
+    return result;
+  }
+
+  /// 2つのルートがほぼ同じか（平均のずれがルートの大きさの5%未満、かつ30m未満）
+  static bool _isSimilarRoute(List<LatLng> a, List<LatLng> b) {
+    final extent = _pathExtentMeters(a);
+    final threshold = min(30.0, max(extent * 0.05, 10.0));
+    return _meanSymmetricDistance(a, b) < threshold;
+  }
+
+  /// 形の一致度（0.0 ～ 1.0）
+  ///
+  /// スケッチとルートの平均的なずれを、スケッチの大きさで割って評価する
+  /// （大きさに依存しないので、小さいスケッチでも差が出る）
+  static double calculateShapeMatchScore(
+      List<LatLng> target, List<LatLng> route) {
+    if (target.isEmpty || route.isEmpty) return 0.0;
+    final extent = _pathExtentMeters(target);
+    if (extent <= 0) return 0.0;
+    final meanDistance = _meanSymmetricDistance(target, route);
+    // ずれがスケッチの大きさの 1/4 に達したら 0%
+    return (1.0 - meanDistance / (extent * 0.25)).clamp(0.0, 1.0);
+  }
+
+  /// 双方向の「最近傍点までの距離」の平均（メートル）
+  static double _meanSymmetricDistance(List<LatLng> a, List<LatLng> b) {
+    final sa = _samplePoints(a, 100);
+    final sb = _samplePoints(b, 100);
+    double meanNearest(List<LatLng> from, List<LatLng> to) {
+      double total = 0.0;
+      for (final p in from) {
+        double nearest = double.infinity;
+        for (final q in to) {
+          nearest = min(nearest, calculateDistance(p, q));
+        }
+        total += nearest;
+      }
+      return total / from.length;
+    }
+
+    return (meanNearest(sa, sb) + meanNearest(sb, sa)) / 2;
+  }
+
+  /// パスの縦横のうち長い方の実寸（メートル）
+  static double _pathExtentMeters(List<LatLng> path) {
+    final lats = path.map((p) => p.latitude);
+    final lons = path.map((p) => p.longitude);
+    final minLat = lats.reduce(min);
+    final maxLat = lats.reduce(max);
+    final minLon = lons.reduce(min);
+    final maxLon = lons.reduce(max);
+    final meanLat = (minLat + maxLat) / 2;
+    final latExtent = (maxLat - minLat) * 111320.0;
+    final lonExtent = (maxLon - minLon) * 111320.0 * cos(meanLat * pi / 180.0);
+    return max(latExtent, lonExtent);
+  }
+
+  /// パスを始点を中心に回転（度、反時計回りが正）
+  static List<LatLng> rotatePathAroundStart(
+      List<LatLng> path, double degrees) {
+    if (path.isEmpty) return path;
+    const metersPerDegreeLat = 111320.0;
+    final origin = path.first;
+    final metersPerDegreeLon =
+        metersPerDegreeLat * cos(origin.latitude * pi / 180.0);
+    final rad = degrees * pi / 180.0;
+    final cosA = cos(rad);
+    final sinA = sin(rad);
+    return path.map((p) {
+      final east = (p.longitude - origin.longitude) * metersPerDegreeLon;
+      final north = (p.latitude - origin.latitude) * metersPerDegreeLat;
+      final rotatedEast = east * cosA - north * sinA;
+      final rotatedNorth = east * sinA + north * cosA;
+      return LatLng(
+        origin.latitude + rotatedNorth / metersPerDegreeLat,
+        origin.longitude + rotatedEast / metersPerDegreeLon,
+      );
+    }).toList();
   }
 
   // ============================================================

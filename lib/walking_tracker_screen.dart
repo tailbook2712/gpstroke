@@ -15,7 +15,7 @@ import 'database_helper.dart';
 import 'firestore_service.dart';
 import 'auth_service.dart';
 import 'garmin_import_screen.dart';
-import 'route_design_canvas_screen.dart';
+import 'saved_route_list_screen.dart';
 import 'package:pedometer/pedometer.dart';
 
 import 'utils/utils.dart';
@@ -861,6 +861,14 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
       ),
     );
 
+    if (!mounted) return;
+
+    // ルート提案で「このルートで歩く」が選ばれた場合はルート追従モードにする
+    if (result is Map<String, dynamic> && result['routePath'] != null) {
+      _applySuggestedRoute(result);
+      return;
+    }
+
     // 作品が保存された場合のみFirestoreと同期してギャラリーを更新
     if (result != null) {
       await _syncUsedTrajectories();
@@ -897,35 +905,65 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
     }
   }
 
-  // ルート提案画面に遷移
-  Future<void> _navigateToRouteSuggestionScreen() async {
+  // 保存したルートの一覧から歩くルートを選択
+  Future<void> _navigateToSavedRouteList() async {
     final result = await Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (context) => RouteDesignCanvasScreen(),
+        builder: (context) => const SavedRouteListScreen(),
       ),
     );
 
     if (!mounted) return;
-    // ルート選択画面から戻った場合、トグルをフリーモードにリセット
+
+    if (result is Map<String, dynamic> && result['routePath'] != null) {
+      _applySuggestedRoute(result);
+    } else if (_suggestedRoutePath == null || _suggestedRoutePath!.isEmpty) {
+      // ルート未設定のまま戻った場合はフリーモードに戻す
+      setState(() {
+        _recordingMode = RecordingMode.freeMode;
+      });
+    }
+  }
+
+  /// ルート（{'routePath': List<LatLng>, 'metadata': Map}）を設定してルート追従モードにする
+  void _applySuggestedRoute(Map<String, dynamic> result) {
+    final routePath = result['routePath'] as List<LatLng>;
+    final metadata = result['metadata'] as Map<String, dynamic>?;
     setState(() {
-      _recordingMode = RecordingMode.freeMode;
+      _suggestedRoutePath = routePath;
+      _routeMetadata = metadata;
+      _recordingMode = RecordingMode.routeFollowMode;
     });
 
-    if (result != null && result is Map<String, dynamic>) {
-      setState(() {
-        _suggestedRoutePath = result['routePath'] as List<LatLng>;
-        _routeMetadata = result['metadata'] as Map<String, dynamic>;
-      });
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            'ルートが設定されました: ${(_routeMetadata?['distance'] / 1000).toStringAsFixed(2)}km',
+    // ルート全体が見えるようにカメラを移動
+    if (routePath.length >= 2) {
+      final lats = routePath.map((p) => p.latitude);
+      final lons = routePath.map((p) => p.longitude);
+      _mapController?.animateCamera(
+        CameraUpdate.newLatLngBounds(
+          LatLngBounds(
+            southwest: LatLng(lats.reduce((a, b) => a < b ? a : b),
+                lons.reduce((a, b) => a < b ? a : b)),
+            northeast: LatLng(lats.reduce((a, b) => a > b ? a : b),
+                lons.reduce((a, b) => a > b ? a : b)),
           ),
+          60,
         ),
       );
     }
+
+    final distance = (metadata?['distance'] as num?)?.toDouble();
+    final name = metadata?['name'] as String?;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          'ルートが設定されました'
+          '${name != null ? ': $name' : ''}'
+          '${distance != null ? ' (${(distance / 1000).toStringAsFixed(2)}km)' : ''}',
+        ),
+      ),
+    );
   }
 
   /// Polylineを構築（モードに応じて表示内容を分岐）
@@ -1137,11 +1175,11 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
                         onTap: () {
                           setState(() {
                             _recordingMode = RecordingMode.routeFollowMode;
-                            if (_suggestedRoutePath == null ||
-                                _suggestedRoutePath!.isEmpty) {
-                              _navigateToRouteSuggestionScreen();
-                            }
                           });
+                          // 記録中でなければ保存したルートから選ぶ
+                          if (!_isRecording) {
+                            _navigateToSavedRouteList();
+                          }
                         },
                         child: AnimatedContainer(
                           duration: const Duration(milliseconds: 200),
@@ -1194,7 +1232,7 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
                         : (_recordingMode == RecordingMode.routeFollowMode &&
                                 (_suggestedRoutePath == null ||
                                     _suggestedRoutePath!.isEmpty))
-                            ? _navigateToRouteSuggestionScreen
+                            ? _navigateToSavedRouteList
                             : _startRecording,
                     icon: Icon(
                       _isRecording
@@ -1202,7 +1240,7 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
                           : (_recordingMode == RecordingMode.routeFollowMode &&
                                   (_suggestedRoutePath == null ||
                                       _suggestedRoutePath!.isEmpty))
-                              ? Icons.add_location
+                              ? Icons.list
                               : Icons.play_arrow_rounded,
                     ),
                     label: Text(
@@ -1211,7 +1249,7 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
                           : (_recordingMode == RecordingMode.routeFollowMode &&
                                   (_suggestedRoutePath == null ||
                                       _suggestedRoutePath!.isEmpty))
-                              ? 'ルート提案'
+                              ? 'ルートを選択'
                               : '記録開始',
                     ),
                     style: ElevatedButton.styleFrom(

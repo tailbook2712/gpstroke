@@ -1,6 +1,8 @@
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:intl/intl.dart';
+import 'database_helper.dart';
 import 'draft_list_screen.dart';
 import 'route_service.dart';
 
@@ -10,11 +12,16 @@ class RouteGenerationScreen extends StatefulWidget {
   final List<LatLng> tracedPath;
   final Map<String, dynamic>? initialCanvasData;
 
+  /// 作品プレビューでルートを最初に置く位置（キャンバスに対する 0.0〜1.0 の比率）
+  /// 作品キャンバス上でスケッチした位置をそのまま再現するために使う
+  final Offset? initialPreviewCenter;
+
   RouteGenerationScreen({
     required this.startingPoint,
     required this.destination,
     required this.tracedPath,
     this.initialCanvasData,
+    this.initialPreviewCenter,
   });
 
   @override
@@ -22,13 +29,22 @@ class RouteGenerationScreen extends StatefulWidget {
 }
 
 class _RouteGenerationScreenState extends State<RouteGenerationScreen> {
-  // ignore: unused_field
-  late GoogleMapController _mapController;
+  GoogleMapController? _mapController;
+  final DatabaseHelper _dbHelper = DatabaseHelper();
 
-  List<LatLng>? _generatedRoute;
-  Map<String, dynamic>? _routeMetadata;
+  // ルート候補（形の一致度が高い順）と選択中の候補
+  List<RouteCandidate> _candidates = [];
+  int _selectedIndex = 0;
   bool _isLoading = true;
+  // 保存済みの候補（index → 保存名）
+  final Map<int, String> _savedRouteNames = {};
   bool _showSketch = false;
+
+  RouteCandidate? get _selectedCandidate =>
+      _candidates.isEmpty ? null : _candidates[_selectedIndex];
+  List<LatLng>? get _generatedRoute => _selectedCandidate?.route;
+  bool get _isSaved => _savedRouteNames.containsKey(_selectedIndex);
+  String? get _savedRouteName => _savedRouteNames[_selectedIndex];
 
   // 作品キャンバスプレビュー表示フラグ
   bool _showPreview = false;
@@ -57,27 +73,35 @@ class _RouteGenerationScreenState extends State<RouteGenerationScreen> {
   void initState() {
     super.initState();
     _draftCanvasData = widget.initialCanvasData;
+    // 作品キャンバスのスケールを引き継ぐ（プレビューで同じ縮尺になるように）
+    final initialScale =
+        (widget.initialCanvasData?['scaleBarDistance'] as num?)?.toDouble();
+    if (initialScale != null && _scaleDistanceOptions.contains(initialScale)) {
+      _scaleBarDistanceMeters = initialScale;
+    }
     _generateRoute();
   }
 
   Future<void> _generateRoute() async {
     try {
-      print('📍 Roads API でスケッチをスナップ中...');
-      List<LatLng> snappedRoute = await RouteService.snapSketchToRoads(
+      print('📍 スケッチからルート候補を生成中...');
+      final candidates = await RouteService.generateSketchRouteCandidates(
         designPath: widget.tracedPath,
-        startingPoint: widget.startingPoint,
-        destination: widget.destination,
       );
 
+      if (!mounted) return;
       setState(() {
-        _generatedRoute = snappedRoute;
+        _candidates = candidates;
         _isLoading = false;
       });
-
-      print('✅ ルート生成完了');
-      print('  - ルート上のポイント数: ${snappedRoute.length}');
-      double routeDistance = RouteService.calculatePathDistance(snappedRoute);
-      print('  - ルート距離: ${(routeDistance / 1000).toStringAsFixed(2)}km');
+      if (candidates.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('ルートを生成できませんでした')),
+        );
+        return;
+      }
+      _selectCandidate(0);
+      _fitCameraToRoute();
     } catch (e) {
       print('❌ ルート生成エラー: $e');
       setState(() {
@@ -201,6 +225,43 @@ class _RouteGenerationScreenState extends State<RouteGenerationScreen> {
     );
   }
 
+  /// 候補を選択する
+  void _selectCandidate(int index) {
+    setState(() {
+      _selectedIndex = index;
+      // 回転した候補は、作品プレビューでスケッチと同じ向きに戻して表示する
+      // （地図上の反時計回り＝画面上で時計回りに戻す）
+      _routePreviewRotation =
+          _candidates[index].rotationDegrees * math.pi / 180.0;
+      _routePreviewLastRotation = _routePreviewRotation;
+    });
+  }
+
+  /// 全候補が収まるようにカメラを移動
+  void _fitCameraToRoute() {
+    final route = _candidates.expand((c) => c.route).toList();
+    if (_mapController == null || route.length < 2) return;
+    final lats = route.map((p) => p.latitude);
+    final lons = route.map((p) => p.longitude);
+    final bounds = LatLngBounds(
+      southwest: LatLng(lats.reduce(math.min), lons.reduce(math.min)),
+      northeast: LatLng(lats.reduce(math.max), lons.reduce(math.max)),
+    );
+    try {
+      _mapController!.animateCamera(CameraUpdate.newLatLngBounds(bounds, 60));
+    } catch (e) {
+      // 地図のレイアウト前だと失敗することがある（初期位置のまま表示）
+      print('⚠️ カメラ移動に失敗: $e');
+    }
+  }
+
+  Map<String, dynamic> _buildRouteMetadata() {
+    return {
+      'distance': RouteService.calculatePathDistance(_generatedRoute!),
+      if (_savedRouteName != null) 'name': _savedRouteName,
+    };
+  }
+
   void _startWalkingWithRoute() {
     if (_generatedRoute == null) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -211,8 +272,194 @@ class _RouteGenerationScreenState extends State<RouteGenerationScreen> {
 
     Navigator.pop(context, {
       'routePath': _generatedRoute,
-      'metadata': _routeMetadata,
+      'metadata': _buildRouteMetadata(),
     });
+  }
+
+  /// ルートに名前を付けて保存（軌跡の記録画面のルート選択から呼び出せる）
+  Future<void> _saveRoute() async {
+    if (_generatedRoute == null) return;
+
+    final controller = TextEditingController(
+      text: 'ルート ${DateFormat('yyyy/MM/dd HH:mm').format(DateTime.now())}',
+    );
+    final name = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('ルートを保存'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(hintText: 'ルート名'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('キャンセル'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, controller.text),
+            child: const Text('保存'),
+          ),
+        ],
+      ),
+    );
+    // ダイアログの閉じるアニメーション中も参照されるため controller は dispose しない
+    if (name == null) return;
+
+    final routeName = name.trim().isEmpty ? '名称未設定のルート' : name.trim();
+    try {
+      await _dbHelper.insertSavedRoute(
+        name: routeName,
+        distance: RouteService.calculatePathDistance(_generatedRoute!),
+        points: _generatedRoute!
+            .map((p) => {'latitude': p.latitude, 'longitude': p.longitude})
+            .toList(),
+      );
+      if (!mounted) return;
+      setState(() {
+        _savedRouteNames[_selectedIndex] = routeName;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('「$routeName」を保存しました')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('ルートの保存に失敗しました: $e')),
+      );
+    }
+  }
+
+  /// 下部のパネル（候補の選択 + 保存・このルートで歩く）
+  Widget _buildActionButtons() {
+    final hasRoute = _generatedRoute != null;
+    return Positioned(
+      bottom: 20,
+      left: 20,
+      right: 20,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (_candidates.length > 1) ...[
+            _buildCandidateSelector(),
+            const SizedBox(height: 10),
+          ],
+          Row(
+            children: [
+              Expanded(
+                child: ElevatedButton.icon(
+                  onPressed: hasRoute && !_isSaved ? _saveRoute : null,
+                  icon: Icon(_isSaved ? Icons.check : Icons.bookmark_add),
+                  label: Text(_isSaved ? '保存済み' : 'ルートを保存'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.white,
+                    foregroundColor: Colors.blue,
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    textStyle: const TextStyle(fontSize: 15),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: ElevatedButton.icon(
+                  onPressed: hasRoute ? _startWalkingWithRoute : null,
+                  icon: const Icon(Icons.play_arrow),
+                  label: const Text('このルートで歩く'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.blue,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    textStyle: const TextStyle(fontSize: 15),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// ルート候補の切り替えカード（形の一致度が高い順）
+  Widget _buildCandidateSelector() {
+    return Row(
+      children: [
+        for (int i = 0; i < _candidates.length; i++) ...[
+          if (i > 0) const SizedBox(width: 8),
+          Expanded(child: _buildCandidateCard(i)),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildCandidateCard(int index) {
+    final candidate = _candidates[index];
+    final isSelected = index == _selectedIndex;
+    return GestureDetector(
+      onTap: () => _selectCandidate(index),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+        decoration: BoxDecoration(
+          color: isSelected ? Colors.blue : Colors.white,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(
+            color: isSelected ? Colors.blue : Colors.grey.shade300,
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.1),
+              blurRadius: 4,
+              offset: const Offset(0, 2),
+            ),
+          ],
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Row(
+              children: [
+                Text(
+                  '候補${index + 1}',
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.bold,
+                    color: isSelected ? Colors.white : Colors.black87,
+                  ),
+                ),
+                if (_savedRouteNames.containsKey(index)) ...[
+                  const SizedBox(width: 4),
+                  Icon(Icons.bookmark,
+                      size: 14,
+                      color: isSelected ? Colors.white : Colors.blue),
+                ],
+              ],
+            ),
+            const SizedBox(height: 2),
+            Text(
+              candidate.label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 11,
+                color: isSelected ? Colors.white70 : Colors.grey[700],
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              '${(candidate.distance / 1000).toStringAsFixed(2)} km',
+              style: TextStyle(
+                fontSize: 15,
+                fontWeight: FontWeight.bold,
+                color: isSelected ? Colors.white : Colors.blue,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   @override
@@ -276,76 +523,23 @@ class _RouteGenerationScreenState extends State<RouteGenerationScreen> {
       children: [
         GoogleMap(
           initialCameraPosition: CameraPosition(
-            target: LatLng(
-              (widget.startingPoint.latitude + widget.destination.latitude) / 2,
-              (widget.startingPoint.longitude + widget.destination.longitude) /
-                  2,
-            ),
-            zoom: 14,
+            target: widget.startingPoint,
+            zoom: 15,
           ),
-          onMapCreated: (controller) => _mapController = controller,
+          onMapCreated: (controller) {
+            _mapController = controller;
+            // 地図のレイアウト完了を待ってからルート全体に合わせる
+            Future.delayed(
+                const Duration(milliseconds: 300), _fitCameraToRoute);
+          },
           polylines: _buildPolylines(),
           markers: _buildMarkers(),
           myLocationEnabled: true,
           myLocationButtonEnabled: true,
         ),
 
-        // 上部: ルート情報パネル
-        if (_generatedRoute != null)
-          Positioned(
-            top: 12,
-            left: 12,
-            right: 12,
-            child: Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(8),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.1),
-                    blurRadius: 4,
-                    offset: const Offset(0, 2),
-                  ),
-                ],
-              ),
-              child: Row(
-                children: [
-                  const Icon(Icons.straighten, size: 16, color: Colors.grey),
-                  const SizedBox(width: 8),
-                  const Text('距離: ', style: TextStyle(fontSize: 14)),
-                  Text(
-                    '${(RouteService.calculatePathDistance(_generatedRoute!) / 1000).toStringAsFixed(2)} km',
-                    style: const TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.blue,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-
-        // 下部: 歩く開始ボタン
-        Positioned(
-          bottom: 20,
-          left: 20,
-          right: 20,
-          child: SizedBox(
-            width: double.infinity,
-            child: ElevatedButton.icon(
-              onPressed: _startWalkingWithRoute,
-              icon: const Icon(Icons.play_arrow),
-              label: const Text('このルートで歩く'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.blue,
-                padding: const EdgeInsets.symmetric(vertical: 14),
-                textStyle: const TextStyle(fontSize: 16),
-              ),
-            ),
-          ),
-        ),
+        // 下部: 保存・歩く開始ボタン
+        _buildActionButtons(),
       ],
     );
   }
@@ -391,9 +585,11 @@ class _RouteGenerationScreenState extends State<RouteGenerationScreen> {
     final scaleMultiplier = savedScaleBarDistance / _scaleBarDistanceMeters;
 
     return LayoutBuilder(builder: (context, constraints) {
-      // 初回レンダリング時にルートをキャンバス中央に配置
+      // 初回レンダリング時はスケッチした位置（なければキャンバス中央）に配置
+      final initialCenter = widget.initialPreviewCenter ?? const Offset(0.5, 0.5);
       final position = _routePreviewPosition ??
-          Offset(constraints.maxWidth / 2, constraints.maxHeight / 2);
+          Offset(constraints.maxWidth * initialCenter.dx,
+              constraints.maxHeight * initialCenter.dy);
 
       // 回転ハンドルの座標（右上コーナー、回転角度を反映）
       const double handleSize = 28.0;
@@ -583,25 +779,8 @@ class _RouteGenerationScreenState extends State<RouteGenerationScreen> {
             ),
           ),
 
-          // 下部: 歩く開始ボタン
-          Positioned(
-            bottom: 20,
-            left: 20,
-            right: 20,
-            child: SizedBox(
-              width: double.infinity,
-              child: ElevatedButton.icon(
-                onPressed: _startWalkingWithRoute,
-                icon: const Icon(Icons.play_arrow),
-                label: const Text('このルートで歩く'),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.blue,
-                  padding: const EdgeInsets.symmetric(vertical: 14),
-                  textStyle: const TextStyle(fontSize: 16),
-                ),
-              ),
-            ),
-          ),
+          // 下部: 保存・歩く開始ボタン
+          _buildActionButtons(),
         ],
       );
     });
@@ -612,20 +791,25 @@ class _RouteGenerationScreenState extends State<RouteGenerationScreen> {
   Set<Polyline> _buildPolylines() {
     Set<Polyline> polylines = {};
 
-    if (_generatedRoute != null) {
+    // 選択中の候補を青で太く、ほかの候補は灰色で表示（タップで切り替え）
+    for (int i = 0; i < _candidates.length; i++) {
+      final isSelected = i == _selectedIndex;
       polylines.add(Polyline(
-        polylineId: const PolylineId('generated_route'),
-        points: _generatedRoute!,
-        color: Colors.blue,
-        width: 5,
+        polylineId: PolylineId('candidate_$i'),
+        points: _candidates[i].route,
+        color: isSelected ? Colors.blue : Colors.grey.withValues(alpha: 0.7),
+        width: isSelected ? 6 : 4,
+        zIndex: isSelected ? 1 : 0,
         geodesic: true,
+        consumeTapEvents: true,
+        onTap: () => _selectCandidate(i),
       ));
     }
 
-    if (_showSketch) {
+    if (_showSketch && _selectedCandidate != null) {
       polylines.add(Polyline(
         polylineId: const PolylineId('sketch_route'),
-        points: widget.tracedPath,
+        points: _selectedCandidate!.targetPath,
         color: Colors.red.withValues(alpha: 0.5),
         width: 3,
         zIndex: -1,
@@ -640,12 +824,12 @@ class _RouteGenerationScreenState extends State<RouteGenerationScreen> {
       Marker(
         markerId: const MarkerId('starting_point'),
         position: widget.startingPoint,
-        infoWindow: const InfoWindow(title: '出発地'),
+        infoWindow: const InfoWindow(title: '出発地（現在地）'),
         icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueBlue),
       ),
       Marker(
         markerId: const MarkerId('destination'),
-        position: widget.destination,
+        position: _generatedRoute?.last ?? widget.destination,
         infoWindow: const InfoWindow(title: '目的地'),
         icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed),
       ),
