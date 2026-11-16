@@ -1,8 +1,7 @@
-import 'dart:convert';
-import 'dart:io';
-
 import 'package:flutter/material.dart';
-import 'package:path_provider/path_provider.dart';
+
+import 'draft_store.dart';
+import 'utils/canvas_scale.dart';
 
 class DraftListScreen extends StatelessWidget {
   final Function(Map<String, dynamic>) onDraftSelected;
@@ -16,7 +15,7 @@ class DraftListScreen extends StatelessWidget {
         title: Text('下書き一覧'),
       ),
       body: FutureBuilder<List<Map<String, dynamic>>>(
-        future: _loadDrafts(),
+        future: DraftStore.loadAll(),
         builder: (context, snapshot) {
           if (!snapshot.hasData) {
             return Center(child: CircularProgressIndicator());
@@ -28,6 +27,8 @@ class DraftListScreen extends StatelessWidget {
             itemBuilder: (context, index) {
               final draft = drafts[index];
               final timestamp = draft['timestamp'] ?? '不明な日時';
+              // 下書きは保存時のスケールで再開されるため、一覧でも分かるようにする
+              final scale = (draft['scaleBarDistance'] as num?)?.toDouble();
 
               return Dismissible(
                 key: ValueKey(draft['filePath']),
@@ -39,7 +40,7 @@ class DraftListScreen extends StatelessWidget {
                   child: Icon(Icons.delete, color: Colors.white),
                 ),
                 onDismissed: (direction) async {
-                  await _deleteDraft(draft['filePath']);
+                  await DraftStore.delete(draft['filePath']);
                   if (!context.mounted) return;
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(content: Text('下書きを削除しました')),
@@ -47,7 +48,10 @@ class DraftListScreen extends StatelessWidget {
                 },
                 child: ListTile(
                   title: Text('下書き ${index + 1}'),
-                  subtitle: Text(timestamp),
+                  subtitle: Text(scale == null
+                      ? timestamp
+                      : '$timestamp\nスケール ${CanvasScale.format(scale)}'),
+                  isThreeLine: scale != null,
                   onTap: () {
                     onDraftSelected(draft);
                   },
@@ -58,37 +62,5 @@ class DraftListScreen extends StatelessWidget {
         },
       ),
     );
-  }
-
-  Future<List<Map<String, dynamic>>> _loadDrafts() async {
-    final directory = await getApplicationDocumentsDirectory();
-    final draftsDirectory = Directory('${directory.path}/drafts');
-
-    if (!(await draftsDirectory.exists())) {
-      return [];
-    }
-
-    final draftFiles = draftsDirectory.listSync().whereType<File>();
-    return Future.wait(draftFiles.map((file) async {
-      try {
-        final jsonString = await file.readAsString();
-        final data = jsonDecode(jsonString);
-
-        // デフォルト値を設定
-        data['filePath'] = file.path;
-        data['timestamp'] ??= '不明な日時';
-        return data;
-      } catch (e) {
-        // エラーが発生した場合は無視して次のファイルを処理
-        return {'filePath': file.path, 'timestamp': '不明な日時'};
-      }
-    }));
-  }
-
-  Future<void> _deleteDraft(String filePath) async {
-    final file = File(filePath);
-    if (await file.exists()) {
-      await file.delete();
-    }
   }
 }

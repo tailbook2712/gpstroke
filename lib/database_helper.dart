@@ -1,9 +1,11 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:path/path.dart';
 import 'package:sqflite/sqflite.dart';
 import 'auth_service.dart';
 import 'firestore_service.dart';
+import 'utils/trajectory_usage.dart';
 
 class DatabaseHelper {
   // v2: saved_routes テーブルを追加
@@ -236,43 +238,104 @@ class DatabaseHelper {
         .toList();
   }
 
-  /// 使用済み軌跡をFirestoreと同期（作品サブコレクションから取得）
-  Future<void> syncUsedTrajectoriesFromFirestore() async {
+  /// 使用済みの軌跡の表を、いま存在する完成作品の内容に合わせ直す
+  ///
+  /// 作品に使われている軌跡は、次の 3つを合わせて求める。
+  /// - 作品ごとの記録（Firestore の used_trajectories サブコレクション）
+  /// - Firestore 上の作品のキャンバスデータに含まれる軌跡
+  ///   （記録ができる前に保存された作品のため）
+  /// - 端末内の作品のキャンバスファイル [localCanvasFiles]
+  ///   （Firestore への保存に失敗した作品のため）
+  ///
+  /// 作品の一覧をサーバーから確かに取得できたときは、表をこの内容で置き換える。
+  /// 削除された作品の軌跡や、過去に誤って付いた印はここで外れ、軌跡リストに戻る。
+  /// 取得に失敗したとき・キャッシュしか読めなかったときは、何も外さない。
+  ///
+  /// 下書きに使われている軌跡はこの表に入れない（下書きファイルの中身から求める）
+  Future<void> syncUsedTrajectoriesFromFirestore({
+    Iterable<File> localCanvasFiles = const [],
+  }) async {
     try {
-      // Firestoreから全作品の使用済み軌跡を集計して取得
-      List<Map<String, dynamic>> remoteTrajectories =
-          await _firestoreService.getAllUsedTrajectoriesFromArtworks();
-
-      if (remoteTrajectories.isEmpty) {
-        print("📌 Firestore上に使用済み軌跡がありません");
+      final usage = await _firestoreService.getArtworkTrajectoryUsage();
+      if (usage == null) {
+        print("📌 作品の情報を取得できなかったため、使用済み軌跡の表は変更しません");
         return;
       }
 
-      // ローカルDBから既存の使用済みgroupIdを取得
-      List<String> localGroupIds = await getUsedTrajectories();
-
-      // Firestoreから取得した新たなgroupIdをローカルDBに追加
-      Database db = await database;
-      Batch batch = db.batch();
-
-      int addedCount = 0;
-      for (final remote in remoteTrajectories) {
-        final groupId = remote['groupId'] as String;
-        if (!localGroupIds.contains(groupId)) {
-          batch.insert(
-            usedTrajectoriesTable,
-            {columnUsedTrajectoryGroupId: groupId},
-            conflictAlgorithm: ConflictAlgorithm.ignore,
-          );
-          addedCount++;
+      // 端末内の作品のキャンバスファイル
+      final localCanvases = <Map<dynamic, dynamic>>[];
+      for (final file in localCanvasFiles) {
+        try {
+          final decoded = jsonDecode(await file.readAsString());
+          if (decoded is Map) localCanvases.add(decoded);
+        } catch (e) {
+          // 読めないファイルは対象から外す
         }
       }
 
-      await batch.commit();
-      print("✅ Firestoreから新たに同期した使用済み軌跡: $addedCount件");
+      final usedByArtworks = {
+        ...usage.recordedGroupIds,
+        ...TrajectoryUsage.usedGroupIds(
+          [...usage.canvases, ...localCanvases],
+          await _groupIdBySignature(),
+        ),
+      };
+
+      final current = (await getUsedTrajectories()).toSet();
+      final next = TrajectoryUsage.reconcile(
+        current: current,
+        usedByArtworks: usedByArtworks,
+        confirmedByServer: usage.confirmedByServer,
+      );
+
+      final toAdd = next.difference(current);
+      final toRemove = current.difference(next);
+      if (toAdd.isEmpty && toRemove.isEmpty) {
+        print("✅ 使用済み軌跡の表は作品の内容と一致しています: ${current.length}件");
+        return;
+      }
+
+      final db = await database;
+      final batch = db.batch();
+      for (final groupId in toRemove) {
+        batch.delete(
+          usedTrajectoriesTable,
+          where: '$columnUsedTrajectoryGroupId = ?',
+          whereArgs: [groupId],
+        );
+      }
+      for (final groupId in toAdd) {
+        batch.insert(
+          usedTrajectoriesTable,
+          {columnUsedTrajectoryGroupId: groupId},
+          conflictAlgorithm: ConflictAlgorithm.ignore,
+        );
+      }
+      await batch.commit(noResult: true);
+      print("✅ 使用済み軌跡の表を作品の内容に合わせました: "
+          "追加 ${toAdd.length}件, 解除 ${toRemove.length}件");
+      // 解除した軌跡は後から確認できるよう、ID を残す
+      if (toRemove.isNotEmpty) print("   解除した軌跡: $toRemove");
     } catch (e) {
-      print("❌ 使用済みローカル軌跡の同期エラー: $e");
+      print("❌ 使用済み軌跡の同期エラー: $e");
     }
+  }
+
+  /// 手持ちの軌跡（記録・取り込み）の署名 → groupId
+  ///
+  /// groupId を持たない古い作品の軌跡を、座標で照合するための索引
+  Future<Map<String, String>> _groupIdBySignature() async {
+    final index = <String, String>{};
+    for (final row in await getAllWalkingData()) {
+      try {
+        final signature = TrajectoryUsage.signatureOfSavedPositions(
+            jsonDecode(row[columnPositions] as String));
+        if (signature != null) index[signature] = row[columnGroupId] as String;
+      } catch (e) {
+        // 読めない軌跡は照合の対象から外す
+      }
+    }
+    return index;
   }
 
   /// 指定インデックスのローカル軌跡のgroupIdを取得
