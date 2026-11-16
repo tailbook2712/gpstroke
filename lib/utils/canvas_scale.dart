@@ -72,6 +72,20 @@ class CanvasScale {
   static double displayPixels(double extentMeters, double scaleBarDistance) =>
       extentMeters / metersPerPixel(scaleBarDistance);
 
+  /// 指定スケールのキャンバスで、軌跡を描く正方形の枠の一辺（px）
+  ///
+  /// 軌跡は枠の四辺に 10% ずつ余白を取って描かれる（PolylinePainter）ため、
+  /// 差し渡しが [displayPixels] になるよう、枠はその 1/0.8 倍の大きさになる。
+  /// 差し渡しが 0 の軌跡（1点だけ）は [fallback] の大きさの枠で描く
+  static double boxPixels(
+    double extentMeters,
+    double scaleBarDistance, {
+    double fallback = 100.0,
+  }) {
+    if (extentMeters <= 0) return fallback;
+    return displayPixels(extentMeters, scaleBarDistance) / 0.8;
+  }
+
   /// 指定スケールで、軌跡がキャンバスに収まるか
   ///
   /// 差し渡しがキャンバスの短辺を超える軌跡は「大きすぎる」とみなす

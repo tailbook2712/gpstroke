@@ -5,7 +5,6 @@ import 'package:geolocator/geolocator.dart';
 import 'package:intl/intl.dart';
 
 import 'canvas_scale_widgets.dart';
-import 'polyline_painter.dart';
 import 'route_generation_screen.dart' show DraftCanvasOverlayPainter;
 import 'utils/canvas_scale.dart';
 
@@ -245,25 +244,9 @@ class _ArtworkHomeViewState extends State<ArtworkHomeView> {
     Widget? trajectory;
     final positions = _typicalTrajectory;
     if (positions != null && _typicalExtent != null) {
-      // PolylinePainter は 10% のパディングを取るため、描画領域は一辺の 0.8 倍
-      final side =
-          CanvasScale.displayPixels(_typicalExtent!, _selected) * k / 0.8;
-      trajectory = OverflowBox(
-        minWidth: side,
-        maxWidth: side,
-        minHeight: side,
-        maxHeight: side,
-        child: CustomPaint(
-          size: Size(side, side),
-          painter: PolylinePainter(
-            positions: positions,
-            minLat: positions.map((p) => p.latitude).reduce(math.min),
-            maxLat: positions.map((p) => p.latitude).reduce(math.max),
-            minLon: positions.map((p) => p.longitude).reduce(math.min),
-            maxLon: positions.map((p) => p.longitude).reduce(math.max),
-            strokeWidth: 2.0,
-          ),
-        ),
+      trajectory = ScaledTrajectory(
+        positions: positions,
+        boxSide: CanvasScale.boxPixels(_typicalExtent!, _selected) * k,
       );
     }
 

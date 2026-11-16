@@ -19,6 +19,14 @@ void main() {
       expect(extent, closeTo(1113.2, 0.1));
     });
 
+    test('キャンバス上で軌跡を描く枠は、余白の分だけ差し渡しより大きい', () {
+      // 500m スケール: 1000m は 160px → 枠は 160 / 0.8 = 200px
+      expect(CanvasScale.boxPixels(1000, 500), closeTo(200, 1e-9));
+      // 1点だけの軌跡は既定の大きさの枠で描く
+      expect(CanvasScale.boxPixels(0, 500), 100);
+      expect(CanvasScale.boxPixels(0, 500, fallback: 80), 80);
+    });
+
     test('軌跡の差し渡しをキャンバス上のピクセルに換算する', () {
       // 500m スケール: 6.25 m/px → 1000m は 160px
       expect(CanvasScale.displayPixels(1000, 500), closeTo(160, 1e-9));

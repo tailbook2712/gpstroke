@@ -1408,6 +1408,20 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
     return extentMeters / (_metersPerPixel * trajectorySize * 0.8);
   }
 
+  /// キャンバスに置いたときの、軌跡を描く枠の一辺（論理ピクセル）
+  ///
+  /// 配置時の大きさ（trajectorySize × _computeScaleForTrajectory）と同じ値になる
+  double _canvasBoxSide(double extentMeters) => CanvasScale.boxPixels(
+      extentMeters, _scaleBarDistanceMeters,
+      fallback: trajectorySize);
+
+  /// ドラッグ中のプレビューを指に対してどこに出すか
+  ///
+  /// プレビューはキャンバス上の実寸で出す。大きい軌跡は中心を指に合わせ、
+  /// 小さい軌跡は指で隠れないよう、指の少し上に出す
+  Offset _dragFeedbackAnchor(double boxSide) =>
+      Offset(boxSide / 2, math.max(boxSide / 2, 56.0));
+
   /// キャンバスの短辺（論理ピクセル）
   double get _canvasShortSide {
     final renderBox =
@@ -1724,8 +1738,16 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                       final RenderBox? renderBox = _boundaryKey.currentContext
                           ?.findRenderObject() as RenderBox?;
                       if (renderBox != null) {
+                        // details.offset はドラッグ中のプレビューの左上。
+                        // プレビューは実寸なので、その中心に軌跡の中心を合わせれば、
+                        // 見えていた場所・大きさのままキャンバスに置かれる
+                        final feedbackSide =
+                            (trajectoryData['feedbackSide'] as num?)
+                                    ?.toDouble() ??
+                                0.0;
                         final localPosition =
-                            renderBox.globalToLocal(details.offset);
+                            renderBox.globalToLocal(details.offset) +
+                                Offset(feedbackSide / 2, feedbackSide / 2);
 
                         setState(() {
                           final trajectoryIndex =
@@ -2636,6 +2658,8 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
           trajectory['groupId'] as String?);
       trajectory['fit'] = CanvasScale.classify(
           extent, _scaleBarDistanceMeters, canvasShortSide);
+      // ドラッグ中のプレビューを、キャンバスに置かれる実寸で出すための大きさ
+      trajectory['boxSide'] = _canvasBoxSide(extent);
     }
     final tooLargeCount = allTrajectories
         .where((t) => t['fit'] == TrajectoryFit.tooLarge)
@@ -2705,6 +2729,10 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                 final String date = trajectory['date'];
                 final String? groupId = trajectory['groupId'];
                 final TrajectoryFit fit = trajectory['fit'];
+                final double boxSide = trajectory['boxSide'];
+                // タイルは形が分かるよう、軌跡をタイルいっぱいに描く（縮尺は揃えない）
+                final Widget tile =
+                    _buildTrajectoryTile(positions, date, isGarmin, fit: fit);
 
                 return Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 4),
@@ -2713,51 +2741,34 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                       'positions': positions,
                       'isGarmin': isGarmin,
                       'groupId': groupId,
+                      'feedbackSide': boxSide,
                     },
-                    feedback: Material(
-                      elevation: 4,
-                      borderRadius: BorderRadius.circular(8),
-                      child: Container(
-                        width: 80,
-                        height: 80,
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(color: Colors.blue, width: 2),
-                        ),
-                        child: CustomPaint(
-                          size: const Size(80, 80),
-                          painter: PolylinePainter(
+                    dragAnchorStrategy: (draggable, context, position) =>
+                        _dragFeedbackAnchor(boxSide),
+                    // ドラッグ中は、キャンバスに置かれる実寸の軌跡を見せる
+                    feedback: IgnorePointer(
+                      child: Opacity(
+                        opacity: 0.8,
+                        child: SizedBox(
+                          width: boxSide,
+                          height: boxSide,
+                          child: ScaledTrajectory(
                             positions: positions,
-                            minLat: positions
-                                .map((p) => p.latitude)
-                                .reduce((a, b) => a < b ? a : b),
-                            maxLat: positions
-                                .map((p) => p.latitude)
-                                .reduce((a, b) => a > b ? a : b),
-                            minLon: positions
-                                .map((p) => p.longitude)
-                                .reduce((a, b) => a < b ? a : b),
-                            maxLon: positions
-                                .map((p) => p.longitude)
-                                .reduce((a, b) => a > b ? a : b),
+                            boxSide: boxSide,
+                            strokeWidth: 4.0,
+                            color: Colors.red,
                           ),
                         ),
                       ),
                     ),
-                    childWhenDragging: Opacity(
-                      opacity: 0.5,
-                      child: _buildTrajectoryTile(positions, date, isGarmin,
-                          fit: fit),
-                    ),
+                    childWhenDragging: Opacity(opacity: 0.5, child: tile),
                     child: GestureDetector(
                       onTap: () {
                         // タップで地図情報を表示
                         _showTrajectoryMapDialog(
                             context, positions, date, isGarmin, groupId);
                       },
-                      child: _buildTrajectoryTile(positions, date, isGarmin,
-                          fit: fit),
+                      child: tile,
                     ),
                   ),
                 );
