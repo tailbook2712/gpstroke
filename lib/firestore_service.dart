@@ -3,6 +3,27 @@ import 'dart:convert';
 import 'dart:typed_data';
 import 'auth_service.dart';
 
+/// 完成作品に使われている軌跡の情報（FirestoreService.getArtworkTrajectoryUsage）
+class ArtworkTrajectoryUsage {
+  /// 作品ごとの記録（used_trajectories サブコレクション）にある groupId
+  final Set<String> recordedGroupIds;
+
+  /// 各作品のキャンバスデータ（`trajectories` を持つ Map）
+  ///
+  /// 作品ごとの記録ができる前に保存された作品は記録を持たないため、
+  /// キャンバスデータに含まれる軌跡そのものから、使った軌跡を特定する
+  final List<Map<String, dynamic>> canvases;
+
+  /// すべてサーバーから取得できたか（false: ローカルキャッシュからの応答を含む）
+  final bool confirmedByServer;
+
+  const ArtworkTrajectoryUsage({
+    required this.recordedGroupIds,
+    required this.canvases,
+    required this.confirmedByServer,
+  });
+}
+
 class FirestoreService {
   final FirebaseFirestore _db = FirebaseFirestore.instance;
   final AuthService _authService = AuthService();
@@ -367,6 +388,46 @@ class FirestoreService {
     } catch (e) {
       print("❌ 作品の使用済み軌跡取得エラー: $e");
       return [];
+    }
+  }
+
+  /// いま存在する全作品について、使われている軌跡の情報を取得する
+  ///
+  /// 取得に失敗した場合は null（「作品が 1つもない」と区別するため）
+  Future<ArtworkTrajectoryUsage?> getArtworkTrajectoryUsage() async {
+    try {
+      final artworksSnapshot = await _userCollection('artworks').get();
+      bool confirmedByServer = !artworksSnapshot.metadata.isFromCache;
+
+      final recordedGroupIds = <String>{};
+      final canvases = <Map<String, dynamic>>[];
+
+      for (final artworkDoc in artworksSnapshot.docs) {
+        final data = artworkDoc.data();
+        if (data is Map<String, dynamic> && data['trajectories'] is List) {
+          canvases.add({'trajectories': data['trajectories']});
+        }
+
+        final recordSnapshot =
+            await artworkDoc.reference.collection('used_trajectories').get();
+        if (recordSnapshot.metadata.isFromCache) confirmedByServer = false;
+        for (final recordDoc in recordSnapshot.docs) {
+          final groupId = recordDoc.data()['groupId'];
+          if (groupId is String) recordedGroupIds.add(groupId);
+        }
+      }
+
+      print("📌 作品に使われている軌跡の情報を取得: 作品 ${artworksSnapshot.docs.length}件, "
+          "記録 ${recordedGroupIds.length}件, "
+          "取得元 ${confirmedByServer ? 'サーバー' : 'キャッシュ'}");
+      return ArtworkTrajectoryUsage(
+        recordedGroupIds: recordedGroupIds,
+        canvases: canvases,
+        confirmedByServer: confirmedByServer,
+      );
+    } catch (e) {
+      print("❌ 作品に使われている軌跡の取得エラー: $e");
+      return null;
     }
   }
 

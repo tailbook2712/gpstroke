@@ -2,9 +2,11 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:intl/intl.dart';
+import 'canvas_scale_widgets.dart';
 import 'database_helper.dart';
 import 'draft_list_screen.dart';
 import 'route_service.dart';
+import 'utils/canvas_scale.dart';
 
 class RouteGenerationScreen extends StatefulWidget {
   final LatLng startingPoint;
@@ -61,13 +63,9 @@ class _RouteGenerationScreenState extends State<RouteGenerationScreen> {
   bool _isRotationHandleDragging = false;
   bool _isRouteRotating = false;
 
-  // ─── スケールバー（作品制作画面と同一設定） ───
-  static const List<double> _scaleDistanceOptions = [
-    50, 100, 200, 300, 500, 1000, 2000, 3000, 5000, 10000,
-  ];
-  static const double _scaleBarPixelLength = 80.0;
+  // ─── スケール（プレビューするキャンバスの縮尺に合わせる。この画面では変更できない） ───
   static const double _trajectorySize = 100.0;
-  double _scaleBarDistanceMeters = 500.0;
+  double _scaleBarDistanceMeters = CanvasScale.defaultDistance;
 
   @override
   void initState() {
@@ -76,7 +74,7 @@ class _RouteGenerationScreenState extends State<RouteGenerationScreen> {
     // 作品キャンバスのスケールを引き継ぐ（プレビューで同じ縮尺になるように）
     final initialScale =
         (widget.initialCanvasData?['scaleBarDistance'] as num?)?.toDouble();
-    if (initialScale != null && _scaleDistanceOptions.contains(initialScale)) {
+    if (initialScale != null && initialScale > 0) {
       _scaleBarDistanceMeters = initialScale;
     }
     _generateRoute();
@@ -117,28 +115,6 @@ class _RouteGenerationScreenState extends State<RouteGenerationScreen> {
 
   // ─── スケールバー関連 ─────────────────────────────────────
 
-  String _formatScaleDistance(double meters) {
-    if (meters >= 1000) {
-      final km = meters / 1000;
-      return '${km % 1 == 0 ? km.toInt() : km.toStringAsFixed(1)}km';
-    }
-    return '${meters.toInt()}m';
-  }
-
-  void _increaseScaleDistance() {
-    final idx = _scaleDistanceOptions.indexOf(_scaleBarDistanceMeters);
-    if (idx < _scaleDistanceOptions.length - 1) {
-      setState(() => _scaleBarDistanceMeters = _scaleDistanceOptions[idx + 1]);
-    }
-  }
-
-  void _decreaseScaleDistance() {
-    final idx = _scaleDistanceOptions.indexOf(_scaleBarDistanceMeters);
-    if (idx > 0) {
-      setState(() => _scaleBarDistanceMeters = _scaleDistanceOptions[idx - 1]);
-    }
-  }
-
   /// ルートの実世界最大寸法（メートル）を計算
   double _computeRouteExtentMeters(List<LatLng> route) {
     final lats = route.map((p) => p.latitude);
@@ -158,71 +134,8 @@ class _RouteGenerationScreenState extends State<RouteGenerationScreen> {
   double _computeRouteScale(List<LatLng> route) {
     final extentMeters = _computeRouteExtentMeters(route);
     if (extentMeters <= 0) return 1.0;
-    final metersPerPixel = _scaleBarDistanceMeters / _scaleBarPixelLength;
+    final metersPerPixel = CanvasScale.metersPerPixel(_scaleBarDistanceMeters);
     return extentMeters / (metersPerPixel * _trajectorySize * 0.8);
-  }
-
-  /// スケールバーウィジェット（作品制作画面と同一デザイン）
-  Widget _buildScaleBar() {
-    final idx = _scaleDistanceOptions.indexOf(_scaleBarDistanceMeters);
-    final canDecrease = idx > 0;
-    final canIncrease = idx < _scaleDistanceOptions.length - 1;
-
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              GestureDetector(
-                onTap: canDecrease ? _decreaseScaleDistance : null,
-                behavior: HitTestBehavior.opaque,
-                child: Padding(
-                  padding: const EdgeInsets.all(6),
-                  child: Icon(Icons.remove,
-                      size: 20,
-                      color: canDecrease ? Colors.black54 : Colors.grey[400]),
-                ),
-              ),
-              Container(
-                width: _scaleBarPixelLength,
-                height: 8,
-                decoration: const BoxDecoration(
-                  border: Border(
-                    left: BorderSide(width: 1.5, color: Colors.black54),
-                    right: BorderSide(width: 1.5, color: Colors.black54),
-                    bottom: BorderSide(width: 1.5, color: Colors.black54),
-                  ),
-                ),
-              ),
-              GestureDetector(
-                onTap: canIncrease ? _increaseScaleDistance : null,
-                behavior: HitTestBehavior.opaque,
-                child: Padding(
-                  padding: const EdgeInsets.all(6),
-                  child: Icon(Icons.add,
-                      size: 20,
-                      color: canIncrease ? Colors.black54 : Colors.grey[400]),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 1),
-          SizedBox(
-            width: _scaleBarPixelLength + 64,
-            child: Center(
-              child: Text(
-                _formatScaleDistance(_scaleBarDistanceMeters),
-                style: const TextStyle(fontSize: 10, color: Colors.black54),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
   }
 
   /// 候補を選択する
@@ -559,6 +472,7 @@ class _RouteGenerationScreenState extends State<RouteGenerationScreen> {
     if (result != null && mounted) {
       setState(() {
         _draftCanvasData = result;
+        // 選んだキャンバスの縮尺でプレビューする
         final savedScale = result['scaleBarDistance'];
         if (savedScale != null) {
           _scaleBarDistanceMeters = (savedScale as num).toDouble();
@@ -757,7 +671,7 @@ class _RouteGenerationScreenState extends State<RouteGenerationScreen> {
                 color: Colors.white.withValues(alpha: 0.9),
                 borderRadius: BorderRadius.circular(6),
               ),
-              child: _buildScaleBar(),
+              child: CanvasScaleBar(distanceMeters: _scaleBarDistanceMeters),
             ),
           ),
 
@@ -924,9 +838,15 @@ class DraftCanvasOverlayPainter extends CustomPainter {
   final double scaleMultiplier;
   static const double _trajectorySize = 100.0;
 
+  /// 線の色と太さ（縮小して描くサムネイルでは、見やすいように指定する）
+  final Color? color;
+  final double strokeWidth;
+
   DraftCanvasOverlayPainter({
     required this.trajectories,
     this.scaleMultiplier = 1.0,
+    this.color,
+    this.strokeWidth = 2.0,
   });
 
   static double _latToMercatorY(double lat) {
@@ -994,8 +914,8 @@ class DraftCanvasOverlayPainter extends CustomPainter {
       canvas.translate(-_trajectorySize / 2, -_trajectorySize / 2);
 
       final paint = Paint()
-        ..color = Colors.blue.withValues(alpha: 0.6)
-        ..strokeWidth = 2.0 / scale
+        ..color = color ?? Colors.blue.withValues(alpha: 0.6)
+        ..strokeWidth = strokeWidth / scale
         ..style = PaintingStyle.stroke
         ..strokeCap = StrokeCap.round
         ..strokeJoin = StrokeJoin.round;

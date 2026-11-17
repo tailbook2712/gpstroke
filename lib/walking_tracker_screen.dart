@@ -221,7 +221,18 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
   }
 
   Future<void> _syncUsedTrajectories() async {
-    await _dbHelper.syncUsedTrajectoriesFromFirestore();
+    // 端末内の作品も「存在する作品」として扱う
+    List<File> localCanvasFiles = [];
+    try {
+      final (_, canvasDirectory) = await _getUserArtworkDirectories();
+      if (await canvasDirectory.exists()) {
+        localCanvasFiles = canvasDirectory.listSync().whereType<File>().toList();
+      }
+    } catch (e) {
+      print("作品のキャンバスファイルの一覧取得エラー: $e");
+    }
+    await _dbHelper.syncUsedTrajectoriesFromFirestore(
+        localCanvasFiles: localCanvasFiles);
   }
 
   /// ユーザーIDでスコープされたアートワーク・キャンバスディレクトリを返す

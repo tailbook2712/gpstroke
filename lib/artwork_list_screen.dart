@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'dart:ui' as ui;
 import 'artwork_detail_screen.dart';
+import 'database_helper.dart';
 import 'firestore_service.dart';
 
 class ArtworkListScreen extends StatefulWidget {
@@ -49,6 +50,31 @@ class _ArtworkListScreenState extends State<ArtworkListScreen> {
     return size;
   }
 
+  // 削除してよいかを確認してから、作品を削除する
+  Future<void> _confirmDeleteArtwork(int index, String artworkId) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: Text("作品の削除"),
+          content: Text("この作品を削除してもよろしいですか？"),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: Text("キャンセル"),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: Text("削除"),
+            ),
+          ],
+        );
+      },
+    );
+    if (confirmed != true || !mounted) return;
+    await _deleteArtwork(index, artworkId);
+  }
+
   // 作品を削除する
   Future<void> _deleteArtwork(int index, String artworkId) async {
     try {
@@ -71,6 +97,13 @@ class _ArtworkListScreenState extends State<ArtworkListScreen> {
       setState(() {
         artworks.removeAt(index);
       });
+
+      // 削除した作品の軌跡を軌跡リストに戻す
+      // （残っている作品でも使われている軌跡は、使用済みのままになる）
+      await DatabaseHelper().syncUsedTrajectoriesFromFirestore(
+        localCanvasFiles:
+            artworks.map((artwork) => artwork['canvasFile']).whereType<File>(),
+      );
 
       if (!mounted) return;
 
@@ -118,43 +151,10 @@ class _ArtworkListScreenState extends State<ArtworkListScreen> {
                       final totalSteps = meta['totalSteps'] ?? 0;
                       final artworkId = meta['artworkId'] ?? '';
 
-                      return Dismissible(
-                        key: ValueKey(
-                            artworkId.isEmpty ? index.toString() : artworkId),
-                        direction: DismissDirection.endToStart,
-                        background: Container(
-                          alignment: Alignment.centerRight,
-                          color: Colors.red,
-                          padding: EdgeInsets.only(right: 20),
-                          child: Icon(Icons.delete, color: Colors.white),
-                        ),
-                        confirmDismiss: (direction) async {
-                          return await showDialog(
-                            context: context,
-                            builder: (BuildContext context) {
-                              return AlertDialog(
-                                title: Text("作品の削除"),
-                                content: Text("この作品を削除してもよろしいですか？"),
-                                actions: [
-                                  TextButton(
-                                    onPressed: () =>
-                                        Navigator.of(context).pop(false),
-                                    child: Text("キャンセル"),
-                                  ),
-                                  TextButton(
-                                    onPressed: () =>
-                                        Navigator.of(context).pop(true),
-                                    child: Text("削除"),
-                                  ),
-                                ],
-                              );
-                            },
-                          );
-                        },
-                        onDismissed: (direction) {
-                          _deleteArtwork(index, artworkId);
-                        },
-                        child: GestureDetector(
+                      // 長押しで削除（確認ダイアログを挟む）
+                      return GestureDetector(
+                          onLongPress: () =>
+                              _confirmDeleteArtwork(index, artworkId),
                           onTap: () {
                             Navigator.push(
                               context,
@@ -245,7 +245,6 @@ class _ArtworkListScreenState extends State<ArtworkListScreen> {
                               ],
                             ),
                           ),
-                        ),
                       );
                     },
                   );

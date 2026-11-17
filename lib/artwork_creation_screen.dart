@@ -13,20 +13,34 @@ import 'package:intl/intl.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:tutorial_coach_mark/tutorial_coach_mark.dart';
+import 'artwork_home_view.dart';
 import 'auth_service.dart';
+import 'canvas_scale_widgets.dart';
 import 'database_helper.dart';
 import 'draft_list_screen.dart';
+import 'draft_store.dart';
 import 'polyline_painter.dart';
 import 'firestore_service.dart';
 import 'route_generation_screen.dart';
 import 'route_service.dart';
 
+import 'utils/canvas_scale.dart';
+import 'utils/trajectory_usage.dart';
 import 'utils/utils.dart';
 
 class ArtworkCreationScreen extends StatefulWidget {
   final List<List<Position>> trajectories;
 
-  ArtworkCreationScreen({required this.trajectories});
+  /// 外部で確定済みのキャンバススケール（スケールバーの距離、メートル）
+  ///
+  /// 共創プロジェクトのように、スケールがプロジェクト単位で決まっている場合に渡す。
+  /// 指定すると制作ホームでのスケール選択を省き、この画面から選び直すこともできない。
+  final double? fixedScaleBarDistance;
+
+  ArtworkCreationScreen({
+    required this.trajectories,
+    this.fixedScaleBarDistance,
+  });
 
   @override
   _ArtworkCreationScreenState createState() => _ArtworkCreationScreenState();
@@ -63,21 +77,13 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
   // 軌跡のサイズ定義
   final double trajectorySize = 100.0;
 
-  // スケールバー関連
-  double _scaleBarDistanceMeters = 500.0; // スケールバーが表す距離（メートル）
-  final double _scaleBarPixelLength = 80.0; // スケールバーの固定ピクセル長
-  static const List<double> _scaleDistanceOptions = [
-    50,
-    100,
-    200,
-    300,
-    500,
-    1000,
-    2000,
-    3000,
-    5000,
-    10000
-  ];
+  // キャンバスのスケール（スケールバーが表す距離、メートル）
+  // 制作の開始時に決め、制作中は変更しない（#132）
+  double _scaleBarDistanceMeters = CanvasScale.defaultDistance;
+  bool _scaleDecided = false; // false の間は制作ホーム（スケール選択と下書き一覧）を表示する
+  List<Map<String, dynamic>>? _drafts; // 制作ホームに並べる下書き（読み込み中は null）
+  bool _isLeavingCanvas = false; // 「戻る」の確認ダイアログを二重に出さないためのフラグ
+  final Map<String, double> _trajectoryExtentCache = {}; // groupId → 差し渡し(m)
 
   // ガイド画像機能用の状態変数
   File? _guideImage;
@@ -101,6 +107,8 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
   Set<String> _usedGarminGroupIds = {};
   Map<int, String> _localTrajectoryGroupIds = {};
   Set<String> _recentlyUsedGroupIds = {};
+  // 下書き（いま開いているものを除く）に使われている軌跡。下書きファイルの中身から求める
+  Set<String> _draftUsedGroupIds = {};
   bool _isTrajectoryListLoading = true;
 
   @override
@@ -108,8 +116,135 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
     super.initState();
     _loadRecordTrajectories();
 
+    final fixedScale = widget.fixedScaleBarDistance;
+    if (fixedScale != null && fixedScale > 0) {
+      _scaleBarDistanceMeters = fixedScale;
+      _scaleDecided = true;
+      _showCoachMarkAfterLayout();
+    }
+    // 下書きに使われている軌跡を軌跡リストから外すため、スケールが固定の場合も読み込む
+    _reloadDrafts();
+  }
+
+  /// 制作ホームに並べる下書きを読み込む
+  Future<void> _reloadDrafts() async {
+    List<Map<String, dynamic>> drafts;
+    try {
+      drafts = DraftStore.newestFirst(await DraftStore.loadAll());
+    } catch (e) {
+      print("下書きの読み込みエラー: $e");
+      drafts = [];
+    }
+    if (!mounted) return;
+    setState(() {
+      _drafts = drafts;
+    });
+    _refreshDraftUsage();
+  }
+
+  /// 手持ちの軌跡の署名 → groupId（下書きの軌跡を照合するための索引）
+  Map<String, String> _groupIdBySignature() {
+    final index = <String, String>{};
+
+    for (int i = 0; i < recordedTrajectories.length; i++) {
+      final groupId = _localTrajectoryGroupIds[i];
+      final signature =
+          TrajectoryUsage.signatureOfPositions(recordedTrajectories[i]);
+      if (groupId != null && signature != null) index[signature] = groupId;
+    }
+
+    for (final activity in _garminActivities) {
+      try {
+        final signature = TrajectoryUsage.signatureOfSavedPositions(
+            jsonDecode(activity['positions']));
+        if (signature != null) {
+          index[signature] = activity['group_id'] as String;
+        }
+      } catch (e) {
+        // 読めない軌跡は照合の対象から外す
+      }
+    }
+    return index;
+  }
+
+  /// 下書きに使われている軌跡を求め直す
+  ///
+  /// 軌跡の使用は一度きりのため、下書きに使った軌跡は軌跡リストに出さない。
+  /// 使用済みの表には書き込まず、いま存在する下書きの中身から毎回求めるので、
+  /// 下書きを削除したり、下書きから軌跡を外して保存し直したりすれば、
+  /// その軌跡は自動的に軌跡リストへ戻る。
+  /// 開いている下書きの軌跡は、キャンバス上の配置（一時使用中）として扱う
+  void _refreshDraftUsage() {
+    final drafts = _drafts;
+    if (!mounted || drafts == null || _isTrajectoryListLoading) return;
+
+    final otherDrafts =
+        drafts.where((draft) => draft['filePath'] != _currentDraftFilePath);
+    final used =
+        TrajectoryUsage.usedGroupIds(otherDrafts, _groupIdBySignature());
+    setState(() {
+      _draftUsedGroupIds = used;
+    });
+  }
+
+  /// 制作ホームで下書きを削除する
+  Future<void> _deleteDraftFromHome(Map<String, dynamic> draft) async {
+    final filePath = draft['filePath'] as String?;
+    if (filePath == null) return;
+    try {
+      await DraftStore.delete(filePath);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('下書きの削除に失敗しました: $e')),
+      );
+      return;
+    }
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('下書きを削除しました')),
+    );
+    await _reloadDrafts();
+  }
+
+  /// キャンバスを空にして制作ホームに戻る
+  ///
+  /// [keepGuideImage] が true の場合は下絵を残す（同じ下絵でスケールだけ選び直すとき）
+  void _returnToHome({bool keepGuideImage = false}) {
+    setState(() {
+      selectedTrajectories.clear();
+      selectedItem = null;
+      temporarilyUsedIndices.clear();
+      temporarilyUsedGroupIds.clear();
+      // 読み込んでいた下書きを上書きしないよう、次は新規の制作として扱う
+      _currentDraftFilePath = null;
+      _showLayerPanel = false;
+      _isRouteSketchMode = false;
+      _routeSketchStrokes = [];
+      if (!keepGuideImage) {
+        _guideImage = null;
+        _guideImageOpacity = 0.5;
+        _guideImagePosition = Offset.zero;
+        _guideImageScale = 1.0;
+        _guideImageLastScale = 1.0;
+        _guideImageLocked = false;
+        _guideImageVisible = true;
+        _showGuideImagePanel = false;
+        _showGuideImageControl = false;
+      }
+      _scaleDecided = false;
+    });
+    // 開いていた下書きの軌跡が一瞬リストに戻らないよう、手元の一覧ですぐ求め直す
+    _refreshDraftUsage();
+    _reloadDrafts();
+  }
+
+  /// キャンバスが表示されてからコーチマークを出す
+  ///
+  /// コーチマークはキャンバス上の部品を指すため、スケールが決まってから表示する
+  void _showCoachMarkAfterLayout() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      _showArtworkCoachMarkIfNeeded();
+      if (mounted) _showArtworkCoachMarkIfNeeded();
     });
   }
 
@@ -197,7 +332,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                         fontSize: 18,
                         fontWeight: FontWeight.bold)),
                 SizedBox(height: 8),
-                Text('±ボタンで縮尺を変更できます。\n軌跡の大きさがスケールに合わせて自動調整されます',
+                Text('このキャンバスの縮尺です。軌跡はこの縮尺の大きさで配置されます。\n制作を始めるときに決め、制作中は変更できません',
                     style: TextStyle(color: Colors.white, fontSize: 14)),
               ],
             ),
@@ -309,6 +444,12 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
       await _loadTrajectoryListData();
     } catch (e) {
       print("軌跡の読み込みエラー: $e");
+      // 読み込みに失敗しても制作ホームへ進めるようにする
+      if (mounted) {
+        setState(() {
+          _isTrajectoryListLoading = false;
+        });
+      }
     }
   }
 
@@ -353,6 +494,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
         _recentlyUsedGroupIds = recentlyUsedGroupIds;
         _isTrajectoryListLoading = false;
       });
+      _refreshDraftUsage();
     } catch (e) {
       print("❌ 軌跡リスト用データの読み込みエラー: $e");
       if (!mounted) return;
@@ -620,7 +762,9 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
           'artworkName': artworkName, // 作品名
           'artworkId': artworkId, // 作品のユニークID
           'createdAt': DateTime.now().toIso8601String(),
-          'version': '2.0', // メタデータのバージョン
+          // 制作時のキャンバススケール（スケールバーが表す距離、メートル）
+          'scaleBarDistance': _scaleBarDistanceMeters,
+          'version': '2.1', // メタデータのバージョン（2.1: scaleBarDistance を追加）
         },
       };
 
@@ -757,8 +901,8 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
     }
   }
 
-  // 作品の途中保存
-  Future<void> _saveDraft({String? draftFilePath}) async {
+  // 作品の途中保存（保存できたら true）
+  Future<bool> _saveDraft({String? draftFilePath}) async {
     try {
       final directory = await getApplicationDocumentsDirectory();
       final draftsDirectory = Directory('${directory.path}/drafts');
@@ -792,6 +936,8 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
             },
             'scale': item.scale,
             'rotation': item.rotation,
+            // 下書きに使った軌跡を特定できるよう、groupId も保存する
+            'groupId': item.groupId,
           };
         }).toList(),
         'timestamp': DateTime.now().toIso8601String(),
@@ -809,20 +955,15 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
 
       await draftFile.writeAsString(jsonEncode(draftState));
 
-      // 現在使用中の軌跡を「使用済み」に設定
-      for (final trajectory in selectedTrajectories) {
-        int index = recordedTrajectories.indexOf(trajectory.polyline);
-        if (index != -1) {
-          usedTrajectoryIndices.add(index);
-          // インデックスからgroupIdを取得して使用済みとして登録
-          final groupId = await _dbHelper.getGroupIdByIndex(index);
-          if (groupId != null) {
-            await _dbHelper.markTrajectoryAsUsed(groupId);
-          }
-        }
-      }
+      // 保存した下書きを手元の一覧にも反映する。下書きに使った軌跡は、この一覧の
+      // 中身から「使用中」と判定する（_refreshDraftUsage）。使用済みの表には書き込まない
+      final savedDraft = <String, dynamic>{...draftState, 'filePath': filePath};
+      final drafts = DraftStore.newestFirst([
+        savedDraft,
+        ...?_drafts?.where((draft) => draft['filePath'] != filePath),
+      ]);
 
-      if (!mounted) return;
+      if (!mounted) return true;
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('途中保存しました。')),
@@ -832,14 +973,26 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
       setState(() {
         selectedTrajectories.clear();
         temporarilyUsedIndices.clear();
+        temporarilyUsedGroupIds.clear();
         selectedItem = null;
+        _drafts = drafts;
       });
+      return true;
     } catch (e) {
-      if (!mounted) return;
+      if (!mounted) return false;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('途中保存に失敗しました: $e')),
       );
+      return false;
     }
+  }
+
+  /// メニューからの下書き保存: 保存できたら制作ホームに戻り、保存した下書きを一覧に出す
+  Future<void> _saveDraftAndReturnToHome() async {
+    final saved = await _saveDraft(draftFilePath: _currentDraftFilePath);
+    if (!saved || !mounted) return;
+    // スケールがあらかじめ決められている場合はホームを経由しない
+    if (widget.fixedScaleBarDistance == null) _returnToHome();
   }
 
   // 途中保存した作品を読み込む
@@ -847,12 +1000,39 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
     final canvasWidth = draftData['canvasWidth'];
     final canvasHeight = draftData['canvasHeight'];
 
+    // 壊れていて読めなかった下書きは開かない
+    if (draftData['trajectories'] is! List ||
+        canvasWidth is! num ||
+        canvasHeight is! num) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('この下書きは読み込めませんでした')),
+      );
+      return;
+    }
+
+    // 下書きは保存時のスケールで固定して再開する
+    // （scaleBarDistance を持たない古い下書きは、当時の初期値として扱う）
+    final draftScale = (draftData['scaleBarDistance'] as num?)?.toDouble() ??
+        CanvasScale.defaultDistance;
+
+    final fixedScale = widget.fixedScaleBarDistance;
+    if (fixedScale != null && draftScale != fixedScale) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+              'この下書きはスケールが異なるため開けません（下書き: ${CanvasScale.format(draftScale)}）'),
+        ),
+      );
+      return;
+    }
+
+    final wasChoosingScale = !_scaleDecided;
+    // groupId を保存していなかった頃の下書きは、手持ちの軌跡と照合して特定する
+    final groupIdBySignature = _groupIdBySignature();
+
     setState(() {
-      // スケールバー距離を復元
-      final savedScaleDistance = draftData['scaleBarDistance'];
-      if (savedScaleDistance != null) {
-        _scaleBarDistanceMeters = (savedScaleDistance as num).toDouble();
-      }
+      _scaleBarDistanceMeters = draftScale;
+      _scaleDecided = true;
 
       selectedTrajectories =
           (draftData['trajectories'] as List<dynamic>).map((item) {
@@ -877,6 +1057,8 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
             (item['position']['dx'] ?? 0) * canvasWidth,
             (item['position']['dy'] ?? 0) * canvasHeight,
           ),
+          groupId: TrajectoryUsage.groupIdOfDraftTrajectory(
+              item as Map, groupIdBySignature),
         )
           ..rotation = item['rotation'] ?? 0.0
           ..scale = item['scale'] ?? 1.0;
@@ -886,13 +1068,13 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
       _currentDraftFilePath = draftData['filePath'];
 
       // リストに表示されないように一時的に使用中としてマーク
+      // （作品として保存するときも、この groupId が使用済みとして記録される）
       temporarilyUsedIndices.clear();
-      for (final trajectory in selectedTrajectories) {
-        final index = recordedTrajectories.indexOf(trajectory.polyline);
-        if (index != -1) {
-          temporarilyUsedIndices.add(index);
-        }
-      }
+      temporarilyUsedGroupIds
+        ..clear()
+        ..addAll(selectedTrajectories
+            .map((trajectory) => trajectory.groupId)
+            .whereType<String>());
 
       // ガイド画像を復元
       final guideImagePath = draftData['guideImagePath'] as String?;
@@ -919,6 +1101,11 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
         _showGuideImageControl = false;
       }
     });
+
+    // 開いた下書きの軌跡はキャンバス上の配置として扱うので、求め直す
+    _refreshDraftUsage();
+
+    if (wasChoosingScale) _showCoachMarkAfterLayout();
   }
 
   // 途中保存した作品を一覧表示する
@@ -934,9 +1121,12 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
       ),
     );
 
+    if (!mounted) return;
     if (selectedDraft != null) {
       _loadDraft(selectedDraft); // 選択された下書きを復元
     }
+    // 一覧で下書きが削除されていれば、その軌跡を軌跡リストに戻す
+    _reloadDrafts();
   }
 
   // ─── ルート提案（キャンバス上でスケッチ） ───
@@ -990,7 +1180,8 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
   }
 
   /// スケールバー上の 1px が表す実距離（メートル）
-  double get _metersPerPixel => _scaleBarDistanceMeters / _scaleBarPixelLength;
+  double get _metersPerPixel =>
+      CanvasScale.metersPerPixel(_scaleBarDistanceMeters);
 
   /// スケッチの長さ（実寸換算、メートル）
   double _routeSketchLengthMeters() {
@@ -1112,13 +1303,8 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
   /// スケッチモード中の下部操作パネル（軌跡リストの代わりに表示）
   Widget _buildRouteSketchControls() {
     final lengthKm = _routeSketchLengthMeters() / 1000;
-    // スケッチ中の戻る操作は画面を閉じずにスケッチモードを終了する
-    return PopScope(
-      canPop: false,
-      onPopInvokedWithResult: (didPop, _) {
-        if (!didPop) _exitRouteSketchMode();
-      },
-      child: Container(
+    // スケッチ中の戻る操作は _handleBack でスケッチモードの終了として扱う
+    return Container(
         padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
         color: Colors.white,
         child: SafeArea(
@@ -1199,7 +1385,6 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
             ],
           ),
         ),
-      ),
     );
   }
 
@@ -1207,135 +1392,157 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
 
   /// 軌跡の実世界における最大寸法（メートル）を計算
   double _computeTrajectoryExtentMeters(TransformablePolyline item) {
-    final meanLat = (item.minLat + item.maxLat) / 2.0;
-    final latExtent = (item.maxLat - item.minLat) * 111320.0;
-    final lonExtent = (item.maxLon - item.minLon) *
-        111320.0 *
-        math.cos(meanLat * math.pi / 180.0);
-    return math.max(latExtent, lonExtent);
+    return CanvasScale.extentMeters(
+      minLat: item.minLat,
+      maxLat: item.maxLat,
+      minLon: item.minLon,
+      maxLon: item.maxLon,
+    );
   }
 
   /// スケールバー設定に基づいて軌跡のスケール値を計算
   double _computeScaleForTrajectory(TransformablePolyline item) {
     final extentMeters = _computeTrajectoryExtentMeters(item);
     if (extentMeters <= 0) return 1.0;
-    // metersPerPixel = スケールバー距離 / スケールバーピクセル長
     // 軌跡の描画領域は trajectorySize * 0.8（PolylinePainterの10%パディング考慮）
-    final metersPerPixel = _scaleBarDistanceMeters / _scaleBarPixelLength;
-    return extentMeters / (metersPerPixel * trajectorySize * 0.8);
+    return extentMeters / (_metersPerPixel * trajectorySize * 0.8);
   }
 
-  /// すべての軌跡のスケールをスケールバーに基づいて再計算
-  void _updateAllTrajectoryScales() {
-    for (final item in selectedTrajectories) {
-      item.scale = _computeScaleForTrajectory(item);
+  /// キャンバスに置いたときの、軌跡を描く枠の一辺（論理ピクセル）
+  ///
+  /// 配置時の大きさ（trajectorySize × _computeScaleForTrajectory）と同じ値になる
+  double _canvasBoxSide(double extentMeters) => CanvasScale.boxPixels(
+      extentMeters, _scaleBarDistanceMeters,
+      fallback: trajectorySize);
+
+  /// ドラッグ中のプレビューを指に対してどこに出すか
+  ///
+  /// プレビューはキャンバス上の実寸で出す。大きい軌跡は中心を指に合わせ、
+  /// 小さい軌跡は指で隠れないよう、指の少し上に出す
+  Offset _dragFeedbackAnchor(double boxSide) =>
+      Offset(boxSide / 2, math.max(boxSide / 2, 56.0));
+
+  /// キャンバスの短辺（論理ピクセル）
+  double get _canvasShortSide {
+    final renderBox =
+        _boundaryKey.currentContext?.findRenderObject() as RenderBox?;
+    if (renderBox != null && renderBox.hasSize) {
+      return math.min(renderBox.size.width, renderBox.size.height);
     }
+    // キャンバスの描画前は画面幅で代用する（縦持ちでは短辺＝画面幅）
+    return MediaQuery.of(context).size.width;
   }
 
-  /// スケール距離値を表示用にフォーマット
-  String _formatScaleDistance(double meters) {
-    if (meters >= 1000) {
-      final km = meters / 1000;
-      return '${km % 1 == 0 ? km.toInt() : km.toStringAsFixed(1)}km';
-    }
-    return '${meters.toInt()}m';
+  /// 一覧の軌跡の差し渡し（メートル）。groupId があれば結果を使い回す
+  double _extentMetersOf(List<Position> positions, String? groupId) {
+    if (groupId == null) return trajectoryExtentMeters(positions);
+    return _trajectoryExtentCache[groupId] ??=
+        trajectoryExtentMeters(positions);
   }
 
-  /// スケールバーの距離を増やす（次のオプションに切り替え）
-  void _increaseScaleDistance() {
-    final currentIndex = _scaleDistanceOptions.indexOf(_scaleBarDistanceMeters);
-    if (currentIndex < _scaleDistanceOptions.length - 1) {
-      setState(() {
-        _scaleBarDistanceMeters = _scaleDistanceOptions[currentIndex + 1];
-        _updateAllTrajectoryScales();
-      });
-    }
+  /// 現在のスケールで、軌跡を素材として使えるか（大きすぎ・小さすぎの判定）
+  TrajectoryFit _fitOf(double extentMeters) => CanvasScale.classify(
+      extentMeters, _scaleBarDistanceMeters, _canvasShortSide);
+
+  /// 制作ホームでスケールを決めて、新しいキャンバスを始めるとき
+  void _onScaleDecided(double scaleBarDistance) {
+    setState(() {
+      _scaleBarDistanceMeters = scaleBarDistance;
+      _scaleDecided = true;
+    });
+    _showCoachMarkAfterLayout();
   }
 
-  /// スケールバーの距離を減らす（前のオプションに切り替え）
-  void _decreaseScaleDistance() {
-    final currentIndex = _scaleDistanceOptions.indexOf(_scaleBarDistanceMeters);
-    if (currentIndex > 0) {
-      setState(() {
-        _scaleBarDistanceMeters = _scaleDistanceOptions[currentIndex - 1];
-        _updateAllTrajectoryScales();
-      });
-    }
-  }
-
-  /// スケールバーウィジェットを構築
-  Widget _buildScaleBar() {
-    final currentIndex = _scaleDistanceOptions.indexOf(_scaleBarDistanceMeters);
-    final canDecrease = currentIndex > 0;
-    final canIncrease = currentIndex < _scaleDistanceOptions.length - 1;
-
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          // スケールバー本体 + 操作ボタン
-          Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              // マイナスボタン
-              GestureDetector(
-                onTap: canDecrease ? _decreaseScaleDistance : null,
-                behavior: HitTestBehavior.opaque,
-                child: Padding(
-                  padding: const EdgeInsets.all(6),
-                  child: Icon(
-                    Icons.remove,
-                    size: 20,
-                    color: canDecrease ? Colors.black54 : Colors.grey[400],
-                  ),
-                ),
-              ),
-              // スケールバーグラフィック（U字型）
-              Container(
-                width: _scaleBarPixelLength,
-                height: 8,
-                decoration: BoxDecoration(
-                  border: Border(
-                    left: BorderSide(width: 1.5, color: Colors.black54),
-                    right: BorderSide(width: 1.5, color: Colors.black54),
-                    bottom: BorderSide(width: 1.5, color: Colors.black54),
-                  ),
-                ),
-              ),
-              // プラスボタン
-              GestureDetector(
-                onTap: canIncrease ? _increaseScaleDistance : null,
-                behavior: HitTestBehavior.opaque,
-                child: Padding(
-                  padding: const EdgeInsets.all(6),
-                  child: Icon(
-                    Icons.add,
-                    size: 20,
-                    color: canIncrease ? Colors.black54 : Colors.grey[400],
-                  ),
-                ),
-              ),
-            ],
+  /// スケールバーをタップしたとき: 変更できないことと、選び直しの手段を示す
+  Future<void> _showScaleLockedDialog() async {
+    final canRechoose = widget.fixedScaleBarDistance == null;
+    final rechoose = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text('スケール ${CanvasScale.format(_scaleBarDistanceMeters)}'),
+        content: Text(canRechoose
+            ? '制作中は変更できません。\n選び直すと、最初から作り直しになります。'
+            : 'このキャンバスのスケールは変更できません。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('閉じる'),
           ),
-          const SizedBox(height: 1),
-          // 距離ラベル（バーの中央に配置）
-          SizedBox(
-            width: _scaleBarPixelLength + 64, // ボタン幅も考慮
-            child: Center(
-              child: Text(
-                _formatScaleDistance(_scaleBarDistanceMeters),
-                style: TextStyle(
-                  fontSize: 10,
-                  color: Colors.black54,
-                ),
-              ),
+          if (canRechoose)
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('選び直す'),
             ),
-          ),
         ],
       ),
     );
+    if (rechoose != true || !mounted) return;
+
+    // 同じ下絵のままスケールだけ選び直せるよう、下絵は残す
+    await _leaveCanvas(keepGuideImage: true);
+  }
+
+  /// キャンバスでの「戻る」操作
+  Future<void> _handleBack() async {
+    // スケッチ中は画面を離れず、スケッチモードを終了する
+    if (_isRouteSketchMode) {
+      _exitRouteSketchMode();
+      return;
+    }
+    if (_isLeavingCanvas) return;
+    _isLeavingCanvas = true;
+    try {
+      await _leaveCanvas();
+    } finally {
+      _isLeavingCanvas = false;
+    }
+  }
+
+  /// キャンバスを離れて制作ホームに戻る
+  ///
+  /// 軌跡を配置済みなら、下書き保存するかを先に確認する。
+  /// キャンセルされた場合や保存に失敗した場合は、キャンバスに留まる。
+  Future<void> _leaveCanvas({bool keepGuideImage = false}) async {
+    if (selectedTrajectories.isNotEmpty) {
+      final choice = await showDialog<String>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('下書きを保存しますか？'),
+          content: const Text('保存しないと、今の配置は失われます。'),
+          // 選択肢は右に寄せず、ダイアログの幅いっぱいに均等に並べる
+          actionsAlignment: MainAxisAlignment.spaceEvenly,
+          actionsOverflowAlignment: OverflowBarAlignment.center,
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, 'save'),
+              child: const Text('保存する'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, 'discard'),
+              style: TextButton.styleFrom(foregroundColor: Colors.red),
+              child: const Text('保存しない'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('キャンセル'),
+            ),
+          ],
+        ),
+      );
+      if (choice == null || !mounted) return;
+
+      if (choice == 'save') {
+        final saved = await _saveDraft(draftFilePath: _currentDraftFilePath);
+        if (!saved || !mounted) return;
+      }
+    }
+
+    if (widget.fixedScaleBarDistance != null) {
+      // スケールがあらかじめ決められている場合は制作ホームがないので、画面を閉じる
+      Navigator.pop(context);
+    } else {
+      _returnToHome(keepGuideImage: keepGuideImage);
+    }
   }
 
   /// レイヤーパネルを構築（右側オーバーレイ）
@@ -1463,7 +1670,21 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
     final double touchAreaOffset =
         (expandedTouchArea - trajectorySize) / 2; // 中央に配置するためのオフセット
 
-    return Scaffold(
+    // キャンバスに入る前の制作ホーム: 新しいキャンバスのスケールを選ぶか、下書きを開く
+    if (!_scaleDecided) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('作品の制作')),
+        body: _buildHome(),
+      );
+    }
+
+    // キャンバスからの「戻る」は、記録画面ではなく制作ホームに戻す
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) _handleBack();
+      },
+      child: Scaffold(
       appBar: AppBar(
         title: Text(_isRouteSketchMode ? 'ルートの形をスケッチ' : '作品の制作'),
         actions: [
@@ -1473,7 +1694,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
               if (value == 'save') {
                 _saveArtwork(); // 作品の保存
               } else if (value == 'save_draft') {
-                _saveDraft(draftFilePath: _currentDraftFilePath); // 上書き保存
+                _saveDraftAndReturnToHome(); // 上書き保存してホームへ
               } else if (value == 'load_draft') {
                 _showDraftListScreen(); // 途中保存一覧
               }
@@ -1517,8 +1738,16 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                       final RenderBox? renderBox = _boundaryKey.currentContext
                           ?.findRenderObject() as RenderBox?;
                       if (renderBox != null) {
+                        // details.offset はドラッグ中のプレビューの左上。
+                        // プレビューは実寸なので、その中心に軌跡の中心を合わせれば、
+                        // 見えていた場所・大きさのままキャンバスに置かれる
+                        final feedbackSide =
+                            (trajectoryData['feedbackSide'] as num?)
+                                    ?.toDouble() ??
+                                0.0;
                         final localPosition =
-                            renderBox.globalToLocal(details.offset);
+                            renderBox.globalToLocal(details.offset) +
+                                Offset(feedbackSide / 2, feedbackSide / 2);
 
                         setState(() {
                           final trajectoryIndex =
@@ -1554,6 +1783,18 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                           selectedTrajectories.add(newTrajectory);
                           selectedItem = newTrajectory;
                         });
+
+                        final fit =
+                            _fitOf(_extentMetersOf(positions, groupId));
+                        if (fit != TrajectoryFit.usable) {
+                          ScaffoldMessenger.of(context)
+                            ..hideCurrentSnackBar()
+                            ..showSnackBar(SnackBar(
+                              content: Text(
+                                  'この軌跡はスケール ${CanvasScale.format(_scaleBarDistanceMeters)} では'
+                                  '${fit == TrajectoryFit.tooLarge ? '大きすぎます' : '小さすぎます'}'),
+                            ));
+                        }
                       }
                     },
                     builder: (context, candidateData, rejectedData) {
@@ -1961,13 +2202,16 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                       ),
                     ),
                   ),
-                // スケールバー（常時表示、画面左上）
+                // スケールバー（常時表示、画面左上）。制作中は変更できない
                 Positioned(
                   top: 8,
                   left: 8,
                   child: Container(
                     key: _scaleBarKey,
-                    child: _buildScaleBar(),
+                    child: CanvasScaleBar(
+                      distanceMeters: _scaleBarDistanceMeters,
+                      onTap: _isRouteSketchMode ? null : _showScaleLockedDialog,
+                    ),
                   ),
                 ),
                 // ガイド画像コントロールUI（スケールバーの下）- メニューから有効化された場合のみ表示
@@ -2268,32 +2512,26 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
             ),
         ],
       ),
+      ),
     );
   }
 
-  /// \u753b\u9762\u4e0b\u90e8\u306b\u8868\u793a\u3059\u308b\u8ecc\u8de1\u30ea\u30b9\u30c8\u3092\u69cb\u7bc9
-  Widget _buildTrajectoryList() {
-    if (_isTrajectoryListLoading) {
-      return Container(
-        height: 120,
-        color: Colors.white,
-        child: const Center(
-          child: CircularProgressIndicator(),
-        ),
-      );
-    }
+  /// 画面下部の軌跡リストの高さ（セーフエリアを除く）
+  static const double _trajectoryListHeight = 120.0;
 
-    // \u30ed\u30fc\u30ab\u30eb\u8ecc\u8de1\u3068Garmin\u8ecc\u8de1\u3092\u7d71\u5408
+  /// まだ作品に使っていない手持ちの軌跡（アプリで記録したもの + 取り込んだもの）を新しい順に返す
+  List<Map<String, dynamic>> _availableTrajectories() {
     final List<Map<String, dynamic>> allTrajectories = [];
 
-    // \u30ed\u30fc\u30ab\u30eb\u8ecc\u8de1\u3092\u8ffd\u52a0
+    // ローカル軌跡を追加
     for (int i = 0; i < recordedTrajectories.length; i++) {
       final trajectory = recordedTrajectories[i];
       final groupId = _localTrajectoryGroupIds[i];
 
-      // \u4f7f\u7528\u6e08\u307f\u307e\u305f\u306f\u4e00\u6642\u4f7f\u7528\u4e2d\u306e\u8ecc\u8de1\u306f\u9664\u5916
+      // 使用済みまたは一時使用中の軌跡は除外
       if (groupId != null) {
         if (_recentlyUsedGroupIds.contains(groupId) ||
+            _draftUsedGroupIds.contains(groupId) ||
             temporarilyUsedGroupIds.contains(groupId)) {
           continue;
         }
@@ -2307,12 +2545,13 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
       });
     }
 
-    // Garmin\u8ecc\u8de1\u3092\u8ffd\u52a0
+    // Garmin軌跡を追加
     for (final activity in _garminActivities) {
       final groupId = activity['group_id'] as String;
 
-      // \u4f7f\u7528\u6e08\u307f\u307e\u305f\u306f\u4e00\u6642\u4f7f\u7528\u4e2d\u306e\u8ecc\u8de1\u306f\u9664\u5916
+      // 使用済みまたは一時使用中の軌跡は除外
       if (_usedGarminGroupIds.contains(groupId) ||
+          _draftUsedGroupIds.contains(groupId) ||
           temporarilyUsedGroupIds.contains(groupId)) {
         continue;
       }
@@ -2340,7 +2579,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
       });
     }
 
-    // \u65e5\u4ed8\u9806\u306b\u30bd\u30fc\u30c8\uff08\u65b0\u3057\u3044\u9806\uff09
+    // 日付順にソート（新しい順）
     allTrajectories.sort((a, b) {
       final List<Position> positionsA = a['positions'];
       final List<Position> positionsB = b['positions'];
@@ -2353,20 +2592,85 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
       return latestB.compareTo(latestA);
     });
 
-    if (allTrajectories.isEmpty) {
+    return allTrajectories;
+  }
+
+  /// 制作ホーム（キャンバスに入る前に表示）
+  Widget _buildHome() {
+    // 推奨スケールは手持ちの軌跡から求めるため、読み込みを待つ
+    if (_isTrajectoryListLoading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    final trajectories = _availableTrajectories()
+        .map((t) => t['positions'] as List<Position>)
+        .where((positions) => positions.isNotEmpty)
+        .toList();
+
+    return LayoutBuilder(builder: (context, constraints) {
+      // 制作キャンバスは、画面下部の軌跡リストを除いた領域になる
+      final bottomPadding = MediaQuery.of(context).padding.bottom;
+      final canvasSize = Size(
+        constraints.maxWidth,
+        math.max(
+            0.0, constraints.maxHeight - _trajectoryListHeight - bottomPadding),
+      );
+      return ArtworkHomeView(
+        trajectories: trajectories,
+        canvasSize: canvasSize,
+        drafts: _drafts,
+        onCreate: _onScaleDecided,
+        onOpenDraft: _loadDraft,
+        onDeleteDraft: _deleteDraftFromHome,
+      );
+    });
+  }
+
+  /// 画面下部に表示する軌跡リストを構築
+  Widget _buildTrajectoryList() {
+    if (_isTrajectoryListLoading) {
       return Container(
-        height: 120,
+        height: _trajectoryListHeight,
         color: Colors.white,
         child: const Center(
-          child: Text(
-              '\u5229\u7528\u53ef\u80fd\u306a\u8ecc\u8de1\u304c\u3042\u308a\u307e\u305b\u3093'),
+          child: CircularProgressIndicator(),
         ),
       );
     }
 
+    final allTrajectories = _availableTrajectories();
+
+    if (allTrajectories.isEmpty) {
+      return Container(
+        height: _trajectoryListHeight,
+        color: Colors.white,
+        child: const Center(
+          child: Text('利用可能な軌跡がありません'),
+        ),
+      );
+    }
+
+    // 現在のスケールで素材として使えるかを軌跡ごとに判定する
+    final canvasShortSide = _canvasShortSide;
+    for (final trajectory in allTrajectories) {
+      final extent = _extentMetersOf(
+          trajectory['positions'] as List<Position>,
+          trajectory['groupId'] as String?);
+      trajectory['fit'] = CanvasScale.classify(
+          extent, _scaleBarDistanceMeters, canvasShortSide);
+      // ドラッグ中のプレビューを、キャンバスに置かれる実寸で出すための大きさ
+      trajectory['boxSide'] = _canvasBoxSide(extent);
+    }
+    final tooLargeCount = allTrajectories
+        .where((t) => t['fit'] == TrajectoryFit.tooLarge)
+        .length;
+    final tooSmallCount = allTrajectories
+        .where((t) => t['fit'] == TrajectoryFit.tooSmall)
+        .length;
+
     final bottomPadding = MediaQuery.of(context).padding.bottom;
     return Container(
-      height: 120 + bottomPadding,
+      height: _trajectoryListHeight + bottomPadding,
       padding: EdgeInsets.only(bottom: bottomPadding),
       decoration: BoxDecoration(
         color: Colors.white,
@@ -2382,14 +2686,35 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Padding(
-            padding: const EdgeInsets.only(left: 12, top: 8, bottom: 4),
-            child: Text(
-              '\u8ecc\u8de1\u3092\u30c9\u30e9\u30c3\u30b0\u3057\u3066\u30ad\u30e3\u30f3\u30d0\u30b9\u306b\u914d\u7f6e',
-              style: TextStyle(
-                fontSize: 12,
-                color: Colors.grey[600],
-                fontWeight: FontWeight.w500,
-              ),
+            padding:
+                const EdgeInsets.only(left: 12, right: 12, top: 8, bottom: 4),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    '軌跡をドラッグしてキャンバスに配置',
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: Colors.grey[600],
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ),
+                // 現在のスケールでは使いにくい軌跡の本数（タイルのバッジと対応）
+                if (tooLargeCount > 0 || tooSmallCount > 0)
+                  Text(
+                    [
+                      if (tooLargeCount > 0) '大きすぎ $tooLargeCount本',
+                      if (tooSmallCount > 0) '小さすぎ $tooSmallCount本',
+                    ].join('・'),
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: Colors.orange[800],
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+              ],
             ),
           ),
           Expanded(
@@ -2403,6 +2728,11 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                 final bool isGarmin = trajectory['isGarmin'];
                 final String date = trajectory['date'];
                 final String? groupId = trajectory['groupId'];
+                final TrajectoryFit fit = trajectory['fit'];
+                final double boxSide = trajectory['boxSide'];
+                // タイルは形が分かるよう、軌跡をタイルいっぱいに描く（縮尺は揃えない）
+                final Widget tile =
+                    _buildTrajectoryTile(positions, date, isGarmin, fit: fit);
 
                 return Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 4),
@@ -2411,49 +2741,34 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                       'positions': positions,
                       'isGarmin': isGarmin,
                       'groupId': groupId,
+                      'feedbackSide': boxSide,
                     },
-                    feedback: Material(
-                      elevation: 4,
-                      borderRadius: BorderRadius.circular(8),
-                      child: Container(
-                        width: 80,
-                        height: 80,
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(color: Colors.blue, width: 2),
-                        ),
-                        child: CustomPaint(
-                          size: const Size(80, 80),
-                          painter: PolylinePainter(
+                    dragAnchorStrategy: (draggable, context, position) =>
+                        _dragFeedbackAnchor(boxSide),
+                    // ドラッグ中は、キャンバスに置かれる実寸の軌跡を見せる
+                    feedback: IgnorePointer(
+                      child: Opacity(
+                        opacity: 0.8,
+                        child: SizedBox(
+                          width: boxSide,
+                          height: boxSide,
+                          child: ScaledTrajectory(
                             positions: positions,
-                            minLat: positions
-                                .map((p) => p.latitude)
-                                .reduce((a, b) => a < b ? a : b),
-                            maxLat: positions
-                                .map((p) => p.latitude)
-                                .reduce((a, b) => a > b ? a : b),
-                            minLon: positions
-                                .map((p) => p.longitude)
-                                .reduce((a, b) => a < b ? a : b),
-                            maxLon: positions
-                                .map((p) => p.longitude)
-                                .reduce((a, b) => a > b ? a : b),
+                            boxSide: boxSide,
+                            strokeWidth: 4.0,
+                            color: Colors.red,
                           ),
                         ),
                       ),
                     ),
-                    childWhenDragging: Opacity(
-                      opacity: 0.5,
-                      child: _buildTrajectoryTile(positions, date, isGarmin),
-                    ),
+                    childWhenDragging: Opacity(opacity: 0.5, child: tile),
                     child: GestureDetector(
                       onTap: () {
-                        // \u30bf\u30c3\u30d7\u3067\u5730\u56f3\u60c5\u5831\u3092\u8868\u793a
+                        // タップで地図情報を表示
                         _showTrajectoryMapDialog(
                             context, positions, date, isGarmin, groupId);
                       },
-                      child: _buildTrajectoryTile(positions, date, isGarmin),
+                      child: tile,
                     ),
                   ),
                 );
@@ -2465,46 +2780,80 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
     );
   }
 
-  /// \u8ecc\u8de1\u30bf\u30a4\u30eb\u3092\u69cb\u7bc9
+  /// 軌跡タイルを構築
+  ///
+  /// [fit]: 現在のスケールで素材として使えるか。
+  /// 大きすぎる・小さすぎる軌跡も配置はできるが、使える軌跡と見分けられるよう
+  /// 薄く表示してバッジを付ける
   Widget _buildTrajectoryTile(
-      List<Position> positions, String date, bool isGarmin) {
+      List<Position> positions, String date, bool isGarmin,
+      {TrajectoryFit fit = TrajectoryFit.usable}) {
+    final bool unusable = fit != TrajectoryFit.usable;
     return Container(
       width: 70,
       height: 85,
       decoration: BoxDecoration(
         color: Colors.grey[100],
         borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: Colors.grey[300]!),
+        border: Border.all(
+            color: unusable ? Colors.orange[300]! : Colors.grey[300]!),
       ),
-      child: Column(
+      child: Stack(
         children: [
-          Expanded(
-            child: CustomPaint(
-              size: const Size(60, 55),
-              painter: PolylinePainter(
-                positions: positions,
-                minLat: positions
-                    .map((p) => p.latitude)
-                    .reduce((a, b) => a < b ? a : b),
-                maxLat: positions
-                    .map((p) => p.latitude)
-                    .reduce((a, b) => a > b ? a : b),
-                minLon: positions
-                    .map((p) => p.longitude)
-                    .reduce((a, b) => a < b ? a : b),
-                maxLon: positions
-                    .map((p) => p.longitude)
-                    .reduce((a, b) => a > b ? a : b),
+          Column(
+            children: [
+              Expanded(
+                child: Opacity(
+                  opacity: unusable ? 0.35 : 1.0,
+                  child: CustomPaint(
+                    size: const Size(60, 55),
+                    painter: PolylinePainter(
+                      positions: positions,
+                      minLat: positions
+                          .map((p) => p.latitude)
+                          .reduce((a, b) => a < b ? a : b),
+                      maxLat: positions
+                          .map((p) => p.latitude)
+                          .reduce((a, b) => a > b ? a : b),
+                      minLon: positions
+                          .map((p) => p.longitude)
+                          .reduce((a, b) => a < b ? a : b),
+                      maxLon: positions
+                          .map((p) => p.longitude)
+                          .reduce((a, b) => a > b ? a : b),
+                    ),
+                  ),
+                ),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                child: Text(
+                  date.substring(5), // MM/dd のみ表示
+                  style: TextStyle(fontSize: 10, color: Colors.grey[600]),
+                ),
+              ),
+            ],
+          ),
+          if (unusable)
+            Positioned(
+              top: 3,
+              right: 3,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                decoration: BoxDecoration(
+                  color: Colors.orange[700],
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Text(
+                  fit == TrajectoryFit.tooLarge ? '大きすぎ' : '小さすぎ',
+                  style: const TextStyle(
+                    fontSize: 8,
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
               ),
             ),
-          ),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-            child: Text(
-              date.substring(5), // MM/dd \u306e\u307f\u8868\u793a
-              style: TextStyle(fontSize: 10, color: Colors.grey[600]),
-            ),
-          ),
         ],
       ),
     );
@@ -2562,7 +2911,20 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
       width: 4,
     );
 
-    // \u7dcf\u8ddd\u96e2\u3092\u8a08\u7b97
+    // 現在のスケールでキャンバスに収まるか
+    final double extentMeters = _extentMetersOf(positions, groupId);
+    final double canvasShortSide = _canvasShortSide;
+    final TrajectoryFit fit = _fitOf(extentMeters);
+    final bool unusable = fit != TrajectoryFit.usable;
+    final String scaleLabel = CanvasScale.format(_scaleBarDistanceMeters);
+    final String extentLabel = CanvasScale.formatApprox(extentMeters);
+    final int canvasPercent = (CanvasScale.displayPixels(
+                extentMeters, _scaleBarDistanceMeters) /
+            canvasShortSide *
+            100)
+        .round();
+
+    // 総距離を計算
     double totalDistance = 0.0;
     for (int i = 0; i < positions.length - 1; i++) {
       totalDistance += Geolocator.distanceBetween(
@@ -2661,6 +3023,40 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                         ),
                       ),
                     ],
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              // 現在のスケールでキャンバスに置いたときの大きさ
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(
+                    unusable ? Icons.warning_amber : Icons.aspect_ratio,
+                    size: 16,
+                    color: unusable ? Colors.orange[800] : Colors.grey[700],
+                  ),
+                  const SizedBox(width: 4),
+                  Expanded(
+                    child: Text(
+                      switch (fit) {
+                        TrajectoryFit.tooLarge =>
+                          'スケール $scaleLabel では大きすぎます'
+                              '（差し渡し 約$extentLabel ／ '
+                              'キャンバスの短辺 約${CanvasScale.formatApprox(canvasShortSide * _metersPerPixel)}）',
+                        TrajectoryFit.tooSmall =>
+                          'スケール $scaleLabel では小さすぎます'
+                              '（差し渡し 約$extentLabel）',
+                        TrajectoryFit.usable =>
+                          'スケール $scaleLabel では、キャンバスの短辺の'
+                              '約$canvasPercent%の大きさです'
+                              '（差し渡し 約$extentLabel）',
+                      },
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: unusable ? Colors.orange[800] : Colors.grey[700],
+                      ),
+                    ),
                   ),
                 ],
               ),
