@@ -18,7 +18,13 @@ import 'garmin_import_screen.dart';
 import 'saved_route_list_screen.dart';
 import 'package:pedometer/pedometer.dart';
 
+import 'utils/android_permissions.dart';
+import 'utils/trajectory_filter.dart';
 import 'utils/utils.dart';
+
+/// 画面遷移を監視する RouteObserver（MaterialApp.navigatorObservers に登録する）
+final RouteObserver<ModalRoute<void>> appRouteObserver =
+    RouteObserver<ModalRoute<void>>();
 
 // 記録モードの定義
 enum RecordingMode {
@@ -43,7 +49,8 @@ class WalkingTrackerScreen extends StatefulWidget {
   _WalkingTrackerScreenState createState() => _WalkingTrackerScreenState();
 }
 
-class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
+class _WalkingTrackerScreenState extends State<WalkingTrackerScreen>
+    with RouteAware, WidgetsBindingObserver {
   // SharedPreferences キー（バックグラウンド強制終了時の記録バックアップ用）
   static const String _positionsBufferKey = 'walking_positions_buffer';
 
@@ -56,23 +63,33 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
   // ignore: unused_field
   Map<String, dynamic>? _routeMetadata; // ルート情報（距離など）
 
-  // ignore: unused_field
-  Position? _currentPosition;
-  Position? _previousPosition;
-  List<Position> _positions = [];
-  // ignore: unused_field
-  bool _isMoving = false;
-  // ignore: unused_field
-  bool _isTracking = false;
+  // 記録中の軌跡。高速移動（乗り物）を挟んだ場合は区間ごとに分割される
+  List<List<Position>> _segments = [];
   bool _isRecording = false;
+  bool _isStoppingRecording = false;
   double _totalDistance = 0.0; // km単位
   int _stepCount = 0;
-  int _initialStepCount = 0; // 記録開始時の初期歩数
+  int? _initialStepCount; // 記録開始時の初期歩数（最初の歩数イベントで設定）
   int _lastNotificationStepCount = 0; // 最後にロック画面通知を更新した時の歩数
+  double _lastNotificationDistance = 0.0; // 最後にロック画面通知を更新した時の距離(km)
 
-  final double speedThreshold = 0.3;
-  final double noiseThreshold = 2.0;
+  // 記録する点の選別（精度・速度上限・ノイズ）。記録中のみ生成される
+  TrajectoryPointFilter? _pointFilter;
+  // 高速移動を検知して記録を一時停止中か
+  bool _isSpeedSuspended = false;
+
+  // 地図上の現在地表示（記録画面が最前面のときのみ有効にする）
+  bool _isMapLocationEnabled = false;
+  bool _isScreenVisible = true;
+  bool _hasLocationPermission = false;
+
+  // SharedPreferences バッファのメモリ上のコピー（毎回の読み込みを避ける）
+  final List<String> _bufferCache = [];
+  int _unflushedBufferCount = 0;
+
   static const int _stepNotificationInterval = 50; // 50歩ごとにロック画面通知を更新
+  static const double _distanceNotificationIntervalKm = 0.1; // 100mごとに通知を更新
+  static const int _bufferFlushInterval = 5; // 5点ごとにバッファを永続化
 
   late DatabaseHelper _dbHelper;
   List<List<Position>> trajectories = [];
@@ -83,7 +100,6 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
   List<Map<String, dynamic>> savedArtworks = []; // スクリーンショットとキャンバス状態のリスト
 
   GoogleMapController? _mapController;
-  Set<Polyline> _polylines = {};
 
   // コーチマーク用 GlobalKey
   final GlobalKey _recordButtonKey = GlobalKey();
@@ -103,16 +119,10 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
       _recordingMode = RecordingMode.routeFollowMode;
     }
 
+    WidgetsBinding.instance.addObserver(this);
+
     _initializeScreen(); // 非同期初期化処理をまとめたメソッド
     _loadSavedArtworks();
-
-    // ポリラインを初期化
-    _polylines.add(Polyline(
-      polylineId: PolylineId("current_route"),
-      points: [],
-      color: Colors.blue,
-      width: 5,
-    ));
 
     // コーチマーク表示後に位置情報の権限リクエストを行う
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -120,10 +130,55 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
     });
   }
 
-  void _initializeLocationServices() {
-    _checkPermissionAndStartTracking();
-    _initializeLocationTracking();
-    _setInitialCameraPosition();
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final route = ModalRoute.of(context);
+    if (route != null) {
+      appRouteObserver.subscribe(this, route);
+    }
+  }
+
+  // ── 画面遷移・アプリ状態に応じた位置情報利用の切り替え ──────────
+
+  // 他の画面（作品の制作・ギャラリー等）が上に積まれた
+  @override
+  void didPushNext() {
+    _isScreenVisible = false;
+    _updateMapLocationLayer();
+  }
+
+  // 他の画面から記録画面に戻ってきた
+  @override
+  void didPopNext() {
+    _isScreenVisible = true;
+    _updateMapLocationLayer();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // バックグラウンドへ移る際は記録バッファを確実に永続化しておく
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.hidden) {
+      _flushPositionsBuffer();
+    }
+  }
+
+  /// 地図の現在地レイヤー（青い点）は、記録画面が最前面に表示されている間だけ有効にする。
+  /// GoogleMap は下の画面に残ったままなので、明示的に切らないと
+  /// 作品の制作画面などでも位置情報を取り続けてしまう。
+  void _updateMapLocationLayer() {
+    final enabled = _hasLocationPermission && _isScreenVisible;
+    if (enabled == _isMapLocationEnabled || !mounted) return;
+    setState(() => _isMapLocationEnabled = enabled);
+  }
+
+  Future<void> _initializeLocationServices() async {
+    // 記録していない間は位置情報ストリームを開始しない（記録開始時に開始する）
+    _hasLocationPermission = await _ensureLocationPermission();
+    if (!_hasLocationPermission) return;
+    _updateMapLocationLayer();
+    await _setInitialCameraPosition();
   }
 
   Future<void> _showWalkingCoachMarkIfNeeded() async {
@@ -369,302 +424,360 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
         .toList();
   }
 
-  // 位置情報の許可を確認してトラッキングを開始
-  Future<void> _checkPermissionAndStartTracking() async {
-    LocationPermission permission;
-    permission = await Geolocator.checkPermission();
+  /// 位置情報の許可を確認し、必要ならリクエストする。許可されていれば true。
+  Future<bool> _ensureLocationPermission() async {
+    if (!await Geolocator.isLocationServiceEnabled()) {
+      print("位置情報サービスが無効です。");
+      return false;
+    }
+    LocationPermission permission = await Geolocator.checkPermission();
     if (permission == LocationPermission.denied) {
       permission = await Geolocator.requestPermission();
       if (permission == LocationPermission.denied) {
         print("位置情報の許可が拒否されました。");
-        return;
+        return false;
       }
     }
     if (permission == LocationPermission.deniedForever) {
       print("位置情報の許可が永久に拒否されています。設定から変更してください。");
-      return;
+      return false;
     }
-    _startTracking();
+    return true;
   }
 
-  // 位置情報のトラッキングを開始
-  void _startTracking() {
-    setState(() {
-      _isTracking = true;
-    });
-    // flutter_background は Android 専用（iOS は OS が背面位置情報更新を
-    // ネイティブに処理するため、常駐通知の仕組みは不要）
-    if (Platform.isAndroid) {
-      FlutterBackground.enableBackgroundExecution();
+  /// 記録用の位置情報設定。
+  /// - distanceFilter 10m: 10m 移動するまでコールバックを発火しない
+  /// - iOS: high = kCLLocationAccuracyNearestTenMeters（Best より省電力）、
+  ///   fitness で歩行向けの測位にする。バックグラウンド更新はこのストリーム
+  ///   （＝記録中）の間だけ有効になる
+  /// - Android: 測位間隔を 5 秒にして GPS の稼働頻度を抑える
+  LocationSettings _recordingLocationSettings() {
+    if (Platform.isIOS) {
+      return AppleSettings(
+        accuracy: LocationAccuracy.high,
+        distanceFilter: 10,
+        activityType: ActivityType.fitness,
+        pauseLocationUpdatesAutomatically: false,
+        allowBackgroundLocationUpdates: true,
+        showBackgroundLocationIndicator: true,
+      );
     }
+    return AndroidSettings(
+      accuracy: LocationAccuracy.high,
+      distanceFilter: 10,
+      intervalDuration: const Duration(seconds: 5),
+    );
   }
 
   // 位置情報の記録を開始
-  void _startRecording() async {
+  Future<void> _startRecording() async {
+    if (_isRecording) return;
+
+    if (!_hasLocationPermission) {
+      _hasLocationPermission = await _ensureLocationPermission();
+      _updateMapLocationLayer();
+    }
+    if (!_hasLocationPermission) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('位置情報の利用が許可されていないため記録できません')),
+      );
+      return;
+    }
+
+    // Android: 歩数計（身体活動）と通知の権限は Manifest に書くだけでは有効にならず、
+    // 実行時に許可を求める必要がある。拒否されても位置情報の記録は続ける。
+    final runtimePermissions = await AndroidRuntimePermissions.request([
+      AndroidRuntimePermissions.activityRecognition,
+      AndroidRuntimePermissions.notification,
+    ]);
+    final canCountSteps =
+        runtimePermissions[AndroidRuntimePermissions.activityRecognition] ??
+            false;
+    if (!canCountSteps && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('「身体活動」の権限が許可されていないため、歩数は記録されません。設定アプリから許可できます'),
+        ),
+      );
+    }
+
     // 前回の未保存バッファをクリアしてから開始
     await _clearPositionsBuffer();
 
     if (!mounted) return;
     setState(() {
       _isRecording = true;
+      _isSpeedSuspended = false;
       _totalDistance = 0.0;
       _stepCount = 0;
-      _initialStepCount = 0;
+      _initialStepCount = null;
       _lastNotificationStepCount = 0;
-      _positions.clear();
+      _lastNotificationDistance = 0.0;
+      _segments = [];
     });
+    _pointFilter = TrajectoryPointFilter();
 
-    // 記録開始時にロック画面通知を「記録中」に切り替える
-    _updateLockScreenNotification();
-
-    // 歩数のstreamを監視
-    _stepStream = Pedometer.stepCountStream.listen((StepCount event) {
-      if (!mounted) return;
-      if (_isRecording) {
-        setState(() {
-          if (_initialStepCount == 0) {
-            _initialStepCount = event.steps; // 記録開始時の歩数を保存
-          }
-          _stepCount = event.steps - _initialStepCount; // 初期歩数を差し引いて0からカウント
-        });
-        // 50歩ごとにロック画面通知の歩数を更新
-        if (_stepCount - _lastNotificationStepCount >= _stepNotificationInterval) {
-          _lastNotificationStepCount = _stepCount;
-          _updateLockScreenNotification();
-        }
-      }
-    });
-
-    // 位置情報の取得自体は _initializeLocationTracking で継続的に行われている
-    // (Geolocator.getPositionStream 経由、フォアグラウンド・バックグラウンド共通)
-  }
-
-  // 位置情報の記録を停止
-  Future<void> _stopRecording() async {
-    setState(() {
-      _isRecording = false;
-      _initialStepCount = 0;
-    });
-
-    _stepStream?.cancel();
-
-    // メモリバッファが空の場合、SharedPreferencesから復元を試みる
-    // （バックグラウンドでアプリが一時停止された際の対策）
-    if (_positions.isEmpty) {
-      _positions = await _loadPositionsFromBuffer();
-      debugPrint('SharedPreferencesから${_positions.length}件の位置情報を復元しました');
-    }
-
-    if (_positions.isEmpty) {
-      await _clearPositionsBuffer();
-      return;
-    }
-
-    final positionData = _positions.map((position) {
-      return {
-        'latitude': position.latitude,
-        'longitude': position.longitude,
-        'timestamp': position.timestamp.toIso8601String(),
-      };
-    }).toList();
-
-    // generateGroupId を使って groupId を生成
-    String groupId = generateGroupId(_positions);
-
-    // positions[0]のtimestampをdateとして使用
-    final currentDate = _positions[0].timestamp.toIso8601String();
-
-    // 記録モードの情報をメタデータとして保存
-    Map<String, dynamic> metadata = {
-      'recordingMode': _recordingMode.toString(),
-    };
-
-    // ルート追従モードの場合、ルート情報も保存
-    if (_recordingMode == RecordingMode.routeFollowMode &&
-        _routeMetadata != null) {
-      metadata['routeMetadata'] = _routeMetadata;
-      metadata['suggestedRouteDistance'] = _routeMetadata?['distance'];
-    }
-
-    await _dbHelper.insertWalkingData(
-      groupId: groupId,
-      date: currentDate,
-      steps: _stepCount,
-      distance: _totalDistance,
-      positions: positionData,
-    );
-
-    // Firestore に保存
-    await _firestoreService.saveWalkingData(
-      groupId: groupId,
-      steps: _stepCount,
-      distance: _totalDistance,
-      positions: positionData,
-    );
-
-    print("保存した groupId: $groupId");
-
-    _positions.clear();
-    await _clearPositionsBuffer(); // バッファをクリア
-
-    // 記録終了後、ロック画面通知を待機状態に戻す（Android のみ）
+    // Android: 記録中のみフォアグラウンドサービス（ロック画面通知）を起動する
     if (Platform.isAndroid) {
-      await FlutterBackground.initialize(
-        androidConfig: const FlutterBackgroundAndroidConfig(
-          notificationTitle: 'GPStroke',
-          notificationText: '待機中',
-          notificationImportance: AndroidNotificationImportance.normal,
-        ),
-      );
-      await FlutterBackground.enableBackgroundExecution();
-    }
-  }
-
-  // ── ロック画面通知の更新 ────────────────────────────────────
-
-  /// 記録中の歩数・距離をロック画面通知（Android: フォアグラウンドサービス通知）に反映する。
-  /// 距離更新（10m移動ごと）と歩数更新（50歩ごと）の両タイミングで呼ばれる。
-  /// iOS はシステムが背面位置情報更新を管理するため常駐通知の概念がなく、対象外。
-  void _updateLockScreenNotification() {
-    if (_isRecording && Platform.isAndroid) {
-      FlutterBackground.initialize(
-        androidConfig: FlutterBackgroundAndroidConfig(
-          notificationTitle: '🚶 GPStroke 記録中',
-          notificationText:
-              '歩数: $_stepCount 歩  |  距離: ${_totalDistance.toStringAsFixed(2)} km',
-          notificationImportance: AndroidNotificationImportance.normal,
-        ),
-      ).then((_) => FlutterBackground.enableBackgroundExecution());
-    }
-  }
-
-  // 位置情報トラッキングの初期化
-  Future<void> _initializeLocationTracking() async {
-    // flutter_background は Android 専用。iOS は Info.plist の
-    // UIBackgroundModes(location) + AppleSettings.allowBackgroundLocationUpdates
-    // により OS がネイティブに背面位置情報更新を継続してくれる。
-    if (Platform.isAndroid) {
-      await FlutterBackground.initialize(
-        androidConfig: const FlutterBackgroundAndroidConfig(
-          notificationTitle: 'GPStroke',
-          notificationText: '待機中',
-          notificationImportance: AndroidNotificationImportance.normal,
-        ),
-      );
+      await _showRecordingNotification();
     }
 
-    // distanceFilter: 10m ごとにコールバックを発火（バッテリー節約の核心）
-    final LocationSettings locationSettings = Platform.isIOS
-        ? AppleSettings(
-            accuracy: LocationAccuracy.high,
-            distanceFilter: 10,
-            activityType: ActivityType.fitness,
-            pauseLocationUpdatesAutomatically: false,
-            showBackgroundLocationIndicator: true,
-          )
-        : AndroidSettings(
-            accuracy: LocationAccuracy.high,
-            distanceFilter: 10,
-          );
-
+    // 位置情報ストリームは記録中のみ購読する（記録していない間は GPS を使わない）
+    await _positionStream?.cancel();
     _positionStream = Geolocator.getPositionStream(
-      locationSettings: locationSettings,
+      locationSettings: _recordingLocationSettings(),
     ).listen(
-      _checkIfUserIsMoving,
+      _onPositionUpdate,
       onError: (Object error) {
         print("[onLocation] ERROR: $error");
       },
     );
+
+    // 歩数のstreamを監視（権限が無いと Android ではイベントが一切届かないため購読しない）
+    await _stepStream?.cancel();
+    _stepStream = null;
+    if (!canCountSteps) return;
+    _stepStream = Pedometer.stepCountStream.listen(
+      (StepCount event) {
+        if (!mounted || !_isRecording) return;
+        setState(() {
+          // Android の歩数は端末起動時からの累計（再起動直後は 0 もあり得る）なので
+          // 0 を「未設定」の目印にせず、null で判定する
+          final initial = _initialStepCount ??= event.steps; // 記録開始時の歩数を保存
+          _stepCount = event.steps - initial; // 初期歩数を差し引いて0からカウント
+        });
+        // 50歩ごとにロック画面通知の歩数を更新
+        if (_stepCount - _lastNotificationStepCount >=
+            _stepNotificationInterval) {
+          _lastNotificationStepCount = _stepCount;
+          _updateLockScreenNotification();
+        }
+      },
+      onError: (Object error) {
+        // 歩数センサーを持たない端末など
+        debugPrint('[pedometer] ERROR: $error');
+      },
+    );
   }
 
-  // ユーザーが移動しているかどうかをチェック
-  // BackgroundGeolocation の onLocation コールバックから呼ばれる（単一の位置情報ソース）
-  Future<void> _checkIfUserIsMoving(Position newPosition) async {
-    if (!mounted) return;
-    if (_previousPosition != null) {
-      final double distance = Geolocator.distanceBetween(
-        _previousPosition!.latitude,
-        _previousPosition!.longitude,
-        newPosition.latitude,
-        newPosition.longitude,
+  /// 位置情報・歩数・バックグラウンド実行をすべて停止する
+  Future<void> _stopLocationAndSensors() async {
+    await _positionStream?.cancel();
+    _positionStream = null;
+    await _stepStream?.cancel();
+    _stepStream = null;
+    _pointFilter = null;
+    if (Platform.isAndroid && FlutterBackground.isBackgroundExecutionEnabled) {
+      await FlutterBackground.disableBackgroundExecution();
+    }
+  }
+
+  // 位置情報の記録を停止
+  Future<void> _stopRecording() async {
+    if (!_isRecording || _isStoppingRecording) return;
+    _isStoppingRecording = true;
+    try {
+      // 先に GPS・歩数計・常駐通知を止める（保存処理の間も測位し続けないように）
+      await _stopLocationAndSensors();
+
+      final steps = _stepCount;
+      var segments = _segments;
+
+      if (mounted) {
+        setState(() {
+          _isRecording = false;
+          _isSpeedSuspended = false;
+          _initialStepCount = null;
+        });
+      }
+
+      // メモリ上の記録が空の場合、SharedPreferencesから復元を試みる
+      // （バックグラウンドでアプリが一時停止された際の対策）
+      if (segments.isEmpty) {
+        segments = await _loadSegmentsFromBuffer();
+        debugPrint('SharedPreferencesから${segments.length}区間の位置情報を復元しました');
+      }
+
+      await _saveSegments(segments, steps);
+
+      if (mounted) {
+        setState(() => _segments = []);
+      }
+      await _clearPositionsBuffer(); // バッファをクリア
+    } finally {
+      _isStoppingRecording = false;
+    }
+  }
+
+  /// 区間ごとに軌跡を保存する。2 点未満の区間は軌跡にならないため保存しない。
+  /// 歩数は区間ごとに分からないため、距離の比で按分する。
+  Future<void> _saveSegments(List<List<Position>> segments, int steps) async {
+    final valid = segments.where((s) => s.length >= 2).toList();
+    if (valid.isEmpty) return;
+
+    final distances = valid.map(_segmentDistanceKm).toList();
+    final totalKm = distances.fold<double>(0, (a, b) => a + b);
+
+    var assignedSteps = 0;
+    for (var i = 0; i < valid.length; i++) {
+      final segment = valid[i];
+      final segmentSteps = i == valid.length - 1
+          ? steps - assignedSteps
+          : (totalKm > 0 ? (steps * distances[i] / totalKm).round() : 0);
+      assignedSteps += segmentSteps;
+
+      final positionData = segment
+          .map((p) => {
+                'latitude': p.latitude,
+                'longitude': p.longitude,
+                'timestamp': p.timestamp.toIso8601String(),
+              })
+          .toList();
+
+      // generateGroupId を使って groupId を生成
+      final groupId = generateGroupId(segment);
+      // 区間の最初の点の timestamp を date として使用
+      final currentDate = segment.first.timestamp.toIso8601String();
+
+      await _dbHelper.insertWalkingData(
+        groupId: groupId,
+        date: currentDate,
+        steps: segmentSteps,
+        distance: distances[i],
+        positions: positionData,
       );
 
-      // distanceFilter:10m で大半のノイズは除去済みだが念のため残す
-      if (_isNoise(distance)) {
-        return;
-      }
+      // Firestore に保存
+      await _firestoreService.saveWalkingData(
+        groupId: groupId,
+        steps: segmentSteps,
+        distance: distances[i],
+        positions: positionData,
+      );
 
-      // 記録中の場合、距離を累積し位置を保存
-      if (_isRecording) {
-        // 移動距離をkm単位で累積
-        final double distanceKm = distance / 1000.0;
-
-        setState(() {
-          _totalDistance += distanceKm;
-          _positions.add(newPosition);
-          _polylines = {
-            Polyline(
-              polylineId: const PolylineId("current_route"),
-              points: _positions
-                  .map((pos) => LatLng(pos.latitude, pos.longitude))
-                  .toList(),
-              color: Colors.blue,
-              width: 5,
-            ),
-          };
-        });
-
-        // バックグラウンド強制終了に備えて SharedPreferences にもバックアップ
-        await _savePositionToBuffer(newPosition);
-
-        // 距離が更新されたのでロック画面通知を更新（10m移動ごと）
-        _updateLockScreenNotification();
-
-        // 記録中は現在地を地図の中央に固定
-        _mapController?.animateCamera(
-          CameraUpdate.newLatLng(
-            LatLng(newPosition.latitude, newPosition.longitude),
-          ),
-        );
-      }
-
-      if (newPosition.speed > speedThreshold) {
-        setState(() {
-          _isMoving = true;
-          _currentPosition = newPosition;
-        });
-      } else {
-        setState(() {
-          _isMoving = false;
-        });
-      }
-    } else {
-      setState(() {
-        _currentPosition = newPosition;
-      });
+      print("保存した groupId: $groupId");
     }
-
-    _previousPosition = newPosition;
   }
 
-  bool _isNoise(double distance) {
-    return distance < noiseThreshold;
+  double _segmentDistanceKm(List<Position> segment) {
+    double meters = 0.0;
+    for (int i = 1; i < segment.length; i++) {
+      meters += Geolocator.distanceBetween(
+        segment[i - 1].latitude,
+        segment[i - 1].longitude,
+        segment[i].latitude,
+        segment[i].longitude,
+      );
+    }
+    return meters / 1000.0;
+  }
+
+  // ── ロック画面通知の更新 ────────────────────────────────────
+
+  Future<void> _showRecordingNotification() async {
+    final ok = await FlutterBackground.initialize(
+      androidConfig: FlutterBackgroundAndroidConfig(
+        notificationTitle: '🚶 GPStroke 記録中',
+        notificationText: _isSpeedSuspended
+            ? '高速移動中のため記録を一時停止しています'
+            : '歩数: $_stepCount 歩  |  距離: ${_totalDistance.toStringAsFixed(2)} km',
+        notificationImportance: AndroidNotificationImportance.normal,
+      ),
+    );
+    if (ok && _isRecording) {
+      await FlutterBackground.enableBackgroundExecution();
+    }
+  }
+
+  /// 記録中の歩数・距離をロック画面通知（Android: フォアグラウンドサービス通知）に反映する。
+  /// 距離更新（100m移動ごと）・歩数更新（50歩ごと）・高速移動による一時停止の切り替え時に呼ばれる。
+  /// iOS はシステムが背面位置情報更新を管理するため常駐通知の概念がなく、対象外。
+  void _updateLockScreenNotification() {
+    if (_isRecording && Platform.isAndroid) {
+      _showRecordingNotification();
+    }
+  }
+
+  /// 記録中の位置情報更新
+  Future<void> _onPositionUpdate(Position newPosition) async {
+    final filter = _pointFilter;
+    if (!mounted || !_isRecording || filter == null) return;
+
+    final recorded = filter.add(newPosition);
+    final suspended = filter.isSuspendedForSpeed;
+    final suspendedChanged = suspended != _isSpeedSuspended;
+
+    if (recorded.isEmpty) {
+      if (suspendedChanged) {
+        setState(() => _isSpeedSuspended = suspended);
+        _updateLockScreenNotification();
+      }
+      return;
+    }
+
+    setState(() {
+      _isSpeedSuspended = suspended;
+      for (final point in recorded) {
+        if (point.startsNewSegment || _segments.isEmpty) {
+          _segments.add([point.position]);
+        } else {
+          _segments.last.add(point.position);
+        }
+        // 移動距離をkm単位で累積
+        _totalDistance += point.distanceMeters / 1000.0;
+      }
+    });
+
+    // バックグラウンド強制終了に備えて SharedPreferences にもバックアップ
+    for (final point in recorded) {
+      _appendPositionToBuffer(point.position,
+          segmentStart: point.startsNewSegment);
+    }
+
+    // 通知の更新は 100m ごと（毎回更新するとサービスの再設定が頻発する）
+    if (suspendedChanged ||
+        _totalDistance - _lastNotificationDistance >=
+            _distanceNotificationIntervalKm) {
+      _lastNotificationDistance = _totalDistance;
+      _updateLockScreenNotification();
+    }
+
+    // 記録画面が表示されている間は現在地を地図の中央に固定
+    if (_isScreenVisible) {
+      final last = recorded.last.position;
+      _mapController?.animateCamera(
+        CameraUpdate.newLatLng(LatLng(last.latitude, last.longitude)),
+      );
+    }
   }
 
   // ── SharedPreferences バッファ操作 ──────────────────────────
 
-  /// 位置情報を SharedPreferences バッファに保存
-  /// バックグラウンド中にアプリが強制終了された場合の記録復元に使用
-  Future<void> _savePositionToBuffer(Position position) async {
+  /// 位置情報を SharedPreferences バッファに追加する
+  /// バックグラウンド中にアプリが強制終了された場合の記録復元に使用。
+  /// 全件の書き込みを毎回行うと記録が長くなるほど重くなるため、
+  /// 一定件数ごと＋アプリがバックグラウンドに移る時にまとめて書き込む。
+  void _appendPositionToBuffer(Position position, {required bool segmentStart}) {
+    _bufferCache.add(jsonEncode({
+      'latitude': position.latitude,
+      'longitude': position.longitude,
+      'timestamp': position.timestamp.toIso8601String(),
+      if (segmentStart) 'segmentStart': true,
+    }));
+    _unflushedBufferCount++;
+    if (_unflushedBufferCount >= _bufferFlushInterval) {
+      _flushPositionsBuffer();
+    }
+  }
+
+  Future<void> _flushPositionsBuffer() async {
+    if (_unflushedBufferCount == 0) return;
+    _unflushedBufferCount = 0;
     try {
       final prefs = await SharedPreferences.getInstance();
-      final buffer = prefs.getStringList(_positionsBufferKey) ?? [];
-      buffer.add(jsonEncode({
-        'latitude': position.latitude,
-        'longitude': position.longitude,
-        'timestamp': position.timestamp.toIso8601String(),
-      }));
-      await prefs.setStringList(_positionsBufferKey, buffer);
+      await prefs.setStringList(
+          _positionsBufferKey, List<String>.of(_bufferCache));
     } catch (e) {
       print('位置情報バッファの保存に失敗: $e');
     }
@@ -672,6 +785,8 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
 
   /// SharedPreferences バッファをクリア
   Future<void> _clearPositionsBuffer() async {
+    _bufferCache.clear();
+    _unflushedBufferCount = 0;
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.remove(_positionsBufferKey);
@@ -680,19 +795,19 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
     }
   }
 
-  /// SharedPreferences バッファから位置情報を復元
-  Future<List<Position>> _loadPositionsFromBuffer() async {
+  /// SharedPreferences バッファから区間ごとの位置情報を復元
+  Future<List<List<Position>>> _loadSegmentsFromBuffer() async {
     try {
       final prefs = await SharedPreferences.getInstance();
       final buffer = prefs.getStringList(_positionsBufferKey) ?? [];
-      if (buffer.isEmpty) return [];
-
-      return buffer.map((raw) {
+      final segments = <List<Position>>[];
+      for (final raw in buffer) {
         final pos = jsonDecode(raw) as Map<String, dynamic>;
-        return Position(
+        final position = Position(
           latitude: (pos['latitude'] as num).toDouble(),
           longitude: (pos['longitude'] as num).toDouble(),
-          timestamp: DateTime.tryParse(pos['timestamp'] as String) ?? DateTime.now(),
+          timestamp:
+              DateTime.tryParse(pos['timestamp'] as String) ?? DateTime.now(),
           accuracy: 0.0,
           altitude: 0.0,
           altitudeAccuracy: 0.0,
@@ -701,7 +816,13 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
           speed: 0.0,
           speedAccuracy: 0.0,
         );
-      }).toList();
+        if (segments.isEmpty || pos['segmentStart'] == true) {
+          segments.add([position]);
+        } else {
+          segments.last.add(position);
+        }
+      }
+      return segments;
     } catch (e) {
       print('位置情報バッファの読み込みに失敗: $e');
       return [];
@@ -713,7 +834,7 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
     final prefs = await SharedPreferences.getInstance();
     final buffer = prefs.getStringList(_positionsBufferKey) ?? [];
     if (buffer.isEmpty) return;
-    if (!mounted) return;
+    if (!mounted || _isRecording) return;
 
     final shouldRecover = await showDialog<bool>(
       context: context,
@@ -737,48 +858,11 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
     );
 
     if (shouldRecover == true) {
-      final positions = await _loadPositionsFromBuffer();
-      if (positions.isNotEmpty) {
-        // 距離を再計算（km）
-        double totalDist = 0.0;
-        for (int i = 1; i < positions.length; i++) {
-          totalDist += Geolocator.distanceBetween(
-                positions[i - 1].latitude,
-                positions[i - 1].longitude,
-                positions[i].latitude,
-                positions[i].longitude,
-              ) /
-              1000.0;
-        }
-
-        final positionData = positions
-            .map((p) => {
-                  'latitude': p.latitude,
-                  'longitude': p.longitude,
-                  'timestamp': p.timestamp.toIso8601String(),
-                })
-            .toList();
-
-        final groupId = generateGroupId(positions);
-        final currentDate = positions.first.timestamp.toIso8601String();
-
-        await _dbHelper.insertWalkingData(
-          groupId: groupId,
-          date: currentDate,
-          steps: 0, // バックグラウンド終了時は歩数不明
-          distance: totalDist,
-          positions: positionData,
-        );
-        await _firestoreService.saveWalkingData(
-          groupId: groupId,
-          steps: 0,
-          distance: totalDist,
-          positions: positionData,
-        );
-
-        debugPrint('未保存の記録を復元・保存しました: $groupId');
-        await _loadTrajectories();
-      }
+      final segments = await _loadSegmentsFromBuffer();
+      // バックグラウンド終了時は歩数不明
+      await _saveSegments(segments, 0);
+      debugPrint('未保存の記録を復元・保存しました: ${segments.length}区間');
+      await _loadTrajectories();
     }
 
     await _clearPositionsBuffer();
@@ -981,17 +1065,19 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
   Set<Polyline> _buildPolylines() {
     Set<Polyline> polylines = {};
 
-    // 現在記録中の軌跡（青色）
-    polylines.add(
-      Polyline(
-        polylineId: PolylineId("current_route"),
-        points: _positions
-            .map((pos) => LatLng(pos.latitude, pos.longitude))
-            .toList(),
-        color: Colors.blue,
-        width: 5,
-      ),
-    );
+    // 現在記録中の軌跡（青色）。高速移動で分割された区間は別の線として描く
+    for (var i = 0; i < _segments.length; i++) {
+      polylines.add(
+        Polyline(
+          polylineId: PolylineId("current_route_$i"),
+          points: _segments[i]
+              .map((pos) => LatLng(pos.latitude, pos.longitude))
+              .toList(),
+          color: Colors.blue,
+          width: 5,
+        ),
+      );
+    }
 
     // ルート追従モード時、提案ルートを表示（緑色）
     if (_recordingMode == RecordingMode.routeFollowMode &&
@@ -1013,11 +1099,10 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
 
   @override
   void dispose() {
-    _stepStream?.cancel();
-    _positionStream?.cancel();
-    if (Platform.isAndroid) {
-      FlutterBackground.disableBackgroundExecution();
-    }
+    appRouteObserver.unsubscribe(this);
+    WidgetsBinding.instance.removeObserver(this);
+    _flushPositionsBuffer();
+    _stopLocationAndSensors();
     super.dispose();
   }
 
@@ -1117,9 +1202,37 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
               _setInitialCameraPosition();
             },
             polylines: _buildPolylines(),
-            myLocationEnabled: true,
-            myLocationButtonEnabled: true,
+            // 記録画面が最前面のときのみ現在地を表示（他画面では位置情報を使わない）
+            myLocationEnabled: _isMapLocationEnabled,
+            myLocationButtonEnabled: _isMapLocationEnabled,
           ),
+          // 高速移動（自動車等）を検知して記録を一時停止している旨の表示
+          if (_isRecording && _isSpeedSuspended)
+            Positioned(
+              top: 12,
+              left: 16,
+              right: 16,
+              child: Material(
+                color: Colors.orange[700],
+                borderRadius: BorderRadius.circular(12),
+                elevation: 2,
+                child: const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  child: Row(
+                    children: [
+                      Icon(Icons.directions_car, color: Colors.white),
+                      SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          '高速移動を検知したため記録を一時停止中です。\n歩き始めてしばらくすると自動で再開します',
+                          style: TextStyle(color: Colors.white, fontSize: 13),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
           // モード選択パネルとボタン（BottomNavigationBar の上）
           Positioned(
             bottom: 60,
@@ -1327,13 +1440,15 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen> {
     );
   }
 
+  /// 地図の初期表示位置を現在地に合わせる（1 回だけの測位。常時の追跡はしない）
   Future<void> _setInitialCameraPosition() async {
+    if (!_hasLocationPermission || _mapController == null) return;
     try {
-      Position position = await Geolocator.getCurrentPosition();
+      Position position = await Geolocator.getCurrentPosition(
+        locationSettings:
+            const LocationSettings(accuracy: LocationAccuracy.medium),
+      );
       if (!mounted) return;
-      setState(() {
-        _currentPosition = position;
-      });
 
       _mapController?.animateCamera(
         CameraUpdate.newCameraPosition(

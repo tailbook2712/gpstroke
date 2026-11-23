@@ -42,6 +42,8 @@ class MyApp extends StatelessWidget {
       theme: ThemeData(
         appBarTheme: const AppBarTheme(centerTitle: true),
       ),
+      // 記録画面が他画面に覆われたかを検知し、不要な位置情報利用を止めるため
+      navigatorObservers: [appRouteObserver],
       home: _RootScreen(showOnboarding: showOnboarding),
     );
   }
