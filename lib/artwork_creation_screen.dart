@@ -1355,90 +1355,105 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
   }
 
   /// スケッチモード中の下部操作パネル（軌跡リストの代わりに表示）
+  ///
+  /// 高さは _buildBottomPanel が決めるので、その中に収まるように並べる。
   Widget _buildRouteSketchControls() {
     final lengthKm = _routeSketchLengthMeters() / 1000;
+    final buttonStyle = OutlinedButton.styleFrom(
+      padding: const EdgeInsets.symmetric(horizontal: 4),
+      minimumSize: const Size(0, 36),
+      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+    );
     // スケッチ中の戻る操作は _handleBack でスケッチモードの終了として扱う
-    return Container(
-        padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
-        color: Colors.white,
-        child: SafeArea(
-          top: false,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Row(
-                children: [
-                  Icon(Icons.info_outline, size: 18, color: Colors.grey[700]),
-                  const SizedBox(width: 6),
-                  Expanded(
-                    child: Text(
-                      '描き始めが現在地になります。スケールバーの縮尺で実際の大きさに換算されます',
-                      style: TextStyle(fontSize: 12, color: Colors.grey[700]),
-                    ),
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(
+            '歩く距離の目安: 約 ${lengthKm.toStringAsFixed(2)} km',
+            textAlign: TextAlign.center,
+            maxLines: 1,
+            style: const TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.bold,
+              color: Colors.orange,
+            ),
+          ),
+          const SizedBox(height: 2),
+          Expanded(
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(Icons.info_outline, size: 14, color: Colors.grey[700]),
+                const SizedBox(width: 4),
+                Expanded(
+                  child: Text(
+                    '描き始めが現在地になります。スケールバーの縮尺で実際の大きさに換算されます',
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(fontSize: 11, color: Colors.grey[700]),
                   ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              Text(
-                '歩く距離の目安: 約 ${lengthKm.toStringAsFixed(2)} km',
-                style: const TextStyle(
-                  fontSize: 15,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.orange,
+                ),
+              ],
+            ),
+          ),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton(
+                  style: buttonStyle,
+                  onPressed: _isLocatingForRoute ? null : _exitRouteSketchMode,
+                  child: const Text('やめる', maxLines: 1),
                 ),
               ),
-              const SizedBox(height: 12),
-              Row(
-                children: [
-                  Expanded(
-                    child: OutlinedButton(
-                      onPressed: _isLocatingForRoute ? null : _exitRouteSketchMode,
-                      child: const Text('やめる'),
-                    ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: OutlinedButton.icon(
+                  style: buttonStyle,
+                  onPressed: _routeSketchStrokes.isEmpty
+                      ? null
+                      : () => setState(() => _routeSketchStrokes.removeLast()),
+                  icon: const Icon(Icons.undo, size: 16),
+                  label: const Text('戻る', maxLines: 1),
+                ),
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: OutlinedButton.icon(
+                  style: buttonStyle,
+                  onPressed: _routeSketchStrokes.isEmpty
+                      ? null
+                      : () => setState(() => _routeSketchStrokes.clear()),
+                  icon: const Icon(Icons.delete_sweep, size: 16),
+                  label: const Text('全削除', maxLines: 1),
+                ),
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: ElevatedButton(
+                  onPressed:
+                      _isLocatingForRoute ? null : _proceedToRouteGeneration,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.blue,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(horizontal: 4),
+                    minimumSize: const Size(0, 36),
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                   ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: OutlinedButton.icon(
-                      onPressed: _routeSketchStrokes.isEmpty
-                          ? null
-                          : () => setState(() => _routeSketchStrokes.removeLast()),
-                      icon: const Icon(Icons.undo, size: 18),
-                      label: const Text('戻る'),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: OutlinedButton.icon(
-                      onPressed: _routeSketchStrokes.isEmpty
-                          ? null
-                          : () => setState(() => _routeSketchStrokes.clear()),
-                      icon: const Icon(Icons.delete_sweep, size: 18),
-                      label: const Text('全削除'),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: ElevatedButton(
-                      onPressed:
-                          _isLocatingForRoute ? null : _proceedToRouteGeneration,
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.blue,
-                        foregroundColor: Colors.white,
-                      ),
-                      child: _isLocatingForRoute
-                          ? const SizedBox(
-                              width: 18,
-                              height: 18,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            )
-                          : const Text('決定'),
-                    ),
-                  ),
-                ],
+                  child: _isLocatingForRoute
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Text('決定', maxLines: 1),
+                ),
               ),
             ],
           ),
-        ),
+        ],
+      ),
     );
   }
 
@@ -2556,22 +2571,45 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
               ],
             ),
           ),
-          // \u4e0b\u90e8: \u8ecc\u8de1\u30ea\u30b9\u30c8
-          if (_isRouteSketchMode)
-            _buildRouteSketchControls()
-          else
-            Container(
-              key: _trajectoryListKey,
-              child: _buildTrajectoryList(),
-            ),
+          // 下部: 軌跡リスト（スケッチ中は操作パネル）
+          _buildBottomPanel(
+            child: _isRouteSketchMode
+                ? _buildRouteSketchControls()
+                : _buildTrajectoryList(),
+          ),
         ],
       ),
       ),
     );
   }
 
-  /// 画面下部の軌跡リストの高さ（セーフエリアを除く）
-  static const double _trajectoryListHeight = 120.0;
+  /// 画面下部のパネルの高さ（セーフエリアを除く）
+  static const double _bottomPanelHeight = 120.0;
+
+  /// 画面下部のパネル（軌跡リスト／スケッチ操作）の枠
+  ///
+  /// 高さはここだけで決め、中身は与えられた高さに収める。中身ごとに高さが変わると
+  /// キャンバス領域が伸び縮みし、表示を切り替えるたびにキャンバスがずれるため。
+  /// 制作ホームでのキャンバスの大きさの計算（_buildHome）も、この高さを前提にしている。
+  Widget _buildBottomPanel({required Widget child}) {
+    final bottomPadding = MediaQuery.of(context).padding.bottom;
+    return Container(
+      key: _trajectoryListKey,
+      height: _bottomPanelHeight + bottomPadding,
+      padding: EdgeInsets.only(bottom: bottomPadding),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.1),
+            blurRadius: 4,
+            offset: const Offset(0, -2),
+          ),
+        ],
+      ),
+      child: child,
+    );
+  }
 
   /// まだ作品に使っていない手持ちの軌跡（アプリで記録したもの + 取り込んだもの）を新しい順に返す
   List<Map<String, dynamic>> _availableTrajectories() {
@@ -2662,12 +2700,12 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
         .toList();
 
     return LayoutBuilder(builder: (context, constraints) {
-      // 制作キャンバスは、画面下部の軌跡リストを除いた領域になる
+      // 制作キャンバスは、画面下部のパネルを除いた領域になる
       final bottomPadding = MediaQuery.of(context).padding.bottom;
       final canvasSize = Size(
         constraints.maxWidth,
         math.max(
-            0.0, constraints.maxHeight - _trajectoryListHeight - bottomPadding),
+            0.0, constraints.maxHeight - _bottomPanelHeight - bottomPadding),
       );
       return ArtworkHomeView(
         trajectories: trajectories,
@@ -2680,28 +2718,16 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
     });
   }
 
-  /// 画面下部に表示する軌跡リストを構築
+  /// 画面下部に表示する軌跡リストを構築（高さは _buildBottomPanel が決める）
   Widget _buildTrajectoryList() {
     if (_isTrajectoryListLoading) {
-      return Container(
-        height: _trajectoryListHeight,
-        color: Colors.white,
-        child: const Center(
-          child: CircularProgressIndicator(),
-        ),
-      );
+      return const Center(child: CircularProgressIndicator());
     }
 
     final allTrajectories = _availableTrajectories();
 
     if (allTrajectories.isEmpty) {
-      return Container(
-        height: _trajectoryListHeight,
-        color: Colors.white,
-        child: const Center(
-          child: Text('利用可能な軌跡がありません'),
-        ),
-      );
+      return const Center(child: Text('利用可能な軌跡がありません'));
     }
 
     // 現在のスケールで素材として使えるかを軌跡ごとに判定する
@@ -2722,115 +2748,100 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
         .where((t) => t['fit'] == TrajectoryFit.tooSmall)
         .length;
 
-    final bottomPadding = MediaQuery.of(context).padding.bottom;
-    return Container(
-      height: _trajectoryListHeight + bottomPadding,
-      padding: EdgeInsets.only(bottom: bottomPadding),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.1),
-            blurRadius: 4,
-            offset: const Offset(0, -2),
-          ),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Padding(
-            padding:
-                const EdgeInsets.only(left: 12, right: 12, top: 8, bottom: 4),
-            child: Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    '軌跡をドラッグしてキャンバスに配置',
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: Colors.grey[600],
-                      fontWeight: FontWeight.w500,
-                    ),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding:
+              const EdgeInsets.only(left: 12, right: 12, top: 8, bottom: 4),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  '軌跡をドラッグしてキャンバスに配置',
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Colors.grey[600],
+                    fontWeight: FontWeight.w500,
                   ),
                 ),
-                // 現在のスケールでは使いにくい軌跡の本数（タイルのバッジと対応）
-                if (tooLargeCount > 0 || tooSmallCount > 0)
-                  Text(
-                    [
-                      if (tooLargeCount > 0) '大きすぎ $tooLargeCount本',
-                      if (tooSmallCount > 0) '小さすぎ $tooSmallCount本',
-                    ].join('・'),
-                    style: TextStyle(
-                      fontSize: 11,
-                      color: Colors.orange[800],
-                      fontWeight: FontWeight.w600,
-                    ),
+              ),
+              // 現在のスケールでは使いにくい軌跡の本数（タイルのバッジと対応）
+              if (tooLargeCount > 0 || tooSmallCount > 0)
+                Text(
+                  [
+                    if (tooLargeCount > 0) '大きすぎ $tooLargeCount本',
+                    if (tooSmallCount > 0) '小さすぎ $tooSmallCount本',
+                  ].join('・'),
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: Colors.orange[800],
+                    fontWeight: FontWeight.w600,
                   ),
-              ],
-            ),
+                ),
+            ],
           ),
-          Expanded(
-            child: ListView.builder(
-              scrollDirection: Axis.horizontal,
-              padding: const EdgeInsets.symmetric(horizontal: 8),
-              itemCount: allTrajectories.length,
-              itemBuilder: (context, index) {
-                final trajectory = allTrajectories[index];
-                final List<Position> positions = trajectory['positions'];
-                final bool isGarmin = trajectory['isGarmin'];
-                final String date = trajectory['date'];
-                final String? groupId = trajectory['groupId'];
-                final TrajectoryFit fit = trajectory['fit'];
-                final double boxSide = trajectory['boxSide'];
-                // タイルは形が分かるよう、軌跡をタイルいっぱいに描く（縮尺は揃えない）
-                final Widget tile =
-                    _buildTrajectoryTile(positions, date, isGarmin, fit: fit);
+        ),
+        Expanded(
+          child: ListView.builder(
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            itemCount: allTrajectories.length,
+            itemBuilder: (context, index) {
+              final trajectory = allTrajectories[index];
+              final List<Position> positions = trajectory['positions'];
+              final bool isGarmin = trajectory['isGarmin'];
+              final String date = trajectory['date'];
+              final String? groupId = trajectory['groupId'];
+              final TrajectoryFit fit = trajectory['fit'];
+              final double boxSide = trajectory['boxSide'];
+              // タイルは形が分かるよう、軌跡をタイルいっぱいに描く（縮尺は揃えない）
+              final Widget tile =
+                  _buildTrajectoryTile(positions, date, isGarmin, fit: fit);
 
-                return Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 4),
-                  child: LongPressDraggable<Map<String, dynamic>>(
-                    data: {
-                      'positions': positions,
-                      'isGarmin': isGarmin,
-                      'groupId': groupId,
-                      'feedbackSide': boxSide,
-                    },
-                    dragAnchorStrategy: (draggable, context, position) =>
-                        _dragFeedbackAnchor(boxSide),
-                    // ドラッグ中は、キャンバスに置かれる実寸の軌跡を見せる
-                    feedback: IgnorePointer(
-                      child: Opacity(
-                        opacity: 0.8,
-                        child: SizedBox(
-                          width: boxSide,
-                          height: boxSide,
-                          child: ScaledTrajectory(
-                            positions: positions,
-                            boxSide: boxSide,
-                            strokeWidth: 4.0,
-                            color: Colors.red,
-                          ),
+              return Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 4),
+                child: LongPressDraggable<Map<String, dynamic>>(
+                  data: {
+                    'positions': positions,
+                    'isGarmin': isGarmin,
+                    'groupId': groupId,
+                    'feedbackSide': boxSide,
+                  },
+                  dragAnchorStrategy: (draggable, context, position) =>
+                      _dragFeedbackAnchor(boxSide),
+                  // ドラッグ中は、キャンバスに置かれる実寸の軌跡を見せる
+                  feedback: IgnorePointer(
+                    child: Opacity(
+                      opacity: 0.8,
+                      child: SizedBox(
+                        width: boxSide,
+                        height: boxSide,
+                        child: ScaledTrajectory(
+                          positions: positions,
+                          boxSide: boxSide,
+                          strokeWidth: 4.0,
+                          color: Colors.red,
                         ),
                       ),
                     ),
-                    childWhenDragging: Opacity(opacity: 0.5, child: tile),
-                    child: GestureDetector(
-                      onTap: () {
-                        // タップで地図情報を表示
-                        _showTrajectoryMapDialog(
-                            context, positions, date, isGarmin, groupId);
-                      },
-                      child: tile,
-                    ),
                   ),
-                );
-              },
-            ),
+                  childWhenDragging: Opacity(opacity: 0.5, child: tile),
+                  child: GestureDetector(
+                    onTap: () {
+                      // タップで地図情報を表示
+                      _showTrajectoryMapDialog(
+                          context, positions, date, isGarmin, groupId);
+                    },
+                    child: tile,
+                  ),
+                ),
+              );
+            },
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 
