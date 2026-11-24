@@ -64,7 +64,10 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
   final DatabaseHelper _dbHelper = DatabaseHelper();
   final FirestoreService _firestoreService = FirestoreService();
   final AuthService _authService = AuthService();
-  String? _currentDraftFilePath; // 現在の下書きファイルパスを保持
+  String? _currentDraftId; // いま開いている下書きの ID（新規の制作では null）
+  // 開いた下書きの下絵がまだ表示できていない（取得中・取得失敗）ときの、その下書き。
+  // この間に上書き保存しても、保存済みの下絵を消さないようにする
+  Map<String, dynamic>? _unrestoredGuideImageDraft;
 
   bool isRotating = false;
   bool isScaling = false;
@@ -107,7 +110,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
   Set<String> _usedGarminGroupIds = {};
   Map<int, String> _localTrajectoryGroupIds = {};
   Set<String> _recentlyUsedGroupIds = {};
-  // 下書き（いま開いているものを除く）に使われている軌跡。下書きファイルの中身から求める
+  // 下書き（いま開いているものを除く）に使われている軌跡。下書きの中身から求める
   Set<String> _draftUsedGroupIds = {};
   bool _isTrajectoryListLoading = true;
 
@@ -179,7 +182,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
     if (!mounted || drafts == null || _isTrajectoryListLoading) return;
 
     final otherDrafts =
-        drafts.where((draft) => draft['filePath'] != _currentDraftFilePath);
+        drafts.where((draft) => draft['draftId'] != _currentDraftId);
     final used =
         TrajectoryUsage.usedGroupIds(otherDrafts, _groupIdBySignature());
     setState(() {
@@ -189,10 +192,10 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
 
   /// 制作ホームで下書きを削除する
   Future<void> _deleteDraftFromHome(Map<String, dynamic> draft) async {
-    final filePath = draft['filePath'] as String?;
-    if (filePath == null) return;
+    final draftId = draft['draftId'] as String?;
+    if (draftId == null) return;
     try {
-      await DraftStore.delete(filePath);
+      await DraftStore.delete(draftId);
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -217,7 +220,8 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
       temporarilyUsedIndices.clear();
       temporarilyUsedGroupIds.clear();
       // 読み込んでいた下書きを上書きしないよう、次は新規の制作として扱う
-      _currentDraftFilePath = null;
+      _currentDraftId = null;
+      _unrestoredGuideImageDraft = null;
       _showLayerPanel = false;
       _isRouteSketchMode = false;
       _routeSketchStrokes = [];
@@ -508,8 +512,13 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
   Future<void> _pickGuideImage() async {
     try {
       final ImagePicker picker = ImagePicker();
+      // 下絵は下書きとともに Firestore に保存するため、大きすぎない JPEG で受け取る
+      // （HEIC などの写真も JPEG に変換される）
       final XFile? image = await picker.pickImage(
         source: ImageSource.gallery,
+        maxWidth: 2048,
+        maxHeight: 2048,
+        imageQuality: 90,
       );
 
       if (!mounted) return;
@@ -801,14 +810,15 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
       temporarilyUsedIndices.clear();
       temporarilyUsedGroupIds.clear();
 
-      // **途中保存ファイルの削除**
-      if (_currentDraftFilePath != null) {
-        final draftFile = File(_currentDraftFilePath!);
-        if (await draftFile.exists()) {
-          await draftFile.delete();
-          print("途中保存ファイルを削除しました: $_currentDraftFilePath");
+      // 作品になった下書きを削除する（失敗しても作品の保存は成功として扱う）
+      final completedDraftId = _currentDraftId;
+      if (completedDraftId != null) {
+        try {
+          await DraftStore.delete(completedDraftId);
+        } catch (e) {
+          print("❌ 作品にした下書きの削除エラー: $e");
         }
-        _currentDraftFilePath = null; // 現在の途中保存ファイルパスをクリア
+        _currentDraftId = null;
       }
 
       // ローディングを閉じる
@@ -902,20 +912,11 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
   }
 
   // 作品の途中保存（保存できたら true）
-  Future<bool> _saveDraft({String? draftFilePath}) async {
+  //
+  // [draftId] を指定した場合はその下書きを上書きし、null の場合は新しい下書きを作る。
+  // 下書きは Firestore に保存するため、アプリを再インストールしても復元できる
+  Future<bool> _saveDraft({String? draftId}) async {
     try {
-      final directory = await getApplicationDocumentsDirectory();
-      final draftsDirectory = Directory('${directory.path}/drafts');
-
-      if (!(await draftsDirectory.exists())) {
-        await draftsDirectory.create(recursive: true);
-      }
-
-      // 既存のファイルパスが指定されている場合はそれを使用し、新規の場合は新しいファイルを作成
-      String filePath = draftFilePath ??
-          '${draftsDirectory.path}/draft_${DateTime.now().toIso8601String()}.json';
-      File draftFile = File(filePath);
-
       final canvasSize = _boundaryKey.currentContext!.size!;
       final draftState = <String, dynamic>{
         'canvasWidth': canvasSize.width,
@@ -943,9 +944,8 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
         'timestamp': DateTime.now().toIso8601String(),
       };
 
-      // ガイド画像データを保存
+      // ガイド画像の表示状態を保存（画像そのものは DraftStore.save が保存する）
       if (_guideImage != null) {
-        draftState['guideImagePath'] = _guideImage!.path;
         draftState['guideImageOpacity'] = _guideImageOpacity;
         draftState['guideImagePositionDx'] = _guideImagePosition.dx;
         draftState['guideImagePositionDy'] = _guideImagePosition.dy;
@@ -953,20 +953,47 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
         draftState['guideImageLocked'] = _guideImageLocked;
       }
 
-      await draftFile.writeAsString(jsonEncode(draftState));
+      // 下絵をまだ表示できていない下書きを上書きする場合は、保存済みの下絵を残す
+      final unrestored = _unrestoredGuideImageDraft;
+      final keepStoredGuideImage = _guideImage == null &&
+          draftId != null &&
+          unrestored?['draftId'] == draftId;
+      if (keepStoredGuideImage) {
+        for (final key in const [
+          'guideImageOpacity',
+          'guideImagePositionDx',
+          'guideImagePositionDy',
+          'guideImageScale',
+          'guideImageLocked',
+        ]) {
+          if (unrestored!.containsKey(key)) draftState[key] = unrestored[key];
+        }
+      }
+
+      final savedDraft = await DraftStore.save(
+        draftState,
+        draftId: draftId,
+        guideImage: _guideImage,
+        keepStoredGuideImage: keepStoredGuideImage,
+      );
 
       // 保存した下書きを手元の一覧にも反映する。下書きに使った軌跡は、この一覧の
       // 中身から「使用中」と判定する（_refreshDraftUsage）。使用済みの表には書き込まない
-      final savedDraft = <String, dynamic>{...draftState, 'filePath': filePath};
       final drafts = DraftStore.newestFirst([
         savedDraft,
-        ...?_drafts?.where((draft) => draft['filePath'] != filePath),
+        ...?_drafts
+            ?.where((draft) => draft['draftId'] != savedDraft['draftId']),
       ]);
 
       if (!mounted) return true;
 
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('途中保存しました。')),
+        SnackBar(
+          content: Text(savedDraft['guideImageError'] == null
+              ? '途中保存しました。'
+              : '途中保存しました。ただし下絵は保存できませんでした: '
+                  '${savedDraft['guideImageError']}'),
+        ),
       );
 
       // キャンバスの状態をリセット
@@ -989,7 +1016,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
 
   /// メニューからの下書き保存: 保存できたら制作ホームに戻り、保存した下書きを一覧に出す
   Future<void> _saveDraftAndReturnToHome() async {
-    final saved = await _saveDraft(draftFilePath: _currentDraftFilePath);
+    final saved = await _saveDraft(draftId: _currentDraftId);
     if (!saved || !mounted) return;
     // スケールがあらかじめ決められている場合はホームを経由しない
     if (widget.fixedScaleBarDistance == null) _returnToHome();
@@ -1064,8 +1091,8 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
           ..scale = item['scale'] ?? 1.0;
       }).toList();
 
-      // 現在の下書きファイルパスを保存
-      _currentDraftFilePath = draftData['filePath'];
+      // 上書き保存できるよう、開いた下書きの ID を覚えておく
+      _currentDraftId = draftData['draftId'] as String?;
 
       // リストに表示されないように一時的に使用中としてマーク
       // （作品として保存するときも、この groupId が使用済みとして記録される）
@@ -1076,36 +1103,63 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
             .map((trajectory) => trajectory.groupId)
             .whereType<String>());
 
-      // ガイド画像を復元
-      final guideImagePath = draftData['guideImagePath'] as String?;
-      if (guideImagePath != null) {
-        final imageFile = File(guideImagePath);
-        if (imageFile.existsSync()) {
-          _guideImage = imageFile;
-          _guideImageOpacity =
-              (draftData['guideImageOpacity'] as num?)?.toDouble() ?? 0.5;
-          _guideImagePosition = Offset(
-            (draftData['guideImagePositionDx'] as num?)?.toDouble() ?? 0.0,
-            (draftData['guideImagePositionDy'] as num?)?.toDouble() ?? 0.0,
-          );
-          _guideImageScale =
-              (draftData['guideImageScale'] as num?)?.toDouble() ?? 1.0;
-          _guideImageLocked = draftData['guideImageLocked'] as bool? ?? false;
-          _showGuideImageControl = true;
-        } else {
-          _guideImage = null;
-          _showGuideImageControl = false;
-        }
-      } else {
-        _guideImage = null;
-        _showGuideImageControl = false;
-      }
+      // ガイド画像は _restoreGuideImage で読み込めてから表示する
+      _guideImage = null;
+      _showGuideImageControl = false;
+      _unrestoredGuideImageDraft =
+          draftData['hasGuideImage'] == true ? draftData : null;
     });
 
     // 開いた下書きの軌跡はキャンバス上の配置として扱うので、求め直す
     _refreshDraftUsage();
 
     if (wasChoosingScale) _showCoachMarkAfterLayout();
+
+    _restoreGuideImage(draftData);
+  }
+
+  /// 下書きの下絵を読み込んで表示する
+  ///
+  /// 端末内にない場合（再インストール後など）は Firestore から取得するため、非同期で行う
+  Future<void> _restoreGuideImage(Map<String, dynamic> draftData) async {
+    final hasGuideImage = draftData['hasGuideImage'] == true ||
+        draftData['guideImagePath'] != null;
+    if (!hasGuideImage) return;
+
+    final draftId = draftData['draftId'] as String?;
+    final imageFile = await DraftStore.loadGuideImage(draftData);
+    // 読み込んでいる間に別の下書きを開いた・ホームに戻った・別の下絵を選んだ場合は反映しない
+    if (!mounted ||
+        !_scaleDecided ||
+        _currentDraftId != draftId ||
+        _guideImage != null) {
+      return;
+    }
+
+    if (imageFile == null) {
+      // 端末内に保存していた頃の下書きで、下絵がすでに消えている場合は知らせない
+      if (draftData['hasGuideImage'] == true) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('下絵を読み込めませんでした')),
+        );
+      }
+      return;
+    }
+
+    setState(() {
+      _unrestoredGuideImageDraft = null;
+      _guideImage = imageFile;
+      _guideImageOpacity =
+          (draftData['guideImageOpacity'] as num?)?.toDouble() ?? 0.5;
+      _guideImagePosition = Offset(
+        (draftData['guideImagePositionDx'] as num?)?.toDouble() ?? 0.0,
+        (draftData['guideImagePositionDy'] as num?)?.toDouble() ?? 0.0,
+      );
+      _guideImageScale =
+          (draftData['guideImageScale'] as num?)?.toDouble() ?? 1.0;
+      _guideImageLocked = draftData['guideImageLocked'] as bool? ?? false;
+      _showGuideImageControl = true;
+    });
   }
 
   // 途中保存した作品を一覧表示する
@@ -1295,7 +1349,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
     );
 
     if (choice == 'save') {
-      await _saveDraft(draftFilePath: _currentDraftFilePath);
+      await _saveDraft(draftId: _currentDraftId);
     }
     return choice != null;
   }
@@ -1532,7 +1586,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
       if (choice == null || !mounted) return;
 
       if (choice == 'save') {
-        final saved = await _saveDraft(draftFilePath: _currentDraftFilePath);
+        final saved = await _saveDraft(draftId: _currentDraftId);
         if (!saved || !mounted) return;
       }
     }

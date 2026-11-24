@@ -31,7 +31,7 @@ class DraftListScreen extends StatelessWidget {
               final scale = (draft['scaleBarDistance'] as num?)?.toDouble();
 
               return Dismissible(
-                key: ValueKey(draft['filePath']),
+                key: ValueKey(draft['draftId']),
                 direction: DismissDirection.endToStart,
                 background: Container(
                   color: Colors.red,
@@ -40,10 +40,15 @@ class DraftListScreen extends StatelessWidget {
                   child: Icon(Icons.delete, color: Colors.white),
                 ),
                 onDismissed: (direction) async {
-                  await DraftStore.delete(draft['filePath']);
+                  String message = '下書きを削除しました';
+                  try {
+                    await DraftStore.delete(draft['draftId'] as String);
+                  } catch (e) {
+                    message = '下書きの削除に失敗しました: $e';
+                  }
                   if (!context.mounted) return;
                   ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text('下書きを削除しました')),
+                    SnackBar(content: Text(message)),
                   );
                 },
                 child: ListTile(
