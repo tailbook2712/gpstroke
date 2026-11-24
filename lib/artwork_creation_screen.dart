@@ -1359,11 +1359,6 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
   /// 高さは _buildBottomPanel が決めるので、その中に収まるように並べる。
   Widget _buildRouteSketchControls() {
     final lengthKm = _routeSketchLengthMeters() / 1000;
-    final buttonStyle = OutlinedButton.styleFrom(
-      padding: const EdgeInsets.symmetric(horizontal: 4),
-      minimumSize: const Size(0, 36),
-      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-    );
     // スケッチ中の戻る操作は _handleBack でスケッチモードの終了として扱う
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
@@ -1400,59 +1395,86 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
           ),
           Row(
             children: [
-              Expanded(
-                child: OutlinedButton(
-                  style: buttonStyle,
-                  onPressed: _isLocatingForRoute ? null : _exitRouteSketchMode,
-                  child: const Text('やめる', maxLines: 1),
-                ),
+              _buildSketchToolButton(
+                icon: Icons.close,
+                label: 'やめる',
+                onPressed: _isLocatingForRoute ? null : _exitRouteSketchMode,
               ),
-              const SizedBox(width: 6),
-              Expanded(
-                child: OutlinedButton.icon(
-                  style: buttonStyle,
-                  onPressed: _routeSketchStrokes.isEmpty
-                      ? null
-                      : () => setState(() => _routeSketchStrokes.removeLast()),
-                  icon: const Icon(Icons.undo, size: 16),
-                  label: const Text('戻る', maxLines: 1),
-                ),
+              _buildSketchToolButton(
+                icon: Icons.undo,
+                label: '戻る',
+                onPressed: _routeSketchStrokes.isEmpty
+                    ? null
+                    : () => setState(() => _routeSketchStrokes.removeLast()),
               ),
-              const SizedBox(width: 6),
-              Expanded(
-                child: OutlinedButton.icon(
-                  style: buttonStyle,
-                  onPressed: _routeSketchStrokes.isEmpty
-                      ? null
-                      : () => setState(() => _routeSketchStrokes.clear()),
-                  icon: const Icon(Icons.delete_sweep, size: 16),
-                  label: const Text('全削除', maxLines: 1),
-                ),
+              _buildSketchToolButton(
+                icon: Icons.delete_outline,
+                label: '全削除',
+                onPressed: _routeSketchStrokes.isEmpty
+                    ? null
+                    : () => setState(() => _routeSketchStrokes.clear()),
               ),
-              const SizedBox(width: 6),
+              const SizedBox(width: 8),
+              // 主操作の「決定」だけを目立たせ、他は控えめな道具ボタンにする
               Expanded(
-                child: ElevatedButton(
+                child: FilledButton.icon(
                   onPressed:
                       _isLocatingForRoute ? null : _proceedToRouteGeneration,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.blue,
+                  style: FilledButton.styleFrom(
+                    backgroundColor: Colors.orange[700],
                     foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(horizontal: 4),
-                    minimumSize: const Size(0, 36),
+                    minimumSize: const Size(0, 44),
                     tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    textStyle: const TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.bold,
+                    ),
                   ),
-                  child: _isLocatingForRoute
+                  icon: _isLocatingForRoute
                       ? const SizedBox(
                           width: 18,
                           height: 18,
-                          child: CircularProgressIndicator(strokeWidth: 2),
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.white,
+                          ),
                         )
-                      : const Text('決定', maxLines: 1),
+                      : const Icon(Icons.check, size: 20),
+                  label: const Text('決定', maxLines: 1),
                 ),
               ),
             ],
           ),
         ],
+      ),
+    );
+  }
+
+  /// スケッチ操作パネルの補助ボタン（アイコンの下にラベルを置く）
+  Widget _buildSketchToolButton({
+    required IconData icon,
+    required String label,
+    required VoidCallback? onPressed,
+  }) {
+    final color = onPressed == null ? Colors.grey[400] : Colors.grey[800];
+    return InkWell(
+      onTap: onPressed,
+      borderRadius: BorderRadius.circular(8),
+      child: SizedBox(
+        width: 56,
+        height: 44,
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(icon, size: 22, color: color),
+            const SizedBox(height: 2),
+            Text(
+              label,
+              maxLines: 1,
+              style: TextStyle(fontSize: 11, color: color),
+            ),
+          ],
+        ),
       ),
     );
   }
