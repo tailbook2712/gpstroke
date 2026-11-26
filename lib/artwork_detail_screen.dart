@@ -1,6 +1,5 @@
 import 'dart:convert';
 import 'dart:io';
-import 'dart:math';
 import 'dart:math' as math;
 import 'package:flutter/foundation.dart' show defaultTargetPlatform, TargetPlatform;
 import 'package:flutter/material.dart';
@@ -9,9 +8,11 @@ import 'package:intl/intl.dart';
 import 'package:cloud_firestore/cloud_firestore.dart' show FirebaseException;
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:share_plus/share_plus.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'artwork_creation_screen.dart';
 import 'artwork_share_service.dart';
 import 'database_helper.dart';
+import 'utils/slideshow_order.dart';
 import 'utils/utils.dart';
 import 'polyline_painter.dart';
 
@@ -27,8 +28,13 @@ class ArtworkDetailScreen extends StatefulWidget {
 class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
     with TickerProviderStateMixin {
   List<TransformablePolyline> _trajectories = [];
+  // 再生順の候補（いずれも _trajectories のインデックスの並び）
   List<int> _recordedOrder = [];
+  List<int> _distanceOrder = [];
+  List<int> _placementOrder = [];
   List<Map<String, dynamic>> _trajectoryMetadata = []; // 軌跡のメタデータを保持
+  // 各軌跡の記録日時（先頭座標の時刻。取り出せない場合は null）
+  List<DateTime?> _firstPointTimes = [];
   late DatabaseHelper _dbHelper;
 
   String _artworkName = "作品の詳細";
@@ -72,8 +78,28 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
   // 古い再生チェーンが await 後に UI を更新しないようにする
   int _slideshowRun = 0;
 
-  // 全ストローク再生後、作品全体を表示してからループするまでの時間
-  final Duration _outroDuration = Duration(seconds: 2);
+  // 再生バーと設定シートの背景色（共有ページの再生バーと同じ）
+  static const Color _panelColor = Color(0xFF111318);
+
+  // 再生順と再生方法（前回の選択を端末に保存して引き継ぐ）
+  static const String _orderPrefKey = 'slideshow_order';
+  static const String _stylePrefKey = 'slideshow_style';
+  SlideshowOrder _slideshowOrder = SlideshowOrder.recorded;
+  SlideshowStyle _slideshowStyle = SlideshowStyle.highlight;
+
+  // 選択中の再生順（_trajectories のインデックスの並び）
+  List<int> get _playOrder => switch (_slideshowOrder) {
+        SlideshowOrder.recorded => _recordedOrder,
+        SlideshowOrder.distance => _distanceOrder,
+        SlideshowOrder.placement => _placementOrder,
+      };
+
+  // 「一つずつ出現」の再生中は、まだ再生していない軌跡を隠す。
+  // 再生順をまだ計算できていない間は隠さない（何も再生されず真っ白になるため）
+  bool get _isRevealing =>
+      _isControlPanelVisible &&
+      _slideshowStyle == SlideshowStyle.reveal &&
+      _playOrder.isNotEmpty;
 
   // デバッグフラグ
   final bool _debugMode = true;
@@ -108,6 +134,35 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _loadCanvasState();
     });
+    _loadSlideshowPreferences();
+  }
+
+  Future<void> _loadSlideshowPreferences() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (!mounted) return;
+    setState(() {
+      _slideshowOrder = SlideshowOrder.fromName(prefs.getString(_orderPrefKey));
+      _slideshowStyle = SlideshowStyle.fromName(prefs.getString(_stylePrefKey));
+    });
+  }
+
+  // 再生順・再生方法を切り替え、先頭から再生し直す
+  Future<void> _changeSlideshowSettings(
+      {SlideshowOrder? order, SlideshowStyle? style}) async {
+    final bool changed = (order != null && order != _slideshowOrder) ||
+        (style != null && style != _slideshowStyle);
+    if (!changed) return;
+
+    _stopSlideshow();
+    setState(() {
+      _slideshowOrder = order ?? _slideshowOrder;
+      _slideshowStyle = style ?? _slideshowStyle;
+    });
+    _startSlideshow();
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_orderPrefKey, _slideshowOrder.name);
+    await prefs.setString(_stylePrefKey, _slideshowStyle.name);
   }
 
   @override
@@ -120,9 +175,10 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
     super.dispose();
   }
 
-  // 軌跡を記録日時順にソートするメソッド
+  // 軌跡を記録日時順・距離順にソートするメソッド
   Future<void> _sortTrajectoriesByRecordTime() async {
-    List<MapEntry<int, DateTime>> trajectoriesWithTime = [];
+    final List<DateTime?> recordTimes = [];
+    final List<double> distances = [];
 
     for (int i = 0; i < _trajectories.length; i++) {
       TransformablePolyline trajectory = _trajectories[i];
@@ -139,39 +195,76 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
         groupId = generateGroupId(trajectory.polyline);
       }
 
+      Map<String, dynamic>? record;
       try {
-        Map<String, dynamic>? record =
-            await _dbHelper.getWalkingDataByGroupId(groupId);
+        record = await _dbHelper.getWalkingDataByGroupId(groupId);
 
         // ローカル軌跡が見つからない場合、Garmin軌跡を確認
         if (record == null) {
           record = await _dbHelper.getGarminActivityByGroupId(groupId);
         }
-
-        if (record != null) {
-          DateTime recordTime =
-              DateTime.tryParse(record['date']) ?? DateTime.now();
-          trajectoriesWithTime.add(MapEntry(i, recordTime));
-          print("✅ 軌跡 $i (groupId: $groupId) の記録時間を取得: $recordTime");
-        } else {
+        if (record == null) {
           print("⚠️  軌跡 $i (groupId: $groupId) のレコードが見つかりません");
-          trajectoriesWithTime.add(MapEntry(i, DateTime.now()));
         }
       } catch (e) {
-        print("❌ 軌跡 $i (groupId: $groupId) の記録時間の取得に失敗: $e");
-        trajectoriesWithTime.add(MapEntry(i, DateTime.now()));
+        print("❌ 軌跡 $i (groupId: $groupId) の記録の取得に失敗: $e");
+      }
+
+      // 記録日時と距離は 1 本につき必ず 1 つずつ追加する
+      // （2 つのリストの長さがずれると、再生順に存在しないインデックスが混ざる）
+      //
+      // 記録日時は、記録カードや共有ページと同じく先頭座標の時刻を使う。
+      // 端末内 DB の date は、Firestore から復元した軌跡では復元した日時に
+      // なっている場合があるため、座標に時刻が無いときだけ使う
+      final date = record?['date'];
+      final DateTime? recordTime =
+          (i < _firstPointTimes.length ? _firstPointTimes[i] : null) ??
+              (date is String ? DateTime.tryParse(date) : null);
+      recordTimes.add(recordTime);
+      distances.add(_trajectoryDistanceKm(i, record));
+      if (record != null) {
+        print("✅ 軌跡 $i (groupId: $groupId) の記録時間を取得: $recordTime");
       }
     }
 
-    // 記録時間でソート（古い順）
-    trajectoriesWithTime.sort((a, b) => a.value.compareTo(b.value));
-
-    // ソートされた順序を保存
+    if (!mounted) return;
     setState(() {
-      _recordedOrder = trajectoriesWithTime.map((entry) => entry.key).toList();
+      _recordedOrder = orderByRecordTime(recordTimes);
+      _distanceOrder = orderByDistanceDesc(distances);
     });
 
     print("軌跡を記録順にソート: $_recordedOrder");
+    print("軌跡を距離の長い順にソート: $_distanceOrder");
+
+    // 再生順の計算が終わる前に再生 UI を開いていた場合は、ここで再生を始める
+    // （_startSlideshow は再生順が空だと何もしないため）
+    if (_isControlPanelVisible &&
+        !_isSlideshowPlaying &&
+        _currentTrajectoryIndex < 0) {
+      _startSlideshow();
+    }
+  }
+
+  // 軌跡の距離（km）。記録 → 作品ファイルのメタデータ → 座標列から計算 の順で求める。
+  // 想定外の型が入っていても例外にせず、次の候補にフォールバックする
+  double _trajectoryDistanceKm(int index, Map<String, dynamic>? record) {
+    final recordDistance = record?['distance'];
+    if (recordDistance is num && recordDistance > 0) {
+      return recordDistance.toDouble();
+    }
+
+    final metaDistance = index < _trajectoryMetadata.length
+        ? _trajectoryMetadata[index]['distance']
+        : null;
+    if (metaDistance is num && metaDistance > 0) return metaDistance.toDouble();
+
+    final points = _trajectories[index].polyline;
+    double meters = 0;
+    for (int i = 1; i < points.length; i++) {
+      meters += Geolocator.distanceBetween(points[i - 1].latitude,
+          points[i - 1].longitude, points[i].latitude, points[i].longitude);
+    }
+    return meters / 1000;
   }
 
   // キャンバスの状態の復元（完全メタデータ対応版）
@@ -281,6 +374,21 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
         _trajectoryMetadata = (data['trajectories'] as List<dynamic>)
             .map((item) => (item['details'] as Map<String, dynamic>? ?? {}))
             .toList();
+
+        // 配置順（配置日時が無い古い作品はファイル内の並び＝レイヤー順）
+        _placementOrder = orderByPlacement((data['trajectories'] as List)
+            .map((item) => DateTime.tryParse(item['placedAt'] as String? ?? ''))
+            .toList());
+
+        // 記録日時（先頭座標の時刻）。Position に変換した値は、時刻を読めないと
+        // 読み込んだ日時で埋められてしまうため、元の文字列から読み取る
+        _firstPointTimes = (data['trajectories'] as List).map((item) {
+          final positions = item['positions'];
+          if (positions is! List || positions.isEmpty) return null;
+          final first = positions.first;
+          final timestamp = first is Map ? first['timestamp'] : null;
+          return timestamp is String ? DateTime.tryParse(timestamp) : null;
+        }).toList();
 
         _trajectoryColors = List.generate(
           _trajectories.length,
@@ -410,7 +518,7 @@ _currentTrajectoryIndex = -1;
   }
 
   void _startSlideshow() async {
-    if (_trajectories.isEmpty || _recordedOrder.isEmpty) return;
+    if (_trajectories.isEmpty || _playOrder.isEmpty) return;
 
     _slideshowRun++;
     setState(() {
@@ -449,47 +557,90 @@ _currentTrajectoryIndex = -1;
     });
   }
 
-  // 一時停止（共有ページと同様、現在のストロークのハイライトは残す）
+  // 一時停止（共有ページと同様、現在のストロークのハイライトは残す）。
+  // 地図を表示していたときは、地図と記録カードも表示したまま止める
   void _pauseSlideshow() {
     _slideshowRun++;
     _highlightController.stop();
     _mapTransitionController.stop();
     _mapAlignmentController.stop();
 
+    final bool keepMap = _isShowingMap && _currentTrajectoryDetails != null;
+    if (keepMap) {
+      // フェードや整列の途中で止めた場合も、地図と記録カードをはっきり表示する
+      _mapTransitionController.value = 1.0;
+      _mapAlignmentController.value = 1.0;
+    }
+
     setState(() {
       _isSlideshowPlaying = false;
-      _isShowingMap = false;
-      _isMapAligned = false;
-      _cachedCameraPosition = null;
-      _alignedCameraPosition = null;
+      if (!keepMap) {
+        _isShowingMap = false;
+        _isMapAligned = false;
+        _cachedCameraPosition = null;
+        _alignedCameraPosition = null;
+      }
     });
   }
 
-  // 再生／一時停止ボタン。一時停止後は現在のストロークから再開する
+  // 地図を表示したまま一時停止しているか
+  bool get _isPausedOnMap =>
+      !_isSlideshowPlaying &&
+      _isShowingMap &&
+      _currentTrajectoryIndex >= 0 &&
+      _currentTrajectoryIndex < _playOrder.length;
+
+  // 最後まで再生し終えて止まっているか
+  bool get _hasFinished =>
+      _playOrder.isNotEmpty && _currentTrajectoryIndex >= _playOrder.length;
+
+  // 再生／一時停止ボタン
   void _togglePlayback() {
     if (_isSlideshowPlaying) {
       _pauseSlideshow();
-    } else if (_currentTrajectoryIndex >= 0) {
+    } else if (_isPausedOnMap) {
+      // 地図の表示から続ける
+      _resumeFromMap();
+    } else if (_currentTrajectoryIndex >= 0 && !_hasFinished) {
+      // 現在のストロークから再開する
       _seekToTrajectory(_currentTrajectoryIndex);
     } else {
+      // 再生前、または最後まで再生した後は先頭から
       _startSlideshow();
     }
   }
 
+  // 地図を表示したまま一時停止していた場合の再開。
+  // 地図をもう一度表示時間ぶん見せてから、次のストロークへ進む
+  void _resumeFromMap() async {
+    _slideshowRun++;
+    final int run = _slideshowRun;
+    bool alive() => mounted && run == _slideshowRun && _isSlideshowPlaying;
+    final int actualTrajectoryIndex = _playOrder[_currentTrajectoryIndex];
+
+    setState(() => _isSlideshowPlaying = true);
+
+    await Future.delayed(_getScaledDuration(_mapDisplayDuration));
+    if (!alive()) return;
+
+    await _finishStroke(actualTrajectoryIndex, alive);
+  }
+
   // 前のストロークへ（先頭では先頭のまま）
   void _showPrevStroke() {
-    _seekToTrajectory((_currentTrajectoryIndex - 1).clamp(0, _recordedOrder.length - 1));
+    _seekToTrajectory(
+        (_currentTrajectoryIndex - 1).clamp(0, _playOrder.length - 1));
   }
 
   // 次のストロークへ（末尾では先頭に戻る）
   void _showNextStroke() {
     final next = _currentTrajectoryIndex + 1;
-    _seekToTrajectory(next >= _recordedOrder.length ? 0 : next);
+    _seekToTrajectory(next >= _playOrder.length ? 0 : next);
   }
 
   void _seekToTrajectory(int index) {
-    if (_recordedOrder.isEmpty) return;
-    index = index.clamp(0, _recordedOrder.length - 1);
+    if (_playOrder.isEmpty) return;
+    index = index.clamp(0, _playOrder.length - 1);
 
     _slideshowRun++;
     _highlightController.stop();
@@ -1002,8 +1153,12 @@ _currentTrajectoryIndex = -1;
     });
   }
 
-  // 地図表示アニメーション
-  Future<void> _showMapAnimation() async {
+  // 地図表示アニメーション（フェードイン → 整列 → 表示時間だけ待つ）。
+  // 一時停止・シークで [alive] が false になったら、そこで止める
+  // （止めた後に地図を消したり、次の再生の地図を操作したりしないため）
+  Future<void> _showMapAnimation(bool Function() alive) async {
+    // 一時停止で不透明のまま残した値で、新しい地図が一瞬見えないよう先に巻き戻す
+    _mapTransitionController.reset();
     setState(() {
       _isShowingMap = true;
       _isMapAligned = false;
@@ -1011,24 +1166,30 @@ _currentTrajectoryIndex = -1;
 
     // 地図の初期化待機（速度適用）
     await Future.delayed(_getScaledDuration(Duration(milliseconds: 300)));
+    if (!alive()) return;
 
     // フェードイン（速度調整）
     _mapTransitionController.duration =
         _getScaledDuration(_mapTransitionDuration);
-    _mapTransitionController.reset();
     await _mapTransitionController.forward();
+    if (!alive()) return;
 
     // 地図を精密に整列（速度適用）
     await Future.delayed(_getScaledDuration(Duration(milliseconds: 200)));
+    if (!alive()) return;
     await _alignMapPrecisely();
+    if (!alive()) return;
 
     // 整列表示時間（速度適用）
     await Future.delayed(_getScaledDuration(_mapDisplayDuration));
+  }
 
-    // フェードアウト（速度調整）
+  // 地図をフェードアウトして閉じる
+  Future<void> _hideMapAnimation(bool Function() alive) async {
     _mapTransitionController.duration =
         _getScaledDuration(_mapTransitionDuration);
     await _mapTransitionController.reverse();
+    if (!alive()) return;
 
     setState(() {
       _isShowingMap = false;
@@ -1105,24 +1266,35 @@ _currentTrajectoryIndex = -1;
 
     int nextStepIndex = _currentTrajectoryIndex + 1;
 
-    if (nextStepIndex >= _recordedOrder.length) {
-      // すべて再生し終えたら作品全体を見せてから先頭に戻る（共有ページと同じ）
-      await Future.delayed(_getScaledDuration(_outroDuration));
-      if (!alive()) return;
+    if (nextStepIndex >= _playOrder.length) {
+      // すべて再生し終えたら、作品全体を表示したまま止める（ループしない）。
+      // 位置を末尾の次にしておくと、「一つずつ出現」でも全軌跡が表示されたままになり、
+      // 進行バーもすべて再生済みになる。再生ボタンを押すと先頭から再生する
       setState(() {
-        _currentTrajectoryIndex = -1;
+        _isSlideshowPlaying = false;
+        _currentTrajectoryIndex = _playOrder.length;
         _currentTrajectoryDetails = null;
         _trajectoryColors = List.generate(
           _trajectories.length,
           (_) => Colors.blue,
         );
       });
-      _showNextTrajectory();
       return;
     }
 
-    // 実際の軌跡インデックス（記録順序に従う）
-    int actualTrajectoryIndex = _recordedOrder[nextStepIndex];
+    // 「一つずつ出現」は、何も描かれていないキャンバスを一瞬見せてから始める
+    if (nextStepIndex == 0 && _slideshowStyle == SlideshowStyle.reveal) {
+      await Future.delayed(_getScaledDuration(_transitionDuration));
+      if (!alive()) return;
+    }
+
+    // 実際の軌跡インデックス（選択中の再生順に従う）
+    int actualTrajectoryIndex = _playOrder[nextStepIndex];
+
+    // 出現する軌跡が前の軌跡のアニメーション終了状態（不透明）で
+    // 一瞬描かれないよう、表示を切り替える前に巻き戻しておく
+    _highlightController.duration = _getScaledDuration(_highlightDuration);
+    _highlightController.reset();
 
     setState(() {
       _currentTrajectoryIndex = nextStepIndex;
@@ -1134,8 +1306,6 @@ _currentTrajectoryIndex = -1;
     });
 
     // ハイライトアニメーション（速度調整）
-    _highlightController.duration = _getScaledDuration(_highlightDuration);
-    _highlightController.reset();
     await _highlightController.forward();
     if (!alive()) return;
 
@@ -1144,7 +1314,16 @@ _currentTrajectoryIndex = -1;
     if (!alive()) return;
 
     // 地図アニメーションを表示
-    await _showMapAnimation();
+    await _showMapAnimation(alive);
+    if (!alive()) return;
+
+    await _finishStroke(actualTrajectoryIndex, alive);
+  }
+
+  // 地図を閉じて軌跡の色を戻し、次の軌跡へ進む
+  Future<void> _finishStroke(
+      int actualTrajectoryIndex, bool Function() alive) async {
+    await _hideMapAnimation(alive);
     if (!alive()) return;
 
     // 軌跡の色を元に戻す
@@ -1341,60 +1520,87 @@ _currentTrajectoryIndex = -1;
               int index = entry.key;
               TransformablePolyline item = entry.value;
 
+              // 再生順での位置（スライドショー中のみ意味を持つ）
+              final int playPosition = _playOrder.indexOf(index);
+
+              // 「一つずつ出現」では、まだ順番が来ていない軌跡を描かない
+              if (_isRevealing &&
+                  (playPosition < 0 ||
+                      playPosition > _currentTrajectoryIndex)) {
+                return const SizedBox.shrink();
+              }
+
               // ハイライト効果
               bool isCurrentlyHighlighted = _isSlideshowPlaying &&
                   _currentTrajectoryIndex >= 0 &&
-                  (
+                  (_isControlPanelVisible
                       // スライドショーの場合
-                      (_recordedOrder.isNotEmpty &&
-                              _currentTrajectoryIndex < _recordedOrder.length &&
-                              _recordedOrder[_currentTrajectoryIndex] ==
-                                  index) ||
-                          // 個別軌跡アニメーションの場合
-                          _currentTrajectoryIndex == index);
+                      ? playPosition == _currentTrajectoryIndex
+                      // 個別軌跡アニメーションの場合
+                      : _currentTrajectoryIndex == index);
 
-              // シンプルなハイライト効果
-              double pulseScale = 1.0;
+              // 「一つずつ出現」で今まさに現れる軌跡はフェードインさせる
+              final bool isAppearing = _isRevealing &&
+                  _isSlideshowPlaying &&
+                  playPosition == _currentTrajectoryIndex;
 
-              if (isCurrentlyHighlighted) {
-                // 軽いパルス効果のみ
-                double pulseProgress = Curves.easeInOut.transform(
-                    (sin(_highlightController.value * 2 * pi) + 1) / 2);
-                pulseScale = 1.0 + (pulseProgress * 0.05);
+              // ハイライト中も大きさは変えない（赤色と線の太さだけで示す）。
+              // 大きさを変えると、元の大きさで位置合わせした地図上のルートと
+              // 軌跡がずれてしまう
+              Widget stroke = Transform.rotate(
+                angle: item.rotation,
+                alignment: Alignment.center,
+                child: Transform.scale(
+                  scale: item.scale,
+                  alignment: Alignment.center,
+                  child: CustomPaint(
+                    size: Size(trajectorySize, trajectorySize),
+                    painter: PolylinePainter(
+                      positions: item.polyline,
+                      minLat: item.minLat,
+                      maxLat: item.maxLat,
+                      minLon: item.minLon,
+                      maxLon: item.maxLon,
+                      color: _trajectoryColors[index],
+                      preserveAspectRatio: true,
+                      strokeWidth:
+                          (isCurrentlyHighlighted ? 5.0 : 4.0) / item.scale,
+                    ),
+                  ),
+                ),
+              );
+
+              if (isAppearing) {
+                // ハイライト時間の前半で、少し縮んだ状態から浮かび上がる
+                stroke = AnimatedBuilder(
+                  animation: _highlightController,
+                  builder: (context, child) {
+                    final double t = Curves.easeOutCubic.transform(
+                        (_highlightController.value / 0.6).clamp(0.0, 1.0));
+                    return Opacity(
+                      opacity: t,
+                      child: Transform.scale(
+                        scale: 0.92 + 0.08 * t,
+                        child: child,
+                      ),
+                    );
+                  },
+                  child: stroke,
+                );
               }
 
               return Positioned(
                 left: item.position.dx - trajectorySize / 2,
                 top: item.position.dy - trajectorySize / 2,
                 child: GestureDetector(
-                  onTap: _isSlideshowPlaying
+                  // スライドショーの再生 UI を開いている間は個別再生しない
+                  onTap: _isSlideshowPlaying || _isControlPanelVisible
                       ? null
                       : () => _showTrajectoryDetails(item),
-                  child: Container(
+                  child: SizedBox(
                     width: trajectorySize,
                     height: trajectorySize,
-                    child: Transform.rotate(
-                      angle: item.rotation,
-                      alignment: Alignment.center,
-                      child: Transform.scale(
-                        scale: item.scale * pulseScale,
-                        alignment: Alignment.center,
-                        child: CustomPaint(
-                          size: Size(trajectorySize, trajectorySize),
-                          painter: PolylinePainter(
-                            positions: item.polyline,
-                            minLat: item.minLat,
-                            maxLat: item.maxLat,
-                            minLon: item.minLon,
-                            maxLon: item.maxLon,
-                            color: _trajectoryColors[index],
-                            preserveAspectRatio: true,
-                            strokeWidth: (isCurrentlyHighlighted ? 5.0 : 4.0) /
-                                (item.scale * pulseScale),
-                          ),
-                        ),
-                      ),
-                    ),
+                    child: stroke,
                   ),
                 ),
               );
@@ -1483,11 +1689,11 @@ _currentTrajectoryIndex = -1;
 
   // 再生コントロールパネル（共有ページの controls と同じ構成）
   Widget _buildControlPanel() {
-    final int strokeCount = _recordedOrder.length;
+    final int strokeCount = _playOrder.length;
     final int current = _currentTrajectoryIndex;
     return Container(
       width: double.infinity,
-      color: const Color(0xFF111318),
+      color: _panelColor,
       padding: EdgeInsets.fromLTRB(
           16, 10, 16, 14 + MediaQuery.of(context).padding.bottom),
       child: Column(
@@ -1525,48 +1731,159 @@ _currentTrajectoryIndex = -1;
             }),
           ),
           const SizedBox(height: 4),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              _buildRoundButton(Icons.chevron_left, _showPrevStroke),
-              const SizedBox(width: 6),
-              _buildRoundButton(
-                _isSlideshowPlaying ? Icons.pause : Icons.play_arrow,
-                _togglePlayback,
-              ),
-              const SizedBox(width: 6),
-              _buildRoundButton(Icons.chevron_right, _showNextStroke),
-              const SizedBox(width: 6),
-              SizedBox(
-                width: 56,
-                child: Text(
-                  '${current < 0 ? '-' : current + 1} / $strokeCount',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    color: Colors.white.withOpacity(0.65),
-                    fontSize: 13,
+          // 狭い画面ではみ出さないよう、ボタン列ごと縮めて収める
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                _buildRoundButton(Icons.chevron_left, _showPrevStroke),
+                const SizedBox(width: 6),
+                _buildRoundButton(
+                  _isSlideshowPlaying ? Icons.pause : Icons.play_arrow,
+                  _togglePlayback,
+                ),
+                const SizedBox(width: 6),
+                _buildRoundButton(Icons.chevron_right, _showNextStroke),
+                const SizedBox(width: 6),
+                SizedBox(
+                  width: 56,
+                  child: Text(
+                    // 最後まで再生した後は「N / N」と表示する
+                    '${current < 0 ? '-' : math.min(current + 1, strokeCount)} / $strokeCount',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: Colors.white.withOpacity(0.65),
+                      fontSize: 13,
+                    ),
                   ),
                 ),
-              ),
-              const SizedBox(width: 6),
-              TextButton(
-                onPressed: _increaseSpeed,
-                style: TextButton.styleFrom(
-                  foregroundColor: Colors.white,
-                  backgroundColor: Colors.white.withOpacity(0.12),
-                  padding: const EdgeInsets.symmetric(horizontal: 14),
-                  minimumSize: const Size(0, 40),
-                  shape: const StadiumBorder(),
-                ),
-                child: Text(
-                  _getSpeedText(),
-                  style: const TextStyle(
-                      fontSize: 13, fontWeight: FontWeight.w600),
-                ),
-              ),
-            ],
+                const SizedBox(width: 6),
+                _buildPillButton(
+                    label: _getSpeedText(), onPressed: _increaseSpeed),
+                const SizedBox(width: 6),
+                // 再生順・再生方法の設定
+                _buildRoundButton(Icons.settings, _openSlideshowSettings),
+              ],
+            ),
           ),
         ],
+      ),
+    );
+  }
+
+  // 再生順・再生方法を選ぶシート（再生バーと同じ色・同じ形のボタン）。
+  // 選ぶとすぐに反映して先頭から再生し直す。両方まとめて変えられるよう、
+  // 選んでもシートは閉じない
+  void _openSlideshowSettings() {
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: _panelColor,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (sheetContext) => StatefulBuilder(
+        builder: (sheetContext, setSheetState) {
+          return SafeArea(
+            top: false,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 10, 16, 16),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Center(
+                    child: Container(
+                      width: 36,
+                      height: 4,
+                      decoration: BoxDecoration(
+                        color: Colors.white.withOpacity(0.22),
+                        borderRadius: BorderRadius.circular(2),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  _buildOptionGroup<SlideshowOrder>(
+                    title: '再生順',
+                    values: SlideshowOrder.values,
+                    selected: _slideshowOrder,
+                    labelOf: (o) => o.label,
+                    onSelected: (o) {
+                      _changeSlideshowSettings(order: o);
+                      setSheetState(() {});
+                    },
+                  ),
+                  const SizedBox(height: 18),
+                  _buildOptionGroup<SlideshowStyle>(
+                    title: '再生方法',
+                    values: SlideshowStyle.values,
+                    selected: _slideshowStyle,
+                    labelOf: (st) => st.label,
+                    onSelected: (st) {
+                      _changeSlideshowSettings(style: st);
+                      setSheetState(() {});
+                    },
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  // 設定シート内の選択肢の一群（選択中は白地）
+  Widget _buildOptionGroup<T>({
+    required String title,
+    required List<T> values,
+    required T selected,
+    required String Function(T) labelOf,
+    required void Function(T) onSelected,
+  }) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          title,
+          style: TextStyle(color: Colors.white.withOpacity(0.65), fontSize: 13),
+        ),
+        const SizedBox(height: 8),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: values
+              .map((v) => _buildPillButton(
+                    label: labelOf(v),
+                    selected: v == selected,
+                    onPressed: () => onSelected(v),
+                  ))
+              .toList(),
+        ),
+      ],
+    );
+  }
+
+  // 再生バーの文字ボタン（速度ボタン・設定シートの選択肢）。selected は白地で示す
+  Widget _buildPillButton({
+    required String label,
+    required VoidCallback onPressed,
+    bool selected = false,
+  }) {
+    return TextButton(
+      onPressed: onPressed,
+      style: TextButton.styleFrom(
+        foregroundColor: selected ? _panelColor : Colors.white,
+        backgroundColor:
+            selected ? Colors.white : Colors.white.withOpacity(0.12),
+        padding: const EdgeInsets.symmetric(horizontal: 14),
+        minimumSize: const Size(0, 40),
+        shape: const StadiumBorder(),
+      ),
+      child: Text(
+        label,
+        style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
       ),
     );
   }

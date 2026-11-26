@@ -750,6 +750,8 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
             },
             'scale': item.scale,
             'rotation': item.rotation,
+            // スライドショーの「配置順」用（作品ファイル内の並びはレイヤー順）
+            'placedAt': item.placedAt?.toIso8601String(),
             'geoBounds': {
               'minLat': minLat,
               'maxLat': maxLat,
@@ -939,6 +941,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
             'rotation': item.rotation,
             // 下書きに使った軌跡を特定できるよう、groupId も保存する
             'groupId': item.groupId,
+            'placedAt': item.placedAt?.toIso8601String(),
           };
         }).toList(),
         'timestamp': DateTime.now().toIso8601String(),
@@ -1086,6 +1089,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
           ),
           groupId: TrajectoryUsage.groupIdOfDraftTrajectory(
               item as Map, groupIdBySignature),
+          placedAt: DateTime.tryParse(item['placedAt'] as String? ?? ''),
         )
           ..rotation = item['rotation'] ?? 0.0
           ..scale = item['scale'] ?? 1.0;
@@ -1868,6 +1872,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                             positions,
                             localPosition, // ドロップ位置に配置
                             groupId: groupId,
+                            placedAt: DateTime.now(),
                           );
                           newTrajectory.scale =
                               _computeScaleForTrajectory(newTrajectory);
@@ -3172,13 +3177,18 @@ class TransformablePolyline {
   double scale;
   double lastScale;
   String? groupId; // 軌跡のgroupIdを保存
+  // キャンバスに配置した日時（スライドショーの「配置順」に使う）。
+  // 軌跡の配列はレイヤー順で、選択するたびに最前面へ並び替わるため、
+  // 配置した順は別に持っておく必要がある
+  DateTime? placedAt;
 
   double minLat;
   double maxLat;
   double minLon;
   double maxLon;
 
-  TransformablePolyline(this.polyline, this.position, {this.groupId})
+  TransformablePolyline(this.polyline, this.position,
+      {this.groupId, this.placedAt})
       : rotation = 0.0,
         lastRotation = 0.0,
         scale = 1.0, // デフォルト値を設定
