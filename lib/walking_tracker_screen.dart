@@ -876,7 +876,19 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen>
       for (var data in allWalkingData) {
         // 各フィールドを取得
         String groupId = data['groupId'] ?? 0;
-        String date = data['timestamp'] ?? DateTime.now().toIso8601String();
+        // 記録日時。Firestore の date には先頭座標の時刻（記録した日時）が入っている
+        // （以前は存在しない 'timestamp' を読んでいたため、復元した日時になっていた）
+        final positionsData = data['positions'];
+        final firstPoint = positionsData is List && positionsData.isNotEmpty
+            ? positionsData.first
+            : null;
+        final firstTimestamp =
+            firstPoint is Map ? firstPoint['timestamp'] : null;
+        String date = data['date'] is String
+            ? data['date'] as String
+            : firstTimestamp is String
+                ? firstTimestamp
+                : DateTime.now().toIso8601String();
         int steps = data['steps'] ?? 0;
         double distance = data['distance'] ?? 0.0;
 
