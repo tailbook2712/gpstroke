@@ -270,7 +270,6 @@ const TIMING = {
   hold: 2400,         // 整列状態で表示
   mapFadeOut: 500,    // 地図のフェードアウト
   gap: 300,           // 次のストロークまでの間
-  outro: 2000,        // 全ストローク再生後に作品全体を表示してからループ
 };
 
 /* アプリ側 PolylinePainter と同じ描画パラメータ */
@@ -426,7 +425,6 @@ const viewer = {
   k: 1, stageW: 0, stageH: 0,
   // 描画状態
   highlightIndex: -1,   // 赤くハイライト中のストローク
-  pulse: 0,
   // 地図
   map: null, mapPolyline: null, mapsReady: false, mapsFailed: false,
   mapRotation: 0, mapResidualScale: 1, mapEffectScale: 1,
@@ -504,8 +502,9 @@ function draw() {
   ctx.clearRect(0, 0, viewer.stageW, viewer.stageH);
   const k = viewer.k;
   const drawStroke = (s, highlighted) => {
-    const pulseScale = highlighted ? 1 + viewer.pulse * 0.05 : 1;
-    const scale = s.scale * pulseScale;
+    // ハイライト中も大きさは変えない（赤色と線の太さだけで示す）。
+    // 大きさを変えると、元の大きさで整列した地図上のルートとずれてしまう
+    const scale = s.scale;
     ctx.save();
     ctx.translate(s.x * k, s.y * k);
     ctx.rotate(s.rotation);
@@ -639,7 +638,8 @@ function setInfoCard(stroke, visible) {
 function updateCounter() {
   const n = viewer.strokes.length;
   const i = viewer.currentIndex;
-  $('counter').textContent = `${i < 0 ? '-' : i + 1} / ${n}`;
+  // 最後まで再生した後（i = n）は「n / n」と表示する
+  $('counter').textContent = `${i < 0 ? '-' : Math.min(i + 1, n)} / ${n}`;
   Array.from($('progress').children).forEach((el, j) => {
     el.classList.toggle('done', j < i);
     el.classList.toggle('active', j === i);
@@ -648,7 +648,6 @@ function updateCounter() {
 
 function resetVisual() {
   viewer.highlightIndex = -1;
-  viewer.pulse = 0;
   const layer = $('map-layer');
   layer.style.transition = 'none';
   layer.style.opacity = 0;
@@ -666,13 +665,10 @@ async function playStroke(i, run) {
   viewer.currentIndex = i;
   updateCounter();
 
-  // 2. ハイライト（対象を赤に、パルス）
+  // 2. ハイライト（対象を赤に）
   viewer.highlightIndex = stroke.index;
-  await animate(TIMING.highlight, t => {
-    viewer.pulse = (Math.sin(t * 2 * Math.PI) + 1) / 2;
-    draw();
-  });
-  viewer.pulse = 0; draw();
+  draw();
+  await sleep(TIMING.highlight);
   if (!alive()) return;
 
   // 3. 地図と記録情報を表示
@@ -734,11 +730,12 @@ async function playFrom(startIndex) {
     await playStroke(i, run);
     if (!alive()) return;
   }
-  // 5. すべて再生し終えたら作品全体を見せてループ
-  viewer.currentIndex = viewer.strokes.length - 1; updateCounter();
-  await sleep(TIMING.outro);
-  if (!alive()) return;
-  playFrom(0);
+  // 5. すべて再生し終えたら、作品全体を表示したまま止める（ループしない）。
+  //    位置を末尾の次にして、進行バーをすべて再生済みにする
+  viewer.currentIndex = viewer.strokes.length;
+  viewer.playing = false;
+  updateCounter();
+  updatePlayButton();
 }
 
 function pause() {
@@ -758,6 +755,8 @@ function updatePlayButton() {
 function bindControls() {
   $('btn-play').addEventListener('click', () => {
     if (viewer.playing) pause();
+    // 最後まで再生した後は先頭から
+    else if (viewer.currentIndex >= viewer.strokes.length) playFrom(0);
     else playFrom(Math.max(0, viewer.currentIndex));
   });
   $('btn-prev').addEventListener('click', () => {
