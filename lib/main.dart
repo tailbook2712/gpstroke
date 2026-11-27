@@ -1,3 +1,4 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
@@ -24,6 +25,14 @@ Future<void> main() async {
 
   // Firebase初期化
   await Firebase.initializeApp();
+
+  // 軌跡・下書きは Firestore の端末内キャッシュを手元のデータとして使う
+  // （TrajectoryStore）。既定の上限（100 MB）を超えると、しばらく使っていない
+  // ものからキャッシュが消され、オフラインで読めなくなるため、上限をなくす
+  FirebaseFirestore.instance.settings = const Settings(
+    persistenceEnabled: true,
+    cacheSizeBytes: Settings.CACHE_SIZE_UNLIMITED,
+  );
 
   final showOnboarding = !(await hasShownOnboarding());
 

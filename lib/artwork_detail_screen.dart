@@ -11,7 +11,8 @@ import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'artwork_creation_screen.dart';
 import 'artwork_share_service.dart';
-import 'database_helper.dart';
+import 'trajectory.dart';
+import 'trajectory_store.dart';
 import 'utils/slideshow_order.dart';
 import 'utils/utils.dart';
 import 'polyline_painter.dart';
@@ -35,7 +36,6 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
   List<Map<String, dynamic>> _trajectoryMetadata = []; // 軌跡のメタデータを保持
   // 各軌跡の記録日時（先頭座標の時刻。取り出せない場合は null）
   List<DateTime?> _firstPointTimes = [];
-  late DatabaseHelper _dbHelper;
 
   String _artworkName = "作品の詳細";
   String _artworkSummary = "";
@@ -114,7 +114,6 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
   @override
   void initState() {
     super.initState();
-    _dbHelper = DatabaseHelper();
 
     _highlightController = AnimationController(
       vsync: this,
@@ -195,36 +194,25 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
         groupId = generateGroupId(trajectory.polyline);
       }
 
-      Map<String, dynamic>? record;
+      Trajectory? stored;
       try {
-        record = await _dbHelper.getWalkingDataByGroupId(groupId);
-
-        // ローカル軌跡が見つからない場合、Garmin軌跡を確認
-        if (record == null) {
-          record = await _dbHelper.getGarminActivityByGroupId(groupId);
-        }
-        if (record == null) {
-          print("⚠️  軌跡 $i (groupId: $groupId) のレコードが見つかりません");
+        stored = await TrajectoryStore.get(groupId);
+        if (stored == null) {
+          print("⚠️  軌跡 $i (groupId: $groupId) が見つかりません");
         }
       } catch (e) {
-        print("❌ 軌跡 $i (groupId: $groupId) の記録の取得に失敗: $e");
+        print("❌ 軌跡 $i (groupId: $groupId) の取得に失敗: $e");
       }
 
       // 記録日時と距離は 1 本につき必ず 1 つずつ追加する
       // （2 つのリストの長さがずれると、再生順に存在しないインデックスが混ざる）
       //
-      // 記録日時は、記録カードや共有ページと同じく先頭座標の時刻を使う。
-      // 端末内 DB の date は、Firestore から復元した軌跡では復元した日時に
-      // なっている場合があるため、座標に時刻が無いときだけ使う
-      final date = record?['date'];
+      // 記録日時は、記録カードや共有ページと同じく先頭座標の時刻を使う
       final DateTime? recordTime =
           (i < _firstPointTimes.length ? _firstPointTimes[i] : null) ??
-              (date is String ? DateTime.tryParse(date) : null);
+              stored?.startedAt;
       recordTimes.add(recordTime);
-      distances.add(_trajectoryDistanceKm(i, record));
-      if (record != null) {
-        print("✅ 軌跡 $i (groupId: $groupId) の記録時間を取得: $recordTime");
-      }
+      distances.add(_trajectoryDistanceKm(i, stored?.distanceKm));
     }
 
     if (!mounted) return;
@@ -245,12 +233,11 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
     }
   }
 
-  // 軌跡の距離（km）。記録 → 作品ファイルのメタデータ → 座標列から計算 の順で求める。
-  // 想定外の型が入っていても例外にせず、次の候補にフォールバックする
-  double _trajectoryDistanceKm(int index, Map<String, dynamic>? record) {
-    final recordDistance = record?['distance'];
-    if (recordDistance is num && recordDistance > 0) {
-      return recordDistance.toDouble();
+  // 軌跡の距離（km）。保存されている軌跡 → 作品ファイルのメタデータ → 座標列から計算
+  // の順で求める。想定外の型が入っていても例外にせず、次の候補にフォールバックする
+  double _trajectoryDistanceKm(int index, double? storedDistanceKm) {
+    if (storedDistanceKm != null && storedDistanceKm > 0) {
+      return storedDistanceKm;
     }
 
     final metaDistance = index < _trajectoryMetadata.length
@@ -701,124 +688,32 @@ _currentTrajectoryIndex = -1;
     }
 
     try {
-      List<Map<String, dynamic>> positions =
-          await _dbHelper.getPositionsByGroupId(groupId);
-      Map<String, dynamic>? record =
-          await _dbHelper.getWalkingDataByGroupId(groupId);
-
-      // ローカル軌跡が見つからない場合、Garmin軌跡を確認
-      String actualGroupId = groupId;
-      if ((positions.isEmpty || record == null)) {
-        print("ローカル軌跡が見つかりません: $groupId。Garmin軌跡を確認中...");
-
-        // Garmin軌跡を取得してみる
-        Map<String, dynamic>? garminRecord =
-            await _dbHelper.getGarminActivityByGroupId(groupId);
-
-        if (garminRecord != null) {
-          print("✅ Garmin軌跡が見つかりました: $groupId");
-          actualGroupId = groupId;
-          record = garminRecord;
-
-          // Garmin軌跡の座標を復元
-          try {
-            final positionsJson = jsonDecode(garminRecord['positions']) as List;
-            positions = positionsJson
-                .map((pos) {
-                  return {
-                    'latitude': pos['latitude'],
-                    'longitude': pos['longitude'],
-                    'timestamp':
-                        pos['timestamp'] ?? DateTime.now().toIso8601String(),
-                  };
-                })
-                .cast<Map<String, dynamic>>()
-                .toList();
-          } catch (e) {
-            print("❌ Garmin軌跡の座標復元エラー: $e");
-          }
-        } else {
-          print("Garmin軌跡も見つかりません。座標検索を試みます...");
-
-          // 座標の境界から最も近いGarmin軌跡を見つける
-          final garminActivities = await _dbHelper.getGarminActivities();
-
-          if (garminActivities.isNotEmpty) {
-            double minLat =
-                trajectory.polyline.map((p) => p.latitude).reduce(math.min);
-            double maxLat =
-                trajectory.polyline.map((p) => p.latitude).reduce(math.max);
-            double minLng =
-                trajectory.polyline.map((p) => p.longitude).reduce(math.min);
-            double maxLng =
-                trajectory.polyline.map((p) => p.longitude).reduce(math.max);
-
-            // すべてのGarmin軌跡を確認
-            for (final activity in garminActivities) {
-              final positions_garmin =
-                  jsonDecode(activity['positions']) as List;
-              if (positions_garmin.isNotEmpty) {
-                final firstPos = positions_garmin.first as Map<String, dynamic>;
-                final lastPos = positions_garmin.last as Map<String, dynamic>;
-
-                final minLatDB = math.min(
-                    (firstPos['latitude'] as num).toDouble(),
-                    (lastPos['latitude'] as num).toDouble());
-                final maxLatDB = math.max(
-                    (firstPos['latitude'] as num).toDouble(),
-                    (lastPos['latitude'] as num).toDouble());
-                final minLngDB = math.min(
-                    (firstPos['longitude'] as num).toDouble(),
-                    (lastPos['longitude'] as num).toDouble());
-                final maxLngDB = math.max(
-                    (firstPos['longitude'] as num).toDouble(),
-                    (lastPos['longitude'] as num).toDouble());
-
-                // 座標範囲が重なっているか確認
-                if (minLat <= maxLatDB &&
-                    maxLat >= minLatDB &&
-                    minLng <= maxLngDB &&
-                    maxLng >= minLngDB) {
-                  print('✅ 座標が一致しました。Garmin軌跡を使用: ${activity['group_id']}');
-                  actualGroupId = activity['group_id'] as String;
-                  positions = positions_garmin
-                      .map((pos) {
-                        return {
-                          'latitude': pos['latitude'],
-                          'longitude': pos['longitude'],
-                          'timestamp': pos['timestamp'] ??
-                              DateTime.now().toIso8601String(),
-                        };
-                      })
-                      .cast<Map<String, dynamic>>()
-                      .toList();
-                  record =
-                      await _dbHelper.getWalkingDataByGroupId(actualGroupId);
-                  break;
-                }
-              }
-            }
-          }
-        }
+      // 地図に出す座標と記録（歩数・距離）は、保存されている軌跡から読む。
+      // 見つからない場合は、作品にコピーされている座標とメタデータを使う
+      final stored = await TrajectoryStore.get(groupId);
+      if (stored == null) {
+        print("軌跡が見つからないため、作品にコピーされている座標を使います: $groupId");
       }
-
-      if (positions.isEmpty || record == null) {
-        print("位置情報または記録が見つかりません: $groupId");
-        print("メタデータから取得したgroupId: $groupId");
-        print(
-            "インデックス: $actualTrajectoryIndex, メタデータ数: ${_trajectoryMetadata.length}");
+      final List<Position> points = stored?.points ?? trajectory.polyline;
+      if (points.isEmpty) {
+        print("位置情報が見つかりません: $groupId");
         return;
       }
 
-      final recordData = record;
-      String actualRecordDate = recordData['date'];
-      if (positions.isNotEmpty && positions.first.containsKey('timestamp')) {
-        actualRecordDate = positions.first['timestamp'];
-      }
+      final metadata = actualTrajectoryIndex < _trajectoryMetadata.length
+          ? _trajectoryMetadata[actualTrajectoryIndex]
+          : const <String, dynamic>{};
+      final String actualGroupId = groupId;
+      // 記録日時は先頭座標の時刻
+      final String actualRecordDate =
+          points.first.timestamp.toUtc().toIso8601String();
+      final Map<String, dynamic> recordData = {
+        'steps': stored?.steps ?? metadata['steps'],
+        'distance': stored?.distanceKm ?? metadata['distance'],
+      };
 
-      List<LatLng> polylinePoints = positions.map((pos) {
-        return LatLng(pos['latitude'], pos['longitude']);
-      }).toList();
+      List<LatLng> polylinePoints =
+          points.map((p) => LatLng(p.latitude, p.longitude)).toList();
 
       // 地理的境界を計算
       double minLat = polylinePoints.map((p) => p.latitude).reduce(math.min);

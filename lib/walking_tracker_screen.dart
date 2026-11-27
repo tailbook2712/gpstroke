@@ -16,6 +16,8 @@ import 'firestore_service.dart';
 import 'auth_service.dart';
 import 'garmin_import_screen.dart';
 import 'saved_route_list_screen.dart';
+import 'trajectory.dart';
+import 'trajectory_store.dart';
 import 'package:pedometer/pedometer.dart';
 
 import 'utils/android_permissions.dart';
@@ -92,7 +94,6 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen>
   static const int _bufferFlushInterval = 5; // 5点ごとにバッファを永続化
 
   late DatabaseHelper _dbHelper;
-  List<List<Position>> trajectories = [];
   late FirestoreService _firestoreService;
   final AuthService _authService = AuthService();
   StreamSubscription<Position>? _positionStream;
@@ -268,8 +269,10 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen>
 
   // 非同期初期化処理をまとめたメソッド
   Future<void> _initializeScreen() async {
-    await _restoreDataFromFirestore(); // FirestoreからローカルDBにデータを復元
-    await _loadTrajectories(); // 復元後にローカルDBから軌跡をロード
+    // 軌跡をサーバーから取り込む（その端末で初めてのときはすべて、以降は増えた分だけ）。
+    // 画面では端末内のキャッシュから読むため、サーバーから読むのはここだけ（#131）
+    await TrajectoryStore.sync();
+    await TrajectoryStore.migrateLegacy(); // 以前の形式の軌跡を移す（端末ごとに 1 回）
     await _syncUsedTrajectories(); // 使用済み軌跡情報を同期
     await _restoreArtworksFromFirestore(); // Firestoreからアートワークを復元
     await _checkUnfinishedRecording(); // バックグラウンド終了で未保存の記録がないか確認
@@ -627,36 +630,14 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen>
           : (totalKm > 0 ? (steps * distances[i] / totalKm).round() : 0);
       assignedSteps += segmentSteps;
 
-      final positionData = segment
-          .map((p) => {
-                'latitude': p.latitude,
-                'longitude': p.longitude,
-                'timestamp': p.timestamp.toIso8601String(),
-              })
-          .toList();
-
-      // generateGroupId を使って groupId を生成
-      final groupId = generateGroupId(segment);
-      // 区間の最初の点の timestamp を date として使用
-      final currentDate = segment.first.timestamp.toIso8601String();
-
-      await _dbHelper.insertWalkingData(
-        groupId: groupId,
-        date: currentDate,
+      // 軌跡の ID は座標から作る（同じ区間を保存し直しても同じ ID になり、重複しない）
+      await TrajectoryStore.add(Trajectory(
+        id: generateGroupId(segment),
+        source: TrajectorySource.gps,
+        points: segment,
+        distanceKm: distances[i],
         steps: segmentSteps,
-        distance: distances[i],
-        positions: positionData,
-      );
-
-      // Firestore に保存
-      await _firestoreService.saveWalkingData(
-        groupId: groupId,
-        steps: segmentSteps,
-        distance: distances[i],
-        positions: positionData,
-      );
-
-      print("保存した groupId: $groupId");
+      ));
     }
   }
 
@@ -862,109 +843,17 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen>
       // バックグラウンド終了時は歩数不明
       await _saveSegments(segments, 0);
       debugPrint('未保存の記録を復元・保存しました: ${segments.length}区間');
-      await _loadTrajectories();
     }
 
     await _clearPositionsBuffer();
   }
 
-  // Firestoreからデータを復元
-  Future<void> _restoreDataFromFirestore() async {
-    try {
-      List<Map<String, dynamic>> allWalkingData =
-          await _firestoreService.getAllWalkingData();
-      for (var data in allWalkingData) {
-        // 各フィールドを取得
-        String groupId = data['groupId'] ?? 0;
-        // 記録日時。Firestore の date には先頭座標の時刻（記録した日時）が入っている
-        // （以前は存在しない 'timestamp' を読んでいたため、復元した日時になっていた）
-        final positionsData = data['positions'];
-        final firstPoint = positionsData is List && positionsData.isNotEmpty
-            ? positionsData.first
-            : null;
-        final firstTimestamp =
-            firstPoint is Map ? firstPoint['timestamp'] : null;
-        String date = data['date'] is String
-            ? data['date'] as String
-            : firstTimestamp is String
-                ? firstTimestamp
-                : DateTime.now().toIso8601String();
-        int steps = data['steps'] ?? 0;
-        double distance = data['distance'] ?? 0.0;
-
-        // positionsがリスト型かを確認
-        if (data['positions'] is List) {
-          List<Map<String, dynamic>> positions =
-              List<Map<String, dynamic>>.from(data['positions']);
-
-          // データをローカルデータベースに保存
-          await _dbHelper.insertWalkingData(
-            groupId: groupId,
-            date: date,
-            steps: steps,
-            distance: distance,
-            positions: positions,
-          );
-        } else {
-          print("予期しないpositionsの形式: ${data['positions']}");
-        }
-      }
-      print("Firestoreからローカルデータベースにデータを復元しました");
-    } catch (e) {
-      print("データの復元に失敗しました: $e");
-    }
-  }
-
-  // ローカルデータベースから軌跡を読み込む
-  Future<void> _loadTrajectories() async {
-    try {
-      List<Map<String, dynamic>> walkingData =
-          await _dbHelper.getAllWalkingData();
-      List<List<Position>> loadedTrajectories = [];
-
-      for (var data in walkingData) {
-        // positions フィールドを JSON デコード
-        List<dynamic> positionsData = jsonDecode(data['positions']);
-
-        // Position オブジェクトに変換
-        List<Position> positions = positionsData.map((pos) {
-          return Position(
-            latitude: pos['latitude'],
-            longitude: pos['longitude'],
-            timestamp: DateTime.tryParse(pos['timestamp']) ?? DateTime.now(),
-            accuracy: 0.0,
-            altitude: 0.0,
-            altitudeAccuracy: 0.0,
-            heading: 0.0,
-            headingAccuracy: 0.0,
-            speed: 0.0,
-            speedAccuracy: 0.0,
-          );
-        }).toList();
-
-        loadedTrajectories.add(positions);
-      }
-
-      if (!mounted) return;
-      setState(() {
-        trajectories = loadedTrajectories;
-      });
-    } catch (e) {
-      print("軌跡の読み込みエラー: $e");
-    }
-  }
-
   // アートワーク作成画面に遷移
   void _navigateToArtworkCreationScreen() async {
-    // ローカルDBのみ読み込み（Firestoreへのアクセスは起動時に済んでいる）
-    await _loadTrajectories();
-
-    if (!mounted) return;
-
     final result = await Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (context) => ArtworkCreationScreen(trajectories: trajectories),
+        builder: (context) => ArtworkCreationScreen(),
       ),
     );
 
@@ -998,18 +887,14 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen>
   }
 
   // Garmin インポート画面に遷移
+  // （取り込んだ軌跡は TrajectoryStore に入るため、戻ってから読み込み直す必要はない）
   Future<void> _navigateToGarminImportScreen() async {
-    final result = await Navigator.push(
+    await Navigator.push(
       context,
       MaterialPageRoute(
         builder: (context) => GarminImportScreen(),
       ),
     );
-
-    // インポート後、軌跡を再読み込み
-    if (result != null) {
-      await _loadTrajectories();
-    }
   }
 
   // 保存したルートの一覧から歩くルートを選択

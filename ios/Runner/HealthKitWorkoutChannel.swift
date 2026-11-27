@@ -34,11 +34,20 @@ class HealthKitWorkoutChannel {
       result(HKHealthStore.isHealthDataAvailable())
     case "requestAuthorization":
       requestAuthorization(result: result)
+    case "authorizationStatus":
+      authorizationRequestStatus { status in
+        DispatchQueue.main.async { result(status) }
+      }
     case "fetchRecentWorkouts":
       let args = call.arguments as? [String: Any]
       let days = args?["days"] as? Int ?? 30
       let limit = args?["limit"] as? Int ?? 20
-      fetchRecentWorkouts(days: days, limit: limit, result: result)
+      // まだ許可を尋ねていない種類があると，問い合わせが
+      // 「Authorization not determined」で失敗するため，先に許可ダイアログを出す
+      // （アプリの再インストールなどで，許可がリセットされている場合がある）
+      ensureAuthorization { [weak self] in
+        self?.fetchRecentWorkouts(days: days, limit: limit, result: result)
+      }
     default:
       result(FlutterMethodNotImplemented)
     }
@@ -58,6 +67,46 @@ class HealthKitWorkoutChannel {
         } else {
           result(success)
         }
+      }
+    }
+  }
+
+  /// 許可ダイアログを出す必要があるか
+  /// （読み取りを許可されたかどうかは，プライバシー保護のため分からない）
+  /// - "unnecessary": すべての種類について，すでに尋ねた
+  /// - "shouldRequest": まだ尋ねていない種類がある（未接続，または許可がリセットされた）
+  /// - "unknown": 判定できない
+  private func authorizationRequestStatus(completion: @escaping (String) -> Void) {
+    guard HKHealthStore.isHealthDataAvailable() else {
+      completion("unknown")
+      return
+    }
+    healthStore.getRequestStatusForAuthorization(toShare: [], read: readTypes) { status, error in
+      if error != nil {
+        completion("unknown")
+        return
+      }
+      switch status {
+      case .unnecessary:
+        completion("unnecessary")
+      case .shouldRequest:
+        completion("shouldRequest")
+      default:
+        completion("unknown")
+      }
+    }
+  }
+
+  /// まだ許可を尋ねていない種類があれば，許可ダイアログを出してから [then] を実行する
+  private func ensureAuthorization(then: @escaping () -> Void) {
+    authorizationRequestStatus { [weak self] status in
+      guard let self = self else { return }
+      guard status == "shouldRequest" else {
+        then()
+        return
+      }
+      self.healthStore.requestAuthorization(toShare: nil, read: self.readTypes) { _, _ in
+        then()
       }
     }
   }

@@ -42,4 +42,16 @@ void main() {
       expect(decoded.single['longitude'], closeTo(139.98765, 1e-9));
     });
   });
+
+  group('encodeIntDeltas / decodeIntDeltas', () {
+    test('エンコード→デコードで元の整数の列に戻る（減る値・大きな値を含む）', () {
+      final values = [0, 5000, 10012, 9000, 3600000, 3600001, -42];
+      expect(decodeIntDeltas(encodeIntDeltas(values)), values);
+    });
+
+    test('空のリストは空文字列になる', () {
+      expect(encodeIntDeltas([]), '');
+      expect(decodeIntDeltas(''), isEmpty);
+    });
+  });
 }
