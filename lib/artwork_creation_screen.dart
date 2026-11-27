@@ -1,10 +1,9 @@
-import 'dart:convert';
 import 'dart:typed_data';
 import 'dart:ui';
 import 'dart:math' as math;
 import 'dart:async';
+import 'package:cloud_firestore/cloud_firestore.dart' show Timestamp;
 import 'package:flutter/rendering.dart';
-import 'package:path_provider/path_provider.dart';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
@@ -13,14 +12,13 @@ import 'package:intl/intl.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:tutorial_coach_mark/tutorial_coach_mark.dart';
+import 'artwork.dart';
 import 'artwork_home_view.dart';
-import 'auth_service.dart';
+import 'artwork_store.dart';
 import 'canvas_scale_widgets.dart';
-import 'database_helper.dart';
 import 'draft_list_screen.dart';
 import 'draft_store.dart';
 import 'polyline_painter.dart';
-import 'firestore_service.dart';
 import 'route_generation_screen.dart';
 import 'route_service.dart';
 import 'trajectory.dart';
@@ -56,9 +54,6 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
   final GlobalKey _scaleBarKey = GlobalKey();
   final GlobalKey _menuButtonKey = GlobalKey();
   Set<String> temporarilyUsedGroupIds = {}; // キャンバスに配置中の軌跡のgroupId
-  final DatabaseHelper _dbHelper = DatabaseHelper();
-  final FirestoreService _firestoreService = FirestoreService();
-  final AuthService _authService = AuthService();
   String? _currentDraftId; // いま開いている下書きの ID（新規の制作では null）
   // 開いた下書きの下絵がまだ表示できていない（取得中・取得失敗）ときの、その下書き。
   // この間に上書き保存しても、保存済みの下絵を消さないようにする
@@ -103,7 +98,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
   // 軌跡リスト用のデータ（画面下部に常時表示）
   // 手持ちの軌跡（アプリで記録したもの + 取り込んだもの）。新しい順
   List<Trajectory> _trajectories = [];
-  // 完成作品に使われている軌跡（端末内の使用済みの表から読む）
+  // 完成作品に使われている軌跡（作品の strokes から求める）
   Set<String> _artworkUsedGroupIds = {};
   // 下書き（いま開いているものを除く）に使われている軌跡。下書きの中身から求める
   Set<String> _draftUsedGroupIds = {};
@@ -140,34 +135,48 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
     _refreshDraftUsage();
   }
 
-  /// 手持ちの軌跡の署名 → groupId（下書きの軌跡を照合するための索引）
-  Map<String, String> _groupIdBySignature() {
-    final index = <String, String>{};
-    for (final trajectory in _trajectories) {
-      final signature = TrajectoryUsage.signatureOfPositions(trajectory.points);
-      if (signature != null) index[signature] = trajectory.id;
-    }
-    return index;
-  }
+  /// 軌跡の ID → 軌跡（下書きを開くときに、ストロークの座標を引く）
+  Map<String, Trajectory> get _trajectoriesById =>
+      {for (final trajectory in _trajectories) trajectory.id: trajectory};
 
   /// 下書きに使われている軌跡を求め直す
   ///
   /// 軌跡の使用は一度きりのため、下書きに使った軌跡は軌跡リストに出さない。
-  /// 使用済みの表には書き込まず、いま存在する下書きの中身から毎回求めるので、
+  /// 使用済みの記録は持たず、いま存在する下書きの strokes から毎回求めるので、
   /// 下書きを削除したり、下書きから軌跡を外して保存し直したりすれば、
   /// その軌跡は自動的に軌跡リストへ戻る。
   /// 開いている下書きの軌跡は、キャンバス上の配置（一時使用中）として扱う
   void _refreshDraftUsage() {
     final drafts = _drafts;
-    if (!mounted || drafts == null || _isTrajectoryListLoading) return;
+    if (!mounted || drafts == null) return;
 
-    final otherDrafts =
-        drafts.where((draft) => draft['draftId'] != _currentDraftId);
-    final used =
-        TrajectoryUsage.usedGroupIds(otherDrafts, _groupIdBySignature());
+    final used = TrajectoryUsage.usedTrajectoryIds([
+      for (final draft in drafts)
+        if (draft['draftId'] != _currentDraftId)
+          Stroke.listFrom(draft['strokes']),
+    ]);
     setState(() {
       _draftUsedGroupIds = used;
     });
+  }
+
+  /// キャンバス上の軌跡が参照する軌跡の ID
+  ///
+  /// 軌跡リストから置いた軌跡は ID を持っている。持っていない・保存されていない
+  /// 場合（通常は起きない）は、座標から ID を作って軌跡を保存し、参照できるようにする
+  Future<String> _trajectoryIdOf(TransformablePolyline item) async {
+    final id = item.groupId ?? generateGroupId(item.polyline);
+    item.groupId = id;
+    if (await TrajectoryStore.get(id) == null) {
+      await TrajectoryStore.add(Trajectory(
+        id: id,
+        source: TrajectorySource.gps,
+        points: item.polyline,
+        distanceKm: trajectoryLengthKm(item.polyline),
+        steps: 0,
+      ));
+    }
+    return id;
   }
 
   /// 制作ホームで下書きを削除する
@@ -367,14 +376,13 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
 
   /// 軌跡リストに出す手持ちの軌跡と、完成作品に使われている軌跡を読み込む
   ///
-  /// どちらも端末内のデータから読み、サーバーには問い合わせない
-  /// （軌跡は起動時に TrajectoryStore.sync で同期済み。使用済みの表は、起動時と
-  /// 作品の保存・削除のときに作品の内容と合わせている）
+  /// どちらも起動時にサーバーから読み込んだもの（TrajectoryStore・ArtworkStore）を使い、
+  /// サーバーには問い合わせない
   Future<void> _loadTrajectories() async {
     try {
       final trajectories = await TrajectoryStore.loadAll();
-      final artworkUsedGroupIds =
-          (await _dbHelper.getUsedTrajectories()).toSet();
+      final artworkUsedGroupIds = TrajectoryUsage.usedTrajectoryIds(
+          (await ArtworkStore.loadAll()).map((artwork) => artwork.strokes));
 
       print("📊 軌跡リスト用データ読み込み完了: 軌跡 ${trajectories.length}件, "
           "作品に使用済み ${artworkUsedGroupIds.length}件");
@@ -448,6 +456,10 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
       return;
     }
 
+    // 作品名を入力したキーボードが閉じきってから、撮影・計測する
+    await _waitForKeyboardToClose();
+    if (!mounted) return;
+
     // ローディングインジケーターを表示
     showDialog(
       context: context,
@@ -489,24 +501,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
         });
       }
 
-      final userId = _authService.userId!;
-      final directory = await getApplicationDocumentsDirectory();
-      final artworksDirectory =
-          Directory('${directory.path}/artworks/$userId');
-      final canvasDirectory =
-          Directory('${directory.path}/canvas_states/$userId');
-
-      if (!(await artworksDirectory.exists())) {
-        await artworksDirectory.create(recursive: true);
-      }
-      if (!(await canvasDirectory.exists())) {
-        await canvasDirectory.create(recursive: true);
-      }
-
-      String timestamp = DateTime.now().millisecondsSinceEpoch.toString();
-      String artworkId = 'artwork_$timestamp'; // ユニークなIDを作成
-      File imgFile = File('${artworksDirectory.path}/$artworkId.png');
-      File canvasFile = File('${canvasDirectory.path}/canvas_$timestamp.json');
+      final artworkId = 'artwork_${DateTime.now().millisecondsSinceEpoch}';
 
       // キャンバスのサイズを取得
       final canvasSize = _boundaryKey.currentContext!.size!;
@@ -514,6 +509,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
       if (!mounted) return;
 
       // 実際のスクリーンサイズ（AppBarを除く）を取得
+      // （作品詳細画面は、この大きさを基準にストロークの位置を合わせる）
       final mediaQuery = MediaQuery.of(context);
       final screenHeight = mediaQuery.size.height -
           mediaQuery.padding.top -
@@ -524,142 +520,43 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
       print('保存時のキャンバスサイズ: ${canvasSize.width} x ${canvasSize.height}');
       print('保存時の実際の画面サイズ: $screenWidth x $screenHeight');
 
-      // 軌跡の数、総距離、総歩数を計算
-      int trajectoryCount = selectedTrajectories.length;
+      // ストローク（軌跡への参照）と、総距離・総歩数
+      final strokes = <Stroke>[];
       double totalDistance = 0.0;
       int totalSteps = 0;
-      List<Map<String, dynamic>> trajectoryDetailsCache = [];
-
-      for (var item in selectedTrajectories) {
-        // 軌跡リストから配置したときの groupId（軌跡の ID）
-        final groupId = item.groupId ?? generateGroupId(item.polyline);
-        final trajectory = await TrajectoryStore.get(groupId);
-        if (trajectory == null) {
-          print('⚠️ 軌跡が見つかりません: groupId="$groupId"');
-        }
-        final Map<String, dynamic>? trajectoryDetails = trajectory == null
-            ? null
-            : {
-                'distance': trajectory.distanceKm,
-                'steps': trajectory.steps,
-                'date': trajectory.startedAt.toUtc().toIso8601String(),
-              };
-
+      for (final item in selectedTrajectories) {
+        final trajectoryId = await _trajectoryIdOf(item);
+        final trajectory = await TrajectoryStore.get(trajectoryId);
         totalDistance += trajectory?.distanceKm ?? 0.0;
         totalSteps += trajectory?.steps ?? 0;
-        trajectoryDetailsCache.add({
-          'item': item,
-          'details': trajectoryDetails,
-          'groupId': groupId,
-        });
+        strokes.add(Stroke(
+          trajectoryId: trajectoryId,
+          x: item.position.dx,
+          y: item.position.dy,
+          scale: item.scale,
+          rotation: item.rotation,
+          placedAt: item.placedAt,
+        ));
+        print('軌跡 $trajectoryId: 位置 (${item.position.dx}, ${item.position.dy}), '
+            '回転 ${item.rotation}, スケール ${item.scale}');
       }
 
-      // 保存時のキャンバス状態（詳細メタデータ付き）
-      final canvasState = {
-        'canvasWidth': screenWidth, // 実際の画面幅を保存
-        'canvasHeight': screenHeight, // 実際の画面高さを保存（AppBarを除く）
-        'actualCanvasSize': {
-          'width': canvasSize.width,
-          'height': canvasSize.height,
-        },
-        'trajectories': trajectoryDetailsCache.map((cached) {
-          final item = cached['item'] as TransformablePolyline;
-          final trajectoryDetails = cached['details'];
-          final groupId = cached['groupId'];
-
-          // 軌跡の相対位置を計算（0〜1の範囲に正規化）
-          double relativeX = item.position.dx / screenWidth;
-          double relativeY = item.position.dy / screenHeight;
-
-          // 軌跡の地理的範囲を計算
-          double minLat = item.polyline.map((p) => p.latitude).reduce(math.min);
-          double maxLat = item.polyline.map((p) => p.latitude).reduce(math.max);
-          double minLng =
-              item.polyline.map((p) => p.longitude).reduce(math.min);
-          double maxLng =
-              item.polyline.map((p) => p.longitude).reduce(math.max);
-
-          print('軌跡の絶対位置: (${item.position.dx}, ${item.position.dy})');
-          print('軌跡の相対位置: ($relativeX, $relativeY)');
-          print('軌跡の回転角度: ${item.rotation}');
-          print('軌跡のスケール: ${item.scale}');
-          print('軌跡の地理的範囲: lat($minLat, $maxLat), lng($minLng, $maxLng)');
-
-          return {
-            'positions': item.polyline.map((p) {
-              return {
-                'latitude': p.latitude,
-                'longitude': p.longitude,
-                'timestamp': p.timestamp.toIso8601String(),
-              };
-            }).toList(),
-            'position': {
-              'dx': relativeX,
-              'dy': relativeY,
-              'absoluteX': item.position.dx,
-              'absoluteY': item.position.dy,
-            },
-            'scale': item.scale,
-            'rotation': item.rotation,
-            // スライドショーの「配置順」用（作品ファイル内の並びはレイヤー順）
-            'placedAt': item.placedAt?.toIso8601String(),
-            'geoBounds': {
-              'minLat': minLat,
-              'maxLat': maxLat,
-              'minLng': minLng,
-              'maxLng': maxLng,
-            },
-            'details': {
-              'groupId': groupId,
-              'distance': trajectoryDetails?['distance'] ?? 0.0,
-              'steps': trajectoryDetails?['steps'] ?? 0,
-              'date': trajectoryDetails?['date'] ?? '',
-            },
-          };
-        }).toList(),
-        'meta': {
-          'trajectoryCount': trajectoryCount,
-          'totalDistance': totalDistance,
-          'totalSteps': totalSteps,
-          'artworkName': artworkName, // 作品名
-          'artworkId': artworkId, // 作品のユニークID
-          'createdAt': DateTime.now().toIso8601String(),
-          // 制作時のキャンバススケール（スケールバーが表す距離、メートル）
-          'scaleBarDistance': _scaleBarDistanceMeters,
-          'version': '2.1', // メタデータのバージョン（2.1: scaleBarDistance を追加）
-        },
-      };
-
-      await canvasFile.writeAsString(jsonEncode(canvasState));
-      await imgFile.writeAsBytes(pngBytes);
-
-      // Firestoreに作品を保存 - ここでキャンバス状態を明示的に展開してセット
-      await _firestoreService.saveArtwork(
-        artworkId: artworkId,
-        canvasState: canvasState,
-        imageData: pngBytes,
+      final now = DateTime.now();
+      final artwork = Artwork(
+        id: artworkId,
+        name: artworkName,
+        createdAt: now,
+        updatedAt: now,
+        canvasWidth: screenWidth,
+        canvasHeight: screenHeight,
+        scaleBarDistance: _scaleBarDistanceMeters,
+        strokes: strokes,
+        totalDistanceKm: totalDistance,
+        totalSteps: totalSteps,
       );
+      await ArtworkStore.save(artwork, pngBytes);
 
-      print(
-          "Firestoreに保存した作品データ: artworkId=$artworkId, canvasStateのキー=${canvasState.keys.toList()}");
-
-      // 使用済みの軌跡を作品のサブコレクションに保存
-      print(
-          "📌 使用済みとしてマークする軌跡: ${temporarilyUsedGroupIds.length}件 - $temporarilyUsedGroupIds");
-
-      // 作品ごとのサブコレクションに保存
-      await _firestoreService.saveUsedTrajectoriesForArtwork(
-        artworkId,
-        temporarilyUsedGroupIds.toList(),
-      );
-
-      // ローカルDBにも保存（オフライン時の参照用）
-      for (final groupId in temporarilyUsedGroupIds) {
-        print('🔹 軌跡をマーク済みにしました: $groupId');
-        await _dbHelper.markTrajectoryAsUsedLocally(groupId);
-      }
-      print("✅ 全軌跡のマーク処理完了");
-
+      // 作品に使った軌跡は、作品の strokes から使用済みと判定される
       temporarilyUsedGroupIds.clear();
 
       // 作品になった下書きを削除する（失敗しても作品の保存は成功として扱う）
@@ -682,8 +579,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('アートワークが保存されました!')),
         );
-        Navigator.pop(
-            context, {'imageFile': imgFile, 'canvasFile': canvasFile});
+        Navigator.pop(context, artwork);
       }
     } catch (e) {
       // ローディングを閉じる
@@ -700,6 +596,23 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
   }
 
   // 作品名を入力するダイアログを表示
+  /// 画面のキーボードが閉じきるのを待つ（長くても 1 秒で打ち切る）
+  ///
+  /// 作品名の入力直後はキーボードが閉じる途中で、キャンバスが縮み、画面下部の余白も
+  /// 0 になっている。この間に撮影・計測すると、作品画像の下が切れ、キャンバスの
+  /// 大きさも違う値で保存される（作品詳細でストロークの位置がずれる）
+  Future<void> _waitForKeyboardToClose() async {
+    FocusManager.instance.primaryFocus?.unfocus();
+    final deadline = DateTime.now().add(const Duration(seconds: 1));
+    while (mounted &&
+        MediaQuery.viewInsetsOf(context).bottom > 0 &&
+        DateTime.now().isBefore(deadline)) {
+      await Future.delayed(const Duration(milliseconds: 50));
+    }
+    // キャンバスが元の大きさに戻った後の描画を待つ
+    await WidgetsBinding.instance.endOfFrame;
+  }
+
   Future<String> _promptForArtworkName() async {
     String artworkName = '';
     await showDialog(
@@ -762,31 +675,24 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
   Future<bool> _saveDraft({String? draftId}) async {
     try {
       final canvasSize = _boundaryKey.currentContext!.size!;
+      // 軌跡は参照（軌跡の ID）で持ち、位置はキャンバス上の px で持つ
+      final strokes = <Map<String, dynamic>>[];
+      for (final item in selectedTrajectories) {
+        strokes.add(Stroke(
+          trajectoryId: await _trajectoryIdOf(item),
+          x: item.position.dx,
+          y: item.position.dy,
+          scale: item.scale,
+          rotation: item.rotation,
+          placedAt: item.placedAt,
+        ).toMap());
+      }
       final draftState = <String, dynamic>{
         'canvasWidth': canvasSize.width,
         'canvasHeight': canvasSize.height,
         'scaleBarDistance': _scaleBarDistanceMeters,
-        'trajectories': selectedTrajectories.map((item) {
-          return {
-            'positions': item.polyline.map((p) {
-              return {
-                'latitude': p.latitude,
-                'longitude': p.longitude,
-                'timestamp': p.timestamp.toIso8601String(),
-              };
-            }).toList(),
-            'position': {
-              'dx': item.position.dx / canvasSize.width,
-              'dy': item.position.dy / canvasSize.height,
-            },
-            'scale': item.scale,
-            'rotation': item.rotation,
-            // 下書きに使った軌跡を特定できるよう、groupId も保存する
-            'groupId': item.groupId,
-            'placedAt': item.placedAt?.toIso8601String(),
-          };
-        }).toList(),
-        'timestamp': DateTime.now().toIso8601String(),
+        'strokes': strokes,
+        'updatedAt': Timestamp.now(),
       };
 
       // ガイド画像の表示状態を保存（画像そのものは DraftStore.save が保存する）
@@ -872,7 +778,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
     final canvasHeight = draftData['canvasHeight'];
 
     // 壊れていて読めなかった下書きは開かない
-    if (draftData['trajectories'] is! List ||
+    if (draftData['strokes'] is! List ||
         canvasWidth is! num ||
         canvasHeight is! num) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -898,43 +804,29 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
     }
 
     final wasChoosingScale = !_scaleDecided;
-    // groupId を保存していなかった頃の下書きは、手持ちの軌跡と照合して特定する
-    final groupIdBySignature = _groupIdBySignature();
+    // ストロークが参照する軌跡の座標を引く（見つからない軌跡は置けない）
+    final trajectoriesById = _trajectoriesById;
+    final strokes = Stroke.listFrom(draftData['strokes']);
+    final missingCount = strokes
+        .where((stroke) => !trajectoriesById.containsKey(stroke.trajectoryId))
+        .length;
 
     setState(() {
       _scaleBarDistanceMeters = draftScale;
       _scaleDecided = true;
 
-      selectedTrajectories =
-          (draftData['trajectories'] as List<dynamic>).map((item) {
-        final positions = (item['positions'] as List).map((p) {
-          return Position(
-            latitude: p['latitude'],
-            longitude: p['longitude'],
-            timestamp: DateTime.tryParse(p['timestamp']) ?? DateTime.now(),
-            accuracy: 0.0,
-            altitude: 0.0,
-            heading: 0.0,
-            speed: 0.0,
-            speedAccuracy: 0.0,
-            altitudeAccuracy: 0.0,
-            headingAccuracy: 0.0,
-          );
-        }).toList();
-
-        return TransformablePolyline(
-          positions,
-          Offset(
-            (item['position']['dx'] ?? 0) * canvasWidth,
-            (item['position']['dy'] ?? 0) * canvasHeight,
-          ),
-          groupId: TrajectoryUsage.groupIdOfDraftTrajectory(
-              item as Map, groupIdBySignature),
-          placedAt: DateTime.tryParse(item['placedAt'] as String? ?? ''),
-        )
-          ..rotation = item['rotation'] ?? 0.0
-          ..scale = item['scale'] ?? 1.0;
-      }).toList();
+      selectedTrajectories = [
+        for (final stroke in strokes)
+          if (trajectoriesById[stroke.trajectoryId] case final trajectory?)
+            TransformablePolyline(
+              trajectory.points,
+              Offset(stroke.x, stroke.y),
+              groupId: trajectory.id,
+              placedAt: stroke.placedAt,
+            )
+              ..rotation = stroke.rotation
+              ..scale = stroke.scale,
+      ];
 
       // 上書き保存できるよう、開いた下書きの ID を覚えておく
       _currentDraftId = draftData['draftId'] as String?;
@@ -956,6 +848,12 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
 
     // 開いた下書きの軌跡はキャンバス上の配置として扱うので、求め直す
     _refreshDraftUsage();
+
+    if (missingCount > 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('軌跡が見つからないため、$missingCount本を置けませんでした')),
+      );
+    }
 
     if (wasChoosingScale) _showCoachMarkAfterLayout();
 
@@ -2503,6 +2401,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
         trajectories: trajectories,
         canvasSize: canvasSize,
         drafts: _drafts,
+        pointsOf: (trajectoryId) => _trajectoriesById[trajectoryId]?.points,
         onCreate: _onScaleDecided,
         onOpenDraft: _loadDraft,
         onDeleteDraft: _deleteDraftFromHome,

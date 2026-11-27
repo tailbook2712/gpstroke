@@ -1,8 +1,10 @@
 import 'dart:math' as math;
 
+import 'package:cloud_firestore/cloud_firestore.dart' show Timestamp;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:walk_tracker_app/artwork.dart';
 import 'package:walk_tracker_app/artwork_home_view.dart';
 import 'package:walk_tracker_app/draft_store.dart';
 import 'package:walk_tracker_app/polyline_painter.dart';
@@ -35,30 +37,34 @@ List<Position> _eastward(double meters) {
   ];
 }
 
-/// 途中保存のファイルと同じ形の下書き
+/// 下書きのストロークが参照する軌跡（サムネイル用）
+final _draftTrajectory = [
+  _position(41.8418, 140.7669),
+  _position(41.8428, 140.7689),
+  _position(41.8418, 140.7709),
+];
+
+/// Firestore に保存される形の下書き（軌跡は ID で参照する）
 Map<String, dynamic> _draft({
   required String timestamp,
   double? scaleBarDistance,
   int trajectoryCount = 1,
 }) {
   return {
-    'filePath': '/drafts/draft_$timestamp.json',
-    'timestamp': timestamp,
+    'draftId': 'draft_$timestamp',
+    'updatedAt': Timestamp.fromDate(DateTime.parse(timestamp)),
     'canvasWidth': 390.0,
     'canvasHeight': 640.0,
     if (scaleBarDistance != null) 'scaleBarDistance': scaleBarDistance,
-    'trajectories': [
+    'strokes': [
       for (var i = 0; i < trajectoryCount; i++)
-        {
-          'positions': [
-            {'latitude': 41.8418, 'longitude': 140.7669},
-            {'latitude': 41.8428, 'longitude': 140.7689},
-            {'latitude': 41.8418, 'longitude': 140.7709},
-          ],
-          'position': {'dx': 0.3 + 0.2 * i, 'dy': 0.4},
-          'scale': 1.5,
-          'rotation': 0.3,
-        },
+        Stroke(
+          trajectoryId: 'walk-$i',
+          x: (0.3 + 0.2 * i) * 390.0,
+          y: 0.4 * 640.0,
+          scale: 1.5,
+          rotation: 0.3,
+        ).toMap(),
     ],
   };
 }
@@ -86,6 +92,8 @@ Future<void> _pumpHome(
         onCreate: onCreate ?? (_) {},
         onOpenDraft: onOpenDraft ?? (_) {},
         onDeleteDraft: onDeleteDraft,
+        pointsOf: (trajectoryId) =>
+            trajectoryId.startsWith('walk-') ? _draftTrajectory : null,
       ),
     ),
   ));
@@ -297,114 +305,23 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  group('TrajectoryUsage 下書き・作品に使われている軌跡の特定', () {
-    final walk = _eastward(1000);
-    final otherWalk = _eastward(700);
-
-    List<Map<String, dynamic>> points(List<Position> positions) => [
-          for (final p in positions)
-            {'latitude': p.latitude, 'longitude': p.longitude},
-        ];
-
-    /// 下書きファイルに保存される形の軌跡
-    Map<String, dynamic> inDraft(List<Position> positions, {String? groupId}) =>
-        {
-          'positions': points(positions),
-          if (groupId != null) 'groupId': groupId,
-        };
-
-    /// 作品のキャンバスデータに保存される形の軌跡
-    Map<String, dynamic> inArtwork(List<Position> positions,
-            {String? groupId}) =>
-        {
-          'positions': points(positions),
-          if (groupId != null) 'details': {'groupId': groupId},
-        };
-
-    final index = {
-      TrajectoryUsage.signatureOfPositions(walk)!: 'g-walk',
-      TrajectoryUsage.signatureOfPositions(otherWalk)!: 'g-other',
-    };
-
-    test('下書きに groupId が保存されていれば、その値で復元する', () {
-      expect(
-        TrajectoryUsage.groupIdOfDraftTrajectory(
-            inDraft(walk, groupId: 'g1'), {}),
-        'g1',
-      );
-    });
-
-    test('groupId のない古い下書きは、手持ちの軌跡と座標を照合して特定する', () {
-      expect(TrajectoryUsage.groupIdOfDraftTrajectory(inDraft(walk), index),
-          'g-walk');
-      // 手持ちにない軌跡（削除済みなど）は特定できない
-      expect(
-          TrajectoryUsage.groupIdOfDraftTrajectory(
-              inDraft(_eastward(333)), index),
-          isNull);
-    });
-
-    test('下書きと作品のどちらの形式からも、使われている軌跡を集める', () {
-      final used = TrajectoryUsage.usedGroupIds([
-        {
-          'trajectories': [inDraft(otherWalk, groupId: 'g-other')],
-        },
-        // 記録ができる前の古い作品（groupId を持たない）
-        {
-          'trajectories': [inArtwork(walk)],
-        },
-        {
-          'trajectories': [inArtwork(_eastward(333), groupId: 'g-333')],
-        },
-        // 中身が読めなかったデータ
-        {'filePath': '/drafts/broken.json'},
-      ], index);
-      expect(used, {'g-other', 'g-walk', 'g-333'});
-    });
-
-    test('保存された groupId が実際の ID と違っていても、座標の照合で拾う', () {
-      expect(
-        TrajectoryUsage.groupIdsOfSavedTrajectory(
-            inArtwork(walk, groupId: 'generated-hash'), index),
-        {'generated-hash', 'g-walk'},
-      );
-    });
-  });
-
-  group('TrajectoryUsage.reconcile 使用済みの表を作品の内容に合わせ直す', () {
-    test('サーバーから取得できたときは置き換える（削除された作品の軌跡は戻る）', () {
-      expect(
-        TrajectoryUsage.reconcile(
-          current: {'in-artwork', 'deleted-artwork', 'wrongly-marked'},
-          usedByArtworks: {'in-artwork', 'new-artwork'},
-          confirmedByServer: true,
-        ),
-        {'in-artwork', 'new-artwork'},
-      );
-    });
-
-    test('キャッシュしか読めなかったときは、足すだけで何も外さない', () {
-      expect(
-        TrajectoryUsage.reconcile(
-          current: {'in-artwork', 'maybe-still-used'},
-          usedByArtworks: {'new-artwork'},
-          confirmedByServer: false,
-        ),
-        {'in-artwork', 'maybe-still-used', 'new-artwork'},
-      );
-    });
+  test('TrajectoryUsage は作品・下書きの strokes から使われている軌跡を集める', () {
+    const stroke = Stroke(trajectoryId: 'a', x: 0, y: 0);
+    final used = TrajectoryUsage.usedTrajectoryIds([
+      [stroke, const Stroke(trajectoryId: 'b', x: 1, y: 1)],
+      const [],
+      [stroke],
+    ]);
+    expect(used, {'a', 'b'});
   });
 
   test('DraftStore.newestFirst は新しい順に並べ、日時不明を末尾に置く', () {
     final sorted = DraftStore.newestFirst([
-      {'timestamp': '2026-10-01T09:05:00.000'},
-      {'timestamp': '不明な日時'},
-      {'timestamp': '2026-11-15T18:30:00.000'},
+      // 以前の形式（文字列の timestamp）も読める
+      {'id': 'old', 'timestamp': '2026-10-01T09:05:00.000'},
+      {'id': 'unknown', 'timestamp': '不明な日時'},
+      {'id': 'new', 'updatedAt': Timestamp.fromDate(DateTime(2026, 11, 15, 18, 30))},
     ]);
-    expect(sorted.map((d) => d['timestamp']), [
-      '2026-11-15T18:30:00.000',
-      '2026-10-01T09:05:00.000',
-      '不明な日時',
-    ]);
+    expect(sorted.map((d) => d['id']), ['new', 'old', 'unknown']);
   });
 }

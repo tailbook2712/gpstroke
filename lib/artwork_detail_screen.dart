@@ -1,5 +1,3 @@
-import 'dart:convert';
-import 'dart:io';
 import 'dart:math' as math;
 import 'package:flutter/foundation.dart' show defaultTargetPlatform, TargetPlatform;
 import 'package:flutter/material.dart';
@@ -9,6 +7,7 @@ import 'package:cloud_firestore/cloud_firestore.dart' show FirebaseException;
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'artwork.dart';
 import 'artwork_creation_screen.dart';
 import 'artwork_share_service.dart';
 import 'trajectory.dart';
@@ -18,9 +17,9 @@ import 'utils/utils.dart';
 import 'polyline_painter.dart';
 
 class ArtworkDetailScreen extends StatefulWidget {
-  final File canvasFile;
+  final Artwork artwork;
 
-  ArtworkDetailScreen({required this.canvasFile});
+  ArtworkDetailScreen({required this.artwork});
 
   @override
   _ArtworkDetailScreenState createState() => _ArtworkDetailScreenState();
@@ -257,8 +256,17 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
   // キャンバスの状態の復元（完全メタデータ対応版）
   Future<void> _loadCanvasState() async {
     try {
-      String jsonString = await widget.canvasFile.readAsString();
-      Map<String, dynamic> data = jsonDecode(jsonString);
+      // 作品が参照している軌跡を読み、以前の作品ファイルと同じ形のキャンバスの状態にする
+      final trajectories = <String, Trajectory>{};
+      for (final stroke in widget.artwork.strokes) {
+        final trajectory = await TrajectoryStore.get(stroke.trajectoryId);
+        if (trajectory != null) {
+          trajectories[trajectory.id] = trajectory;
+        } else {
+          print("⚠️ 作品の軌跡が見つかりません: ${stroke.trajectoryId}");
+        }
+      }
+      Map<String, dynamic> data = widget.artwork.toCanvasData(trajectories);
 
       String artworkName = data['meta']['artworkName'] ?? '作品の詳細';
 
@@ -474,7 +482,7 @@ _currentTrajectoryIndex = -1;
     setState(() => _isSharing = true);
 
     try {
-      final result = await ArtworkShareService().shareArtwork(widget.canvasFile);
+      final result = await ArtworkShareService().shareArtwork(widget.artwork);
       if (!mounted) return;
 
       // iPad では共有シートの表示位置が必要

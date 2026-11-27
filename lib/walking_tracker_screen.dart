@@ -1,19 +1,17 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:flutter_background/flutter_background.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:walk_tracker_app/artwork_list_screen.dart';
 import 'package:walk_tracker_app/artwork_creation_screen.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:tutorial_coach_mark/tutorial_coach_mark.dart';
-import 'database_helper.dart';
-import 'firestore_service.dart';
+import 'artwork_store.dart';
 import 'auth_service.dart';
+import 'draft_store.dart';
 import 'garmin_import_screen.dart';
 import 'saved_route_list_screen.dart';
 import 'trajectory.dart';
@@ -93,12 +91,9 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen>
   static const double _distanceNotificationIntervalKm = 0.1; // 100mごとに通知を更新
   static const int _bufferFlushInterval = 5; // 5点ごとにバッファを永続化
 
-  late DatabaseHelper _dbHelper;
-  late FirestoreService _firestoreService;
   final AuthService _authService = AuthService();
   StreamSubscription<Position>? _positionStream;
   StreamSubscription<StepCount>? _stepStream;
-  List<Map<String, dynamic>> savedArtworks = []; // スクリーンショットとキャンバス状態のリスト
 
   GoogleMapController? _mapController;
 
@@ -109,8 +104,6 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen>
   @override
   void initState() {
     super.initState();
-    _dbHelper = DatabaseHelper();
-    _firestoreService = FirestoreService();
 
     // 初期ルートが渡された場合はルート追従モードで開始
     if (widget.initialRoutePath != null &&
@@ -123,7 +116,6 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen>
     WidgetsBinding.instance.addObserver(this);
 
     _initializeScreen(); // 非同期初期化処理をまとめたメソッド
-    _loadSavedArtworks();
 
     // コーチマーク表示後に位置情報の権限リクエストを行う
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -273,158 +265,12 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen>
     // 画面では端末内のキャッシュから読むため、サーバーから読むのはここだけ（#131）
     await TrajectoryStore.sync();
     await TrajectoryStore.migrateLegacy(); // 以前の形式の軌跡を移す（端末ごとに 1 回）
-    await _syncUsedTrajectories(); // 使用済み軌跡情報を同期
-    await _restoreArtworksFromFirestore(); // Firestoreからアートワークを復元
+    // 作品・下書きは件数が少なく 1 件が小さいため、起動時にすべて読む
+    // （以前の形式のものは、読み込んだときに軌跡への参照に変換される）
+    await ArtworkStore.refresh();
+    await ArtworkStore.migrateLocalFiles(); // 端末内にだけある作品を移す（端末ごとに 1 回）
+    await DraftStore.refresh();
     await _checkUnfinishedRecording(); // バックグラウンド終了で未保存の記録がないか確認
-  }
-
-  Future<void> _syncUsedTrajectories() async {
-    // 端末内の作品も「存在する作品」として扱う
-    List<File> localCanvasFiles = [];
-    try {
-      final (_, canvasDirectory) = await _getUserArtworkDirectories();
-      if (await canvasDirectory.exists()) {
-        localCanvasFiles = canvasDirectory.listSync().whereType<File>().toList();
-      }
-    } catch (e) {
-      print("作品のキャンバスファイルの一覧取得エラー: $e");
-    }
-    await _dbHelper.syncUsedTrajectoriesFromFirestore(
-        localCanvasFiles: localCanvasFiles);
-  }
-
-  /// ユーザーIDでスコープされたアートワーク・キャンバスディレクトリを返す
-  Future<(Directory, Directory)> _getUserArtworkDirectories() async {
-    final userId = _authService.userId!;
-    final base = await getApplicationDocumentsDirectory();
-    final artworksDir = Directory('${base.path}/artworks/$userId');
-    final canvasDir = Directory('${base.path}/canvas_states/$userId');
-    return (artworksDir, canvasDir);
-  }
-
-  // Firestoreから保存されたアートワークを復元
-  Future<void> _restoreArtworksFromFirestore() async {
-    try {
-      final artworks = await _firestoreService.getAllArtworks();
-      if (artworks.isEmpty) {
-        print('復元可能なアートワークが見つかりませんでした');
-        return;
-      }
-
-      final (artworksDirectory, canvasDirectory) =
-          await _getUserArtworkDirectories();
-
-      if (!(await artworksDirectory.exists())) {
-        await artworksDirectory.create(recursive: true);
-      }
-      if (!(await canvasDirectory.exists())) {
-        await canvasDirectory.create(recursive: true);
-      }
-
-      int restoredCount = 0;
-      for (var artwork in artworks) {
-        try {
-          final artworkId = artwork['artworkId'] ?? '';
-          if (artworkId.isEmpty) {
-            print('アートワークIDが見つかりません。スキップします。');
-            continue;
-          }
-
-          final canvasState = artwork['canvasState'];
-          if (canvasState == null) {
-            print('キャンバス状態が見つかりません。スキップします: $artworkId');
-            continue;
-          }
-
-          // 画像データをBase64からデコード
-          if (artwork['imageData'] == null) {
-            print('画像データが見つかりません。スキップします: $artworkId');
-            continue;
-          }
-
-          Uint8List imageData = base64Decode(artwork['imageData']);
-
-          // ファイルに保存
-          File imgFile = File('${artworksDirectory.path}/$artworkId.png');
-
-          // タイムスタンプの取得（エラーハンドリングを追加）
-          String timestamp = '';
-          try {
-            if (artworkId.contains('_')) {
-              timestamp = artworkId.split('_').last;
-            } else {
-              // タイムスタンプを生成
-              timestamp = DateTime.now().millisecondsSinceEpoch.toString();
-            }
-          } catch (e) {
-            // タイムスタンプの取得に失敗した場合は現在時刻を使用
-            print('タイムスタンプの取得に失敗しました: $e');
-            timestamp = DateTime.now().millisecondsSinceEpoch.toString();
-          }
-
-          File canvasFile =
-              File('${canvasDirectory.path}/canvas_$timestamp.json');
-
-          // すでに存在する場合はスキップ
-          if (await imgFile.exists() && await canvasFile.exists()) {
-            print('アートワークはすでに存在します: $artworkId');
-            continue;
-          }
-
-          // ファイルに書き込み
-          await imgFile.writeAsBytes(imageData);
-          await canvasFile.writeAsString(jsonEncode(canvasState));
-
-          print('アートワークを復元しました: $artworkId');
-          restoredCount++;
-        } catch (e) {
-          print('アートワークの復元中にエラー: $e');
-        }
-      }
-
-      print('Firestoreからアートワークを復元しました: $restoredCount件');
-
-      // アートワークのリストを更新
-      await _loadSavedArtworks();
-    } catch (e) {
-      print('Firestoreからのアートワーク復元エラー: $e');
-    }
-  }
-
-  // 保存された作品をロード
-  Future<void> _loadSavedArtworks() async {
-    final (artworksDirectory, canvasDirectory) =
-        await _getUserArtworkDirectories();
-
-    // 両ディレクトリが存在しない場合は空リストのまま返す
-    if (!await artworksDirectory.exists() || !await canvasDirectory.exists()) {
-      savedArtworks = [];
-      return;
-    }
-
-    // スクリーンショットとキャンバス状態を対応付けてロード
-    final artworkFiles = artworksDirectory.listSync().whereType<File>();
-    final canvasFiles = canvasDirectory.listSync().whereType<File>();
-
-    savedArtworks = artworkFiles
-        .map((artworkFile) {
-          // 対応するキャンバス状態ファイルを取得
-          final timestamp = artworkFile.path.split('_').last.split('.').first;
-          final canvasFile = canvasFiles.firstWhere(
-            (file) => file.path.contains(timestamp),
-            orElse: () => File(''), // 見つからなければ空ファイル（スキップ）
-          );
-
-          if (canvasFile.existsSync()) {
-            return {
-              'imageFile': artworkFile,
-              'canvasFile': canvasFile,
-            };
-          }
-          return null; // キャンバスファイルがない場合スキップ
-        })
-        .whereType<Map<String, dynamic>>()
-        .toList();
   }
 
   /// 位置情報の許可を確認し、必要ならリクエストする。許可されていれば true。
@@ -865,23 +711,15 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen>
       return;
     }
 
-    // 作品が保存された場合のみFirestoreと同期してギャラリーを更新
-    if (result != null) {
-      await _syncUsedTrajectories();
-      await _loadSavedArtworks();
-    }
+    // 保存した作品は ArtworkStore に入るため、ギャラリーは開いたときに読み込む
   }
 
   // アートワークギャラリー画面に遷移
   Future<void> _navigatetoArtworkGalleryScreen() async {
-    await _loadSavedArtworks();
-
-    if (!mounted) return;
-
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (context) => ArtworkListScreen(savedArtworks: savedArtworks),
+        builder: (context) => ArtworkListScreen(),
       ),
     );
   }

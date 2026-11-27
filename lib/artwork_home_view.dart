@@ -4,7 +4,9 @@ import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:intl/intl.dart';
 
+import 'artwork.dart' show Stroke;
 import 'canvas_scale_widgets.dart';
+import 'draft_store.dart';
 import 'route_generation_screen.dart' show DraftCanvasOverlayPainter;
 import 'utils/canvas_scale.dart';
 
@@ -32,6 +34,9 @@ class ArtworkHomeView extends StatefulWidget {
   /// 下書きを削除するとき（null の場合は削除ボタンを出さない）
   final ValueChanged<Map<String, dynamic>>? onDeleteDraft;
 
+  /// 下書きのストロークが参照する軌跡の座標（サムネイルを描くため。見つからなければ null）
+  final List<Position>? Function(String trajectoryId)? pointsOf;
+
   const ArtworkHomeView({
     super.key,
     required this.trajectories,
@@ -40,6 +45,7 @@ class ArtworkHomeView extends StatefulWidget {
     required this.onCreate,
     required this.onOpenDraft,
     this.onDeleteDraft,
+    this.pointsOf,
   });
 
   @override
@@ -443,17 +449,13 @@ class _ArtworkHomeViewState extends State<ArtworkHomeView> {
   }
 
   String _formatSavedAt(Map<String, dynamic> draft) {
-    final savedAt = DateTime.tryParse('${draft['timestamp']}');
+    final savedAt = DraftStore.savedAtOf(draft);
     if (savedAt == null) return '日時不明';
     return DateFormat('yyyy/MM/dd HH:mm').format(savedAt);
   }
 
   Widget _buildDraftCard(Map<String, dynamic> draft) {
-    final trajectories = (draft['trajectories'] as List?)
-            ?.whereType<Map>()
-            .map((t) => Map<String, dynamic>.from(t))
-            .toList() ??
-        const <Map<String, dynamic>>[];
+    final strokes = Stroke.listFrom(draft['strokes']);
     // スケールを持たない古い下書きは、当時の初期値で開かれる
     final scale = (draft['scaleBarDistance'] as num?)?.toDouble() ??
         CanvasScale.defaultDistance;
@@ -480,7 +482,7 @@ class _ArtworkHomeViewState extends State<ArtworkHomeView> {
                     child: Padding(
                       padding: const EdgeInsets.fromLTRB(8, 8, 8, 0),
                       child: Center(
-                        child: _buildDraftThumbnail(draft, trajectories),
+                        child: _buildDraftThumbnail(draft, strokes),
                       ),
                     ),
                   ),
@@ -498,7 +500,7 @@ class _ArtworkHomeViewState extends State<ArtworkHomeView> {
                         ),
                         Text(
                           'スケール ${CanvasScale.format(scale)}・'
-                          '軌跡 ${trajectories.length}本',
+                          '軌跡 ${strokes.length}本',
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style:
@@ -538,13 +540,28 @@ class _ArtworkHomeViewState extends State<ArtworkHomeView> {
   /// 下書きのキャンバスを縮小して描く
   Widget _buildDraftThumbnail(
     Map<String, dynamic> draft,
-    List<Map<String, dynamic>> trajectories,
+    List<Stroke> strokes,
   ) {
     // 保存時のキャンバスの大きさ（なければ現在のキャンバスで代用）
     final savedWidth = (draft['canvasWidth'] as num?)?.toDouble() ?? 0.0;
     final savedHeight = (draft['canvasHeight'] as num?)?.toDouble() ?? 0.0;
     final width = savedWidth > 0 ? savedWidth : widget.canvasSize.width;
     final height = savedHeight > 0 ? savedHeight : _canvasHeight;
+
+    // ストロークが参照する軌跡の座標を引き、キャンバス上の位置を割合にして描く
+    final trajectories = <Map<String, dynamic>>[
+      for (final stroke in strokes)
+        if (widget.pointsOf?.call(stroke.trajectoryId) case final points?)
+          {
+            'positions': [
+              for (final p in points)
+                {'latitude': p.latitude, 'longitude': p.longitude},
+            ],
+            'position': {'dx': stroke.x / width, 'dy': stroke.y / height},
+            'scale': stroke.scale,
+            'rotation': stroke.rotation,
+          },
+    ];
 
     return LayoutBuilder(builder: (context, constraints) {
       final k = math.min(

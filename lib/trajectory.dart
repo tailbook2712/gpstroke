@@ -5,6 +5,16 @@ import 'package:geolocator/geolocator.dart';
 
 import 'utils/polyline_codec.dart';
 
+/// 座標列の長さ（km）
+double trajectoryLengthKm(List<Position> points) {
+  var meters = 0.0;
+  for (var i = 1; i < points.length; i++) {
+    meters += Geolocator.distanceBetween(points[i - 1].latitude,
+        points[i - 1].longitude, points[i].latitude, points[i].longitude);
+  }
+  return meters / 1000.0;
+}
+
 /// 軌跡の記録元
 enum TrajectorySource {
   /// アプリで記録した
