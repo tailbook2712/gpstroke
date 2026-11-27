@@ -8,7 +8,7 @@ import 'package:crypto/crypto.dart';
 import 'package:geolocator/geolocator.dart';
 
 import 'auth_service.dart';
-import 'database_helper.dart';
+import 'trajectory_store.dart';
 import 'utils/polyline_codec.dart';
 import 'utils/utils.dart';
 
@@ -33,16 +33,13 @@ class ArtworkShareService {
   /// 共有データのスキーマバージョン（閲覧ページ側と合わせる）
   static const int payloadVersion = 1;
 
-  final DatabaseHelper _dbHelper;
   final FirebaseFirestore _db;
   final AuthService _authService;
 
   ArtworkShareService({
-    DatabaseHelper? dbHelper,
     FirebaseFirestore? firestore,
     AuthService? authService,
-  })  : _dbHelper = dbHelper ?? DatabaseHelper(),
-        _db = firestore ?? FirebaseFirestore.instance,
+  })  : _db = firestore ?? FirebaseFirestore.instance,
         _authService = authService ?? AuthService();
 
   /// 共有 ID から閲覧ページの URL を組み立てる
@@ -186,16 +183,15 @@ class ArtworkShareService {
   }
 
   /// 作品ファイルの meta に記録されたストローク情報が不完全な場合に、
-  /// ローカル DB（通常軌跡 → Garmin 軌跡の順）から記録日時・歩数・距離を補完する
+  /// 保存されている軌跡から記録日時・歩数・距離を補完する
   Future<Map<String, dynamic>?> _lookupTrajectoryDetails(String groupId) async {
     try {
-      final record = await _dbHelper.getWalkingDataByGroupId(groupId) ??
-          await _dbHelper.getGarminActivityByGroupId(groupId);
-      if (record == null) return null;
+      final trajectory = await TrajectoryStore.get(groupId);
+      if (trajectory == null) return null;
       return {
-        'date': record['date'],
-        'steps': record['steps'],
-        'distance': record['distance'],
+        'date': trajectory.startedAt.toUtc().toIso8601String(),
+        'steps': trajectory.steps,
+        'distance': trajectory.distanceKm,
       };
     } catch (e) {
       print('❌ 共有用ストローク情報の取得に失敗: $groupId, $e');

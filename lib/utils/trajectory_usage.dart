@@ -11,12 +11,14 @@ class TrajectoryUsage {
   /// 軌跡の同一性を照合するための署名（点の数と、最初・中間・最後の点の座標）
   ///
   /// groupId を保存していなかった頃の下書き・作品の軌跡を、手持ちの軌跡と
-  /// 突き合わせるために使う
+  /// 突き合わせるために使う。
+  /// 手持ちの軌跡は緯度経度を小数 6 桁で保存している（Trajectory）ため、
+  /// 下書き・作品にコピーされている座標とそろうよう、6 桁に丸めて比べる
   static String? _signature(
       int length, List<double> Function(int index) latLonAt) {
     if (length == 0) return null;
     final points = [0, length ~/ 2, length - 1].map(latLonAt);
-    return '$length|${points.map((p) => '${p[0]},${p[1]}').join('|')}';
+    return '$length|${points.map((p) => '${p[0].toStringAsFixed(6)},${p[1].toStringAsFixed(6)}').join('|')}';
   }
 
   /// 手持ちの軌跡の署名

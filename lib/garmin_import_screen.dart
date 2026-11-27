@@ -4,9 +4,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:path/path.dart' as p;
 import 'activity_file_loader.dart';
 import 'tcx_parser.dart';
-import 'database_helper.dart';
-import 'firestore_service.dart';
 import 'healthkit_service.dart';
+import 'trajectory.dart';
+import 'trajectory_store.dart';
 
 /// インポート方法（セグメントコントロールで切り替え）
 enum _ImportMode { appleWatch, file }
@@ -17,8 +17,6 @@ class GarminImportScreen extends StatefulWidget {
 }
 
 class _GarminImportScreenState extends State<GarminImportScreen> {
-  final DatabaseHelper _dbHelper = DatabaseHelper();
-  final FirestoreService _firestoreService = FirestoreService();
   final HealthKitService _healthKitService = HealthKitService();
   List<GarminActivityData> _importedActivities = []; // ファイルから読み込んだもの
   bool _isLoading = false;
@@ -126,7 +124,7 @@ class _GarminImportScreenState extends State<GarminImportScreen> {
       final savedGroupIds = <String>{};
       for (final workout in workouts) {
         final groupId = workout.activity.generateGroupId();
-        if (await _dbHelper.getWalkingDataByGroupId(groupId) != null) {
+        if (await TrajectoryStore.contains(groupId)) {
           savedGroupIds.add(groupId);
         }
       }
@@ -173,7 +171,7 @@ class _GarminImportScreenState extends State<GarminImportScreen> {
       final groupId = activity.generateGroupId();
       if (queuedGroupIds.contains(groupId)) {
         alreadyQueued++;
-      } else if (await _dbHelper.getWalkingDataByGroupId(groupId) != null) {
+      } else if (await TrajectoryStore.contains(groupId)) {
         alreadySaved++;
         _savedGroupIds.add(groupId);
       } else {
@@ -385,36 +383,26 @@ class _GarminImportScreenState extends State<GarminImportScreen> {
 
       int savedCount = 0;
 
+      // ヘルスケアから同期したワークアウト（それ以外はファイルから読み込んだもの）
+      final healthKitGroupIds =
+          _syncedWorkouts.map((w) => w.activity.generateGroupId()).toSet();
+
       for (final activity in activitiesToSave) {
-        // Position オブジェクトを Map に変換
-        final positions = activity.positions.map((pos) {
-          return {
-            'latitude': pos.latitude,
-            'longitude': pos.longitude,
-            'timestamp': pos.timestamp.toIso8601String(),
-          };
-        }).toList();
+        // 2 点未満の記録は軌跡にならないため保存しない
+        if (activity.positions.length < 2) continue;
 
         final groupId = activity.generateGroupId();
-        final date = activity.getFormattedDate();
-
-        // ローカルDBに保存（同じgroupIdが既にあれば挿入されないので，Firestoreも上書きしない）
-        final inserted = await _dbHelper.insertWalkingData(
-          groupId: groupId,
-          date: date,
+        // 同じ ID の軌跡が既にあれば保存しない（取り込み済み）
+        final saved = await TrajectoryStore.add(Trajectory(
+          id: groupId,
+          source: healthKitGroupIds.contains(groupId)
+              ? TrajectorySource.healthkit
+              : TrajectorySource.garmin,
+          points: activity.positions,
+          distanceKm: activity.distance,
           steps: activity.steps,
-          distance: activity.distance,
-          positions: positions,
-        );
-        if (inserted == 0) continue;
-
-        // Firestoreにも保存
-        await _firestoreService.saveWalkingData(
-          groupId: groupId,
-          positions: positions,
-          steps: activity.steps,
-          distance: activity.distance,
-        );
+        ));
+        if (!saved) continue;
 
         savedCount++;
       }

@@ -23,14 +23,14 @@ import 'polyline_painter.dart';
 import 'firestore_service.dart';
 import 'route_generation_screen.dart';
 import 'route_service.dart';
+import 'trajectory.dart';
+import 'trajectory_store.dart';
 
 import 'utils/canvas_scale.dart';
 import 'utils/trajectory_usage.dart';
 import 'utils/utils.dart';
 
 class ArtworkCreationScreen extends StatefulWidget {
-  final List<List<Position>> trajectories;
-
   /// 外部で確定済みのキャンバススケール（スケールバーの距離、メートル）
   ///
   /// 共創プロジェクトのように、スケールがプロジェクト単位で決まっている場合に渡す。
@@ -38,7 +38,6 @@ class ArtworkCreationScreen extends StatefulWidget {
   final double? fixedScaleBarDistance;
 
   ArtworkCreationScreen({
-    required this.trajectories,
     this.fixedScaleBarDistance,
   });
 
@@ -56,11 +55,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
   final GlobalKey _rightButtonsKey = GlobalKey();
   final GlobalKey _scaleBarKey = GlobalKey();
   final GlobalKey _menuButtonKey = GlobalKey();
-  List<List<Position>> recordedTrajectories = [];
-  Set<int> usedTrajectoryIndices = {}; // 保存済みの軌跡インデックスを保持（互換性のため保持）
-  Set<int> temporarilyUsedIndices = {}; // 一時的に使用された軌跡インデックス（legacy）
-  Set<String> temporarilyUsedGroupIds = {}; // 一時的に使用された軌跡のgroupId
-  Set<String> usedLocalTrajectoryGroupIds = {}; // 使用済みローカル軌跡のgroupIdセット
+  Set<String> temporarilyUsedGroupIds = {}; // キャンバスに配置中の軌跡のgroupId
   final DatabaseHelper _dbHelper = DatabaseHelper();
   final FirestoreService _firestoreService = FirestoreService();
   final AuthService _authService = AuthService();
@@ -106,10 +101,10 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
   bool _isLocatingForRoute = false; // 現在地取得中
 
   // 軌跡リスト用のデータ（画面下部に常時表示）
-  List<Map<String, dynamic>> _garminActivities = [];
-  Set<String> _usedGarminGroupIds = {};
-  Map<int, String> _localTrajectoryGroupIds = {};
-  Set<String> _recentlyUsedGroupIds = {};
+  // 手持ちの軌跡（アプリで記録したもの + 取り込んだもの）。新しい順
+  List<Trajectory> _trajectories = [];
+  // 完成作品に使われている軌跡（端末内の使用済みの表から読む）
+  Set<String> _artworkUsedGroupIds = {};
   // 下書き（いま開いているものを除く）に使われている軌跡。下書きの中身から求める
   Set<String> _draftUsedGroupIds = {};
   bool _isTrajectoryListLoading = true;
@@ -117,7 +112,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
   @override
   void initState() {
     super.initState();
-    _loadRecordTrajectories();
+    _loadTrajectories();
 
     final fixedScale = widget.fixedScaleBarDistance;
     if (fixedScale != null && fixedScale > 0) {
@@ -148,24 +143,9 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
   /// 手持ちの軌跡の署名 → groupId（下書きの軌跡を照合するための索引）
   Map<String, String> _groupIdBySignature() {
     final index = <String, String>{};
-
-    for (int i = 0; i < recordedTrajectories.length; i++) {
-      final groupId = _localTrajectoryGroupIds[i];
-      final signature =
-          TrajectoryUsage.signatureOfPositions(recordedTrajectories[i]);
-      if (groupId != null && signature != null) index[signature] = groupId;
-    }
-
-    for (final activity in _garminActivities) {
-      try {
-        final signature = TrajectoryUsage.signatureOfSavedPositions(
-            jsonDecode(activity['positions']));
-        if (signature != null) {
-          index[signature] = activity['group_id'] as String;
-        }
-      } catch (e) {
-        // 読めない軌跡は照合の対象から外す
-      }
+    for (final trajectory in _trajectories) {
+      final signature = TrajectoryUsage.signatureOfPositions(trajectory.points);
+      if (signature != null) index[signature] = trajectory.id;
     }
     return index;
   }
@@ -217,7 +197,6 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
     setState(() {
       selectedTrajectories.clear();
       selectedItem = null;
-      temporarilyUsedIndices.clear();
       temporarilyUsedGroupIds.clear();
       // 読み込んでいた下書きを上書きしないよう、次は新規の制作として扱う
       _currentDraftId = null;
@@ -386,121 +365,30 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
     ).show(context: context);
   }
 
-  // データベースから保存済みの軌跡を読み込む
-  Future<void> _loadRecordTrajectories() async {
+  /// 軌跡リストに出す手持ちの軌跡と、完成作品に使われている軌跡を読み込む
+  ///
+  /// どちらも端末内のデータから読み、サーバーには問い合わせない
+  /// （軌跡は起動時に TrajectoryStore.sync で同期済み。使用済みの表は、起動時と
+  /// 作品の保存・削除のときに作品の内容と合わせている）
+  Future<void> _loadTrajectories() async {
     try {
+      final trajectories = await TrajectoryStore.loadAll();
+      final artworkUsedGroupIds =
+          (await _dbHelper.getUsedTrajectories()).toSet();
 
-      recordedTrajectories.clear();
-
-      // ローカルデータベースからデータを取得（Garmin軌跡を除外）
-      List<Map<String, dynamic>> allWalkingData =
-          await _dbHelper.getAllWalkingData();
-
-      // デバッグ出力
-      print("読み込まれた歩行データ: ${allWalkingData.length}件");
-
-      // データを一意にするためSetを使用（groupIdベース）
-      Set<String> uniqueGroupIds = {};
-      List<List<Position>> uniqueTrajectoryList = [];
-
-      for (var data in allWalkingData) {
-        // Garmin軌跡は除外（is_from_garmin = 1）
-        final isFromGarmin = (data['is_from_garmin'] ?? 0) as int;
-        if (isFromGarmin == 1) {
-          continue;
-        }
-
-        String groupId = data['group_id'];
-
-        if (!uniqueGroupIds.contains(groupId)) {
-          uniqueGroupIds.add(groupId);
-
-          // positionsをデコード
-          List<dynamic> positionsJson = jsonDecode(data['positions']);
-          List<Position> trajectory = positionsJson.map((pos) {
-            return Position(
-              latitude: pos['latitude'],
-              longitude: pos['longitude'],
-              timestamp: DateTime.tryParse(pos['timestamp']) ?? DateTime.now(),
-              accuracy: 0.0,
-              altitude: 0.0,
-              heading: 0.0,
-              speed: 0.0,
-              speedAccuracy: 0.0,
-              altitudeAccuracy: 0.0,
-              headingAccuracy: 0.0,
-            );
-          }).toList();
-
-          if (trajectory.isNotEmpty) {
-            uniqueTrajectoryList.add(trajectory);
-          }
-        }
-      }
+      print("📊 軌跡リスト用データ読み込み完了: 軌跡 ${trajectories.length}件, "
+          "作品に使用済み ${artworkUsedGroupIds.length}件");
 
       if (!mounted) return;
       setState(() {
-        recordedTrajectories = uniqueTrajectoryList;
-      });
-
-      print("一意な軌跡数: ${recordedTrajectories.length}件");
-      await _loadUsedTrajectories();
-      await _loadTrajectoryListData();
-    } catch (e) {
-      print("軌跡の読み込みエラー: $e");
-      // 読み込みに失敗しても制作ホームへ進めるようにする
-      if (mounted) {
-        setState(() {
-          _isTrajectoryListLoading = false;
-        });
-      }
-    }
-  }
-
-  /// 軌跡リスト用のデータを読み込む（画面下部に常時表示用）
-  Future<void> _loadTrajectoryListData() async {
-    try {
-      setState(() {
-        _isTrajectoryListLoading = true;
-      });
-
-      // Garmin軌跡を読み込む
-      final garminActivities = await _dbHelper.getGarminActivities();
-      final usedGarminGroupIds =
-          await _dbHelper.getUsedGarminActivityGroupIds();
-
-      // ローカル軌跡のgroupIdマッピングを作成
-      final allData = await _dbHelper.getAllWalkingData();
-      Map<int, String> localTrajectoryGroupIds = {};
-      int localIndex = 0;
-      for (var data in allData) {
-        if ((data['is_from_garmin'] ?? 0) == 0) {
-          localTrajectoryGroupIds[localIndex] = data['group_id'] as String;
-          localIndex++;
-        }
-      }
-
-      // ローカルDBから使用済み軌跡を取得（Firestore同期はアプリ起動時のみ）
-      final usedGroupIdList = await _dbHelper.getUsedTrajectories();
-      final recentlyUsedGroupIds = usedGroupIdList.toSet();
-
-      print("📊 軌跡リスト用データ読み込み完了:");
-      print("  - Garmin軌跡: ${garminActivities.length}件");
-      print("  - 使用済みGarmin軌跡: ${usedGarminGroupIds.length}件");
-      print("  - ローカル軌跡groupIdマッピング: ${localTrajectoryGroupIds.length}件");
-      print("  - 使用済み軌跡: ${recentlyUsedGroupIds.length}件");
-
-      if (!mounted) return;
-      setState(() {
-        _garminActivities = garminActivities;
-        _usedGarminGroupIds = usedGarminGroupIds.toSet();
-        _localTrajectoryGroupIds = localTrajectoryGroupIds;
-        _recentlyUsedGroupIds = recentlyUsedGroupIds;
+        _trajectories = trajectories;
+        _artworkUsedGroupIds = artworkUsedGroupIds;
         _isTrajectoryListLoading = false;
       });
       _refreshDraftUsage();
     } catch (e) {
-      print("❌ 軌跡リスト用データの読み込みエラー: $e");
+      print("❌ 軌跡の読み込みエラー: $e");
+      // 読み込みに失敗しても制作ホームへ進めるようにする
       if (!mounted) return;
       setState(() {
         _isTrajectoryListLoading = false;
@@ -545,24 +433,6 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
     setState(() {
       _guideImageVisible = !_guideImageVisible;
     });
-  }
-
-  /// Firebase から使用済みローカル軌跡のgroupIdを同期して読み込む
-  Future<void> _loadUsedTrajectories() async {
-    try {
-      // ローカルDBから読み込む（Firestore同期はアプリ起動時のみ）
-      final loadedUsedGroupIds = await _dbHelper.getUsedTrajectories();
-      print(
-          "✅ 使用済みローカル軌跡を読み込みました: ${loadedUsedGroupIds.length}件 - $loadedUsedGroupIds");
-
-      // setState で UI 更新（画面遷移後に完了した場合は無視）
-      if (!mounted) return;
-      setState(() {
-        usedLocalTrajectoryGroupIds = loadedUsedGroupIds.toSet();
-      });
-    } catch (e) {
-      print("❌ 使用済み軌跡の読み込みエラー: $e");
-    }
   }
 
   // アートワークを保存するメソッドを修正
@@ -661,45 +531,26 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
       List<Map<String, dynamic>> trajectoryDetailsCache = [];
 
       for (var item in selectedTrajectories) {
-        // モーダルで選択時に保存されたgroupIdを使用（Garmin軌跡対応）
+        // 軌跡リストから配置したときの groupId（軌跡の ID）
         final groupId = item.groupId ?? generateGroupId(item.polyline);
-        var trajectoryDetails =
-            await _dbHelper.getWalkingDataByGroupId(groupId);
-
-        // Garmin軌跡の場合、ローカルDBにデータがないため、Garmin軌跡データを取得
-        String actualGroupId = groupId;
-        if (trajectoryDetails == null) {
-          print('⚠️ ローカル軌跡が見つかりません: groupId="$groupId"。Garmin軌跡か確認中...');
-
-          // 最初にgroupIdで直接Garmin軌跡を検索
-          trajectoryDetails =
-              await _dbHelper.getGarminActivityByGroupId(groupId);
-
-          if (trajectoryDetails != null) {
-            print('✅ Garmin軌跡が見つかりました: $groupId');
-            actualGroupId = groupId;
-          } else {
-            print('  Firestore経由でGarmin軌跡の確認を試みます...');
-            // Firestoreから直接取得を試みる
-            final firestoreActivities =
-                await _firestoreService.getAllWalkingData();
-            for (final activity in firestoreActivities) {
-              if (activity['groupId'] == groupId) {
-                print('✅ FirestoreからGarmin軌跡が見つかりました: $groupId');
-                trajectoryDetails = activity;
-                actualGroupId = groupId;
-                break;
-              }
-            }
-          }
+        final trajectory = await TrajectoryStore.get(groupId);
+        if (trajectory == null) {
+          print('⚠️ 軌跡が見つかりません: groupId="$groupId"');
         }
+        final Map<String, dynamic>? trajectoryDetails = trajectory == null
+            ? null
+            : {
+                'distance': trajectory.distanceKm,
+                'steps': trajectory.steps,
+                'date': trajectory.startedAt.toUtc().toIso8601String(),
+              };
 
-        totalDistance += (trajectoryDetails?['distance'] as double? ?? 0.0);
-        totalSteps += (trajectoryDetails?['steps'] as int? ?? 0);
+        totalDistance += trajectory?.distanceKm ?? 0.0;
+        totalSteps += trajectory?.steps ?? 0;
         trajectoryDetailsCache.add({
           'item': item,
           'details': trajectoryDetails,
-          'groupId': actualGroupId,
+          'groupId': groupId,
         });
       }
 
@@ -809,7 +660,6 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
       }
       print("✅ 全軌跡のマーク処理完了");
 
-      temporarilyUsedIndices.clear();
       temporarilyUsedGroupIds.clear();
 
       // 作品になった下書きを削除する（失敗しても作品の保存は成功として扱う）
@@ -893,18 +743,10 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
         if (selectedItem!.groupId != null) {
           print("🗑️ 軌跡を削除: groupId=${selectedItem!.groupId}");
 
-          // groupIdベースの管理から削除（モーダルに再表示されるようにする）
+          // 配置中の軌跡から外す（軌跡リストに戻る）
           if (temporarilyUsedGroupIds.contains(selectedItem!.groupId)) {
             temporarilyUsedGroupIds.remove(selectedItem!.groupId);
             print("✅ temporarilyUsedGroupIdsから削除しました");
-          }
-
-          // legacy インデックスベースの管理からも削除
-          int indexToRemove =
-              recordedTrajectories.indexOf(selectedItem!.polyline);
-          if (indexToRemove != -1 &&
-              temporarilyUsedIndices.contains(indexToRemove)) {
-            temporarilyUsedIndices.remove(indexToRemove);
           }
         }
 
@@ -1002,7 +844,6 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
       // キャンバスの状態をリセット
       setState(() {
         selectedTrajectories.clear();
-        temporarilyUsedIndices.clear();
         temporarilyUsedGroupIds.clear();
         selectedItem = null;
         _drafts = drafts;
@@ -1100,7 +941,6 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
 
       // リストに表示されないように一時的に使用中としてマーク
       // （作品として保存するときも、この groupId が使用済みとして記録される）
-      temporarilyUsedIndices.clear();
       temporarilyUsedGroupIds
         ..clear()
         ..addAll(selectedTrajectories
@@ -1826,7 +1666,6 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                       final trajectoryData = details.data;
                       final positions =
                           trajectoryData['positions'] as List<Position>;
-                      final isGarmin = trajectoryData['isGarmin'] as bool;
                       final groupId = trajectoryData['groupId'] as String?;
 
                       // ドロップ位置を計算（キャンバス上の位置）
@@ -1845,27 +1684,10 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                                 Offset(feedbackSide / 2, feedbackSide / 2);
 
                         setState(() {
-                          final trajectoryIndex =
-                              recordedTrajectories.indexOf(positions);
-
-                          if (isGarmin) {
-                            // Garmin軌跡の場合、groupIdを一時的に記録
-                            if (groupId != null) {
-                              temporarilyUsedIndices
-                                  .add(groupId.hashCode); // legacy
-                              temporarilyUsedGroupIds.add(groupId); // 新方式
-                              print("📌 Garmin軌跡を一時使用中に追加: $groupId");
-                            }
-                          } else {
-                            // ローカル軌跡の場合、インデックスとgroupIdをマーク
-                            if (trajectoryIndex != -1) {
-                              temporarilyUsedIndices
-                                  .add(trajectoryIndex); // legacy
-                              if (groupId != null) {
-                                temporarilyUsedGroupIds.add(groupId);
-                                print("📌 ローカル軌跡を一時使用中に追加: $groupId");
-                              }
-                            }
+                          // 軌跡リストに出さないよう、配置中の軌跡として記録する
+                          if (groupId != null) {
+                            temporarilyUsedGroupIds.add(groupId);
+                            print("📌 軌跡を配置中に追加: $groupId");
                           }
 
                           final newTrajectory = TransformablePolyline(
@@ -2639,79 +2461,22 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
   }
 
   /// まだ作品に使っていない手持ちの軌跡（アプリで記録したもの + 取り込んだもの）を新しい順に返す
+  ///
+  /// 完成作品・下書き（いま開いているものを除く）に使われている軌跡と、
+  /// キャンバスに配置中の軌跡は除く
   List<Map<String, dynamic>> _availableTrajectories() {
-    final List<Map<String, dynamic>> allTrajectories = [];
-
-    // ローカル軌跡を追加
-    for (int i = 0; i < recordedTrajectories.length; i++) {
-      final trajectory = recordedTrajectories[i];
-      final groupId = _localTrajectoryGroupIds[i];
-
-      // 使用済みまたは一時使用中の軌跡は除外
-      if (groupId != null) {
-        if (_recentlyUsedGroupIds.contains(groupId) ||
-            _draftUsedGroupIds.contains(groupId) ||
-            temporarilyUsedGroupIds.contains(groupId)) {
-          continue;
-        }
-      }
-
-      allTrajectories.add({
-        'positions': trajectory,
-        'isGarmin': false,
-        'date': DateFormat('yyyy/MM/dd').format(trajectory.first.timestamp),
-        'groupId': groupId,
-      });
-    }
-
-    // Garmin軌跡を追加
-    for (final activity in _garminActivities) {
-      final groupId = activity['group_id'] as String;
-
-      // 使用済みまたは一時使用中の軌跡は除外
-      if (_usedGarminGroupIds.contains(groupId) ||
-          _draftUsedGroupIds.contains(groupId) ||
-          temporarilyUsedGroupIds.contains(groupId)) {
-        continue;
-      }
-
-      final positions = (jsonDecode(activity['positions']) as List).map((pos) {
-        return Position(
-          latitude: pos['latitude'],
-          longitude: pos['longitude'],
-          timestamp: DateTime.tryParse(pos['timestamp']) ?? DateTime.now(),
-          accuracy: 0.0,
-          altitude: 0.0,
-          heading: 0.0,
-          speed: 0.0,
-          speedAccuracy: 0.0,
-          altitudeAccuracy: 0.0,
-          headingAccuracy: 0.0,
-        );
-      }).toList();
-
-      allTrajectories.add({
-        'positions': positions,
-        'isGarmin': true,
-        'date': activity['date'] as String,
-        'groupId': groupId,
-      });
-    }
-
-    // 日付順にソート（新しい順）
-    allTrajectories.sort((a, b) {
-      final List<Position> positionsA = a['positions'];
-      final List<Position> positionsB = b['positions'];
-      final DateTime latestA = positionsA
-          .map((p) => p.timestamp)
-          .reduce((value, element) => value.isAfter(element) ? value : element);
-      final DateTime latestB = positionsB
-          .map((p) => p.timestamp)
-          .reduce((value, element) => value.isAfter(element) ? value : element);
-      return latestB.compareTo(latestA);
-    });
-
-    return allTrajectories;
+    return [
+      for (final trajectory in _trajectories)
+        if (!_artworkUsedGroupIds.contains(trajectory.id) &&
+            !_draftUsedGroupIds.contains(trajectory.id) &&
+            !temporarilyUsedGroupIds.contains(trajectory.id))
+          {
+            'positions': trajectory.points,
+            'date': DateFormat('yyyy/MM/dd')
+                .format(trajectory.startedAt.toLocal()),
+            'groupId': trajectory.id,
+          },
+    ];
   }
 
   /// 制作ホーム（キャンバスに入る前に表示）
@@ -2818,21 +2583,19 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
             itemBuilder: (context, index) {
               final trajectory = allTrajectories[index];
               final List<Position> positions = trajectory['positions'];
-              final bool isGarmin = trajectory['isGarmin'];
               final String date = trajectory['date'];
               final String? groupId = trajectory['groupId'];
               final TrajectoryFit fit = trajectory['fit'];
               final double boxSide = trajectory['boxSide'];
               // タイルは形が分かるよう、軌跡をタイルいっぱいに描く（縮尺は揃えない）
               final Widget tile =
-                  _buildTrajectoryTile(positions, date, isGarmin, fit: fit);
+                  _buildTrajectoryTile(positions, date, fit: fit);
 
               return Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 4),
                 child: LongPressDraggable<Map<String, dynamic>>(
                   data: {
                     'positions': positions,
-                    'isGarmin': isGarmin,
                     'groupId': groupId,
                     'feedbackSide': boxSide,
                   },
@@ -2859,7 +2622,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
                     onTap: () {
                       // タップで地図情報を表示
                       _showTrajectoryMapDialog(
-                          context, positions, date, isGarmin, groupId);
+                          context, positions, date, groupId);
                     },
                     child: tile,
                   ),
@@ -2877,8 +2640,7 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
   /// [fit]: 現在のスケールで素材として使えるか。
   /// 大きすぎる・小さすぎる軌跡も配置はできるが、使える軌跡と見分けられるよう
   /// 薄く表示してバッジを付ける
-  Widget _buildTrajectoryTile(
-      List<Position> positions, String date, bool isGarmin,
+  Widget _buildTrajectoryTile(List<Position> positions, String date,
       {TrajectoryFit fit = TrajectoryFit.usable}) {
     final bool unusable = fit != TrajectoryFit.usable;
     return Container(
@@ -2956,7 +2718,6 @@ class _ArtworkCreationScreenState extends State<ArtworkCreationScreen> {
     BuildContext context,
     List<Position> positions,
     String date,
-    bool isGarmin,
     String? groupId,
   ) {
     if (positions.isEmpty) return;
@@ -3201,498 +2962,6 @@ class TransformablePolyline {
             polyline.map((p) => p.longitude).reduce((a, b) => a < b ? a : b),
         maxLon =
             polyline.map((p) => p.longitude).reduce((a, b) => a > b ? a : b);
-}
-
-/// 軌跡選択モーダルのコンテンツ
-class _TrajectoryModalContent extends StatefulWidget {
-  final List<List<Position>> recordedTrajectories;
-  final Set<int> usedTrajectoryIndices;
-  final Set<String> usedLocalTrajectoryGroupIds;
-  final Set<int> temporarilyUsedIndices;
-  final Set<String> temporarilyUsedGroupIds;
-  final List<Map<String, dynamic>> garminActivities;
-  final Set<String> usedGarminGroupIds;
-  final Map<int, String> localTrajectoryGroupIds;
-  final DatabaseHelper dbHelper;
-  final Function(List<Position>, bool isGarmin, String? groupId)
-      onSelectTrajectory;
-  final ScrollController? scrollController;
-
-  const _TrajectoryModalContent({
-    required this.recordedTrajectories,
-    required this.usedTrajectoryIndices,
-    required this.usedLocalTrajectoryGroupIds,
-    required this.temporarilyUsedIndices,
-    required this.temporarilyUsedGroupIds,
-    required this.garminActivities,
-    required this.usedGarminGroupIds,
-    required this.localTrajectoryGroupIds,
-    required this.dbHelper,
-    required this.onSelectTrajectory,
-    this.scrollController,
-  });
-
-  @override
-  State<_TrajectoryModalContent> createState() =>
-      _TrajectoryModalContentState();
-}
-
-class _TrajectoryModalContentState extends State<_TrajectoryModalContent> {
-  late Future<Set<String>> _usedGroupIdsFuture;
-
-  @override
-  void initState() {
-    super.initState();
-    // Firestoreから最新の使用済み軌跡を取得するFutureを初期化
-    _usedGroupIdsFuture = _loadLatestUsedTrajectories();
-  }
-
-  Future<Set<String>> _loadLatestUsedTrajectories() async {
-    try {
-      final firestoreService = FirestoreService();
-      final trajectories =
-          await firestoreService.getAllUsedTrajectoriesFromArtworks();
-      final groupIds = trajectories.map((t) => t['groupId'] as String).toSet();
-
-      print("📌 Firestoreから取得した使用済み軌跡: ${groupIds.length}件 - $groupIds");
-      return groupIds;
-    } catch (e) {
-      print("❌ 使用済み軌跡の読み込みエラー: $e");
-      return <String>{};
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return FutureBuilder<Set<String>>(
-      future: _usedGroupIdsFuture,
-      builder: (context, snapshot) {
-        // データが読み込まれるまで待機
-        if (!snapshot.hasData) {
-          return const Center(
-            child: CircularProgressIndicator(),
-          );
-        }
-
-        final recentlyUsedGroupIds = snapshot.data ?? <String>{};
-        print(
-            "🔍 Modal build開始 - _recentlyUsedGroupIds: ${recentlyUsedGroupIds.length}件 - $recentlyUsedGroupIds");
-
-        return _buildTrajectoryGrid(recentlyUsedGroupIds);
-      },
-    );
-  }
-
-  Widget _buildTrajectoryGrid(Set<String> recentlyUsedGroupIds) {
-    print(
-        "🔍 Modal build開始 - recentlyUsedGroupIds: ${recentlyUsedGroupIds.length}件 - $recentlyUsedGroupIds");
-
-    // フィルタリングは _buildCombinedTrajectories で行うので、ここでは全軌跡を渡す
-    // groupIdマッピングを構築
-    Map<int, String> localTrajectoryGroupIds = {};
-    for (int i = 0; i < widget.recordedTrajectories.length; i++) {
-      final groupId = widget.localTrajectoryGroupIds[i];
-      if (groupId != null) {
-        localTrajectoryGroupIds[i] = groupId;
-      }
-    }
-    print(
-        "📊 localTrajectoryGroupIds: ${localTrajectoryGroupIds.length}件 - keys=${localTrajectoryGroupIds.keys.toList()}");
-
-    // 記録した軌跡とGarmin軌跡を統合
-    return _buildCombinedTrajectories(
-        widget.recordedTrajectories,
-        widget.garminActivities,
-        localTrajectoryGroupIds,
-        recentlyUsedGroupIds,
-        widget.temporarilyUsedIndices,
-        widget.temporarilyUsedGroupIds,
-        widget.usedGarminGroupIds);
-  }
-
-  // 記録した軌跡とGarmin軌跡を統合表示
-  Widget _buildCombinedTrajectories(
-    List<List<Position>> recordedTrajectories,
-    List<Map<String, dynamic>> garminActivities,
-    Map<int, String> localTrajectoryGroupIds,
-    Set<String> recentlyUsedGroupIds,
-    Set<int> temporarilyUsedIndices,
-    Set<String> temporarilyUsedGroupIds,
-    Set<String> usedGarminGroupIds,
-  ) {
-    if (recordedTrajectories.isEmpty && garminActivities.isEmpty) {
-      return Center(
-        child: Text('軌跡がありません'),
-      );
-    }
-
-    // Garmin アクティビティを Position リストに変換
-    final List<Map<String, dynamic>> garminTrajectories = [];
-    for (final activity in garminActivities) {
-      final positions = (jsonDecode(activity['positions']) as List).map((pos) {
-        return Position(
-          latitude: pos['latitude'],
-          longitude: pos['longitude'],
-          timestamp: DateTime.tryParse(pos['timestamp']) ?? DateTime.now(),
-          accuracy: 0.0,
-          altitude: 0.0,
-          heading: 0.0,
-          speed: 0.0,
-          speedAccuracy: 0.0,
-          altitudeAccuracy: 0.0,
-          headingAccuracy: 0.0,
-        );
-      }).toList();
-
-      garminTrajectories.add({
-        'positions': positions,
-        'isGarmin': true,
-        'date': activity['date'] as String,
-        'distance': activity['distance'] as double,
-        'steps': activity['steps'] as int,
-        'groupId': activity['group_id'] as String,
-      });
-    }
-
-    // 記録した軌跡も同じ形式に
-    final List<Map<String, dynamic>> recordedWithMetadata = [];
-    for (int i = 0; i < recordedTrajectories.length; i++) {
-      final trajectory = recordedTrajectories[i];
-      final groupId = localTrajectoryGroupIds[i]; // インデックスからgroupIdを取得
-
-      if (groupId == null) {
-        print("⚠️  警告: インデックス $i の軌跡にgroupIdがありません");
-      }
-
-      recordedWithMetadata.add({
-        'positions': trajectory,
-        'isGarmin': false,
-        'date': DateFormat('yyyy/MM/dd').format(trajectory.first.timestamp),
-        'groupId': groupId, // groupIdを含める（nullの可能性あり）
-      });
-    }
-    print(
-        "📊 記録した軌跡数: ${recordedWithMetadata.length}件、groupId付き: ${recordedWithMetadata.where((t) => t['groupId'] != null).length}件");
-
-    // 両方を結合してソート（最新順）
-    final List<Map<String, dynamic>> allTrajectories = [
-      ...recordedWithMetadata,
-      ...garminTrajectories
-    ];
-    allTrajectories.sort((a, b) {
-      final List<Position> positionsA = a['positions'];
-      final List<Position> positionsB = b['positions'];
-      final DateTime latestA = positionsA
-          .map((p) => p.timestamp)
-          .reduce((value, element) => value.isAfter(element) ? value : element);
-      final DateTime latestB = positionsB
-          .map((p) => p.timestamp)
-          .reduce((value, element) => value.isAfter(element) ? value : element);
-      return latestB.compareTo(latestA);
-    });
-
-    // 使用済み/使用中の軌跡をフィルタリングで除外
-    final List<Map<String, dynamic>> displayTrajectories =
-        allTrajectories.where((trajectory) {
-      final String? groupId = trajectory['groupId'];
-      if (groupId == null) return true; // groupIdがない場合は表示
-
-      final bool isGarmin = trajectory['isGarmin'];
-
-      print("🔍 フィルタリング対象: groupId=$groupId, isGarmin=$isGarmin");
-
-      if (isGarmin) {
-        // Garmin軌跡：使用中なら除外
-        final isTemporarilyUsed = temporarilyUsedGroupIds.contains(groupId);
-        print("  Garmin - temporarily: $isTemporarilyUsed");
-        return !isTemporarilyUsed;
-      } else {
-        // ローカル軌跡：使用済みまたは使用中なら除外
-        final isUsed = recentlyUsedGroupIds.contains(groupId);
-        final isTemporarilyUsed = temporarilyUsedGroupIds.contains(groupId);
-        print("  ローカル - used: $isUsed, temporarily: $isTemporarilyUsed");
-        return !isUsed && !isTemporarilyUsed;
-      }
-    }).toList();
-
-    print("📊 フィルタリング結果: 表示軌跡=${displayTrajectories.length}件");
-    final displayGroupIds =
-        displayTrajectories.map((t) => t['groupId']).toSet();
-    print("📋 表示対象のgroupId: $displayGroupIds");
-
-    return GridView.builder(
-      controller: widget.scrollController,
-      padding: EdgeInsets.all(10),
-      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-        crossAxisCount: 3,
-        crossAxisSpacing: 10,
-        mainAxisSpacing: 10,
-      ),
-      itemCount: displayTrajectories.length,
-      itemBuilder: (context, index) {
-        final trajectory = displayTrajectories[index];
-        final List<Position> positions = trajectory['positions'];
-        final bool isGarmin = trajectory['isGarmin'];
-        final String date = trajectory['date'];
-        final String? groupId = trajectory['groupId'];
-
-        // 軌跡をドラッグ可能にする
-        final trajectoryWidget = Stack(
-          children: [
-            CustomPaint(
-              size: Size(60, 60),
-              painter: PolylinePainter(
-                positions: positions,
-                minLat: positions
-                    .map((p) => p.latitude)
-                    .reduce((a, b) => a < b ? a : b),
-                maxLat: positions
-                    .map((p) => p.latitude)
-                    .reduce((a, b) => a > b ? a : b),
-                minLon: positions
-                    .map((p) => p.longitude)
-                    .reduce((a, b) => a < b ? a : b),
-                maxLon: positions
-                    .map((p) => p.longitude)
-                    .reduce((a, b) => a > b ? a : b),
-              ),
-            ),
-            // 日付ラベル
-            Positioned(
-              top: 0,
-              right: 0,
-              child: Container(
-                padding: EdgeInsets.all(4),
-                color: Colors.white.withOpacity(0.8),
-                child: Text(date, style: TextStyle(fontSize: 12)),
-              ),
-            ),
-          ],
-        );
-
-        return LongPressDraggable<Map<String, dynamic>>(
-          data: {
-            'positions': positions,
-            'isGarmin': isGarmin,
-            'groupId': groupId,
-          },
-          feedback: Material(
-            elevation: 4,
-            borderRadius: BorderRadius.circular(8),
-            child: Container(
-              width: 80,
-              height: 80,
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: Colors.blue, width: 2),
-              ),
-              child: CustomPaint(
-                size: Size(80, 80),
-                painter: PolylinePainter(
-                  positions: positions,
-                  minLat: positions
-                      .map((p) => p.latitude)
-                      .reduce((a, b) => a < b ? a : b),
-                  maxLat: positions
-                      .map((p) => p.latitude)
-                      .reduce((a, b) => a > b ? a : b),
-                  minLon: positions
-                      .map((p) => p.longitude)
-                      .reduce((a, b) => a < b ? a : b),
-                  maxLon: positions
-                      .map((p) => p.longitude)
-                      .reduce((a, b) => a > b ? a : b),
-                ),
-              ),
-            ),
-          ),
-          childWhenDragging: Opacity(
-            opacity: 0.5,
-            child: trajectoryWidget,
-          ),
-          child: GestureDetector(
-            onTap: () {
-              // タップで地図情報を表示
-              _showTrajectoryMapDialog(
-                  context, positions, date, isGarmin, groupId);
-            },
-            child: trajectoryWidget,
-          ),
-        );
-      },
-    );
-  }
-
-  /// 軌跡の地図情報をポップアップで表示するダイアログ
-  void _showTrajectoryMapDialog(
-    BuildContext context,
-    List<Position> positions,
-    String date,
-    bool isGarmin,
-    String? groupId,
-  ) {
-    if (positions.isEmpty) return;
-
-    // 軌跡の境界を計算
-    final double minLat =
-        positions.map((p) => p.latitude).reduce((a, b) => a < b ? a : b);
-    final double maxLat =
-        positions.map((p) => p.latitude).reduce((a, b) => a > b ? a : b);
-    final double minLng =
-        positions.map((p) => p.longitude).reduce((a, b) => a < b ? a : b);
-    final double maxLng =
-        positions.map((p) => p.longitude).reduce((a, b) => a > b ? a : b);
-
-    // 中心座標を計算
-    final double centerLat = (minLat + maxLat) / 2;
-    final double centerLng = (minLng + maxLng) / 2;
-
-    // 適切なズームレベルを計算
-    final double latDelta = maxLat - minLat;
-    final double lngDelta = maxLng - minLng;
-    final double maxDelta = math.max(latDelta, lngDelta);
-
-    // ズームレベルの計算（大まかな目安）
-    double zoomLevel = 15.0;
-    if (maxDelta > 0.1) {
-      zoomLevel = 10.0;
-    } else if (maxDelta > 0.05) {
-      zoomLevel = 12.0;
-    } else if (maxDelta > 0.01) {
-      zoomLevel = 14.0;
-    } else if (maxDelta > 0.005) {
-      zoomLevel = 15.0;
-    } else {
-      zoomLevel = 16.0;
-    }
-
-    // ポリラインを作成
-    final polyline = gmaps.Polyline(
-      polylineId: const gmaps.PolylineId('trajectory'),
-      points:
-          positions.map((p) => gmaps.LatLng(p.latitude, p.longitude)).toList(),
-      color: Colors.blue,
-      width: 4,
-    );
-
-    // 総距離を計算
-    double totalDistance = 0.0;
-    for (int i = 0; i < positions.length - 1; i++) {
-      totalDistance += Geolocator.distanceBetween(
-        positions[i].latitude,
-        positions[i].longitude,
-        positions[i + 1].latitude,
-        positions[i + 1].longitude,
-      );
-    }
-
-    showDialog(
-      context: context,
-      builder: (dialogContext) => Dialog(
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(16),
-        ),
-        child: Container(
-          width: MediaQuery.of(context).size.width * 0.9,
-          height: MediaQuery.of(context).size.height * 0.5,
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // 地図
-              Expanded(
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(12),
-                  child: gmaps.GoogleMap(
-                    initialCameraPosition: gmaps.CameraPosition(
-                      target: gmaps.LatLng(centerLat, centerLng),
-                      zoom: zoomLevel,
-                    ),
-                    polylines: {polyline},
-                    myLocationEnabled: false,
-                    zoomControlsEnabled: false,
-                    mapToolbarEnabled: false,
-                    compassEnabled: false,
-                    rotateGesturesEnabled: false,
-                    scrollGesturesEnabled: false,
-                    zoomGesturesEnabled: false,
-                    tiltGesturesEnabled: false,
-                    mapType: gmaps.MapType.normal,
-                    onMapCreated: (controller) {
-                      // 地図が作成されたらポリラインが見えるようにカメラを調整
-                      Future.delayed(const Duration(milliseconds: 300), () {
-                        if (positions.length >= 2) {
-                          controller.moveCamera(
-                            gmaps.CameraUpdate.newLatLngBounds(
-                              gmaps.LatLngBounds(
-                                southwest: gmaps.LatLng(
-                                    minLat - 0.001, minLng - 0.001),
-                                northeast: gmaps.LatLng(
-                                    maxLat + 0.001, maxLng + 0.001),
-                              ),
-                              50, // padding
-                            ),
-                          );
-                        }
-                      });
-                    },
-                  ),
-                ),
-              ),
-              const SizedBox(height: 12),
-              // 情報表示
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  // 総距離
-                  Row(
-                    children: [
-                      Icon(Icons.straighten, size: 16, color: Colors.grey[700]),
-                      const SizedBox(width: 4),
-                      Text(
-                        totalDistance >= 1000
-                            ? '${(totalDistance / 1000).toStringAsFixed(2)} km'
-                            : '${totalDistance.toStringAsFixed(0)} m',
-                        style: TextStyle(
-                          fontSize: 14,
-                          color: Colors.grey[700],
-                        ),
-                      ),
-                    ],
-                  ),
-                  // 記録日時
-                  Row(
-                    children: [
-                      Icon(Icons.calendar_today,
-                          size: 16, color: Colors.grey[700]),
-                      const SizedBox(width: 4),
-                      Text(
-                        date,
-                        style: TextStyle(
-                          fontSize: 14,
-                          color: Colors.grey[700],
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-              const SizedBox(height: 12),
-              // \u9589\u3058\u308b\u30dc\u30bf\u30f3
-              SizedBox(
-                width: double.infinity,
-                child: TextButton(
-                  onPressed: () => Navigator.pop(dialogContext),
-                  child: const Text('\u9589\u3058\u308b'),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
 }
 
 /// デバッグ用: 軌跡のタップ領域を視覚化するペインター
