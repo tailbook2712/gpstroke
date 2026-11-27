@@ -1678,8 +1678,17 @@ _currentTrajectoryIndex = -1;
   // 再生順・再生方法を選ぶシート（再生バーと同じ色・同じ形のボタン）。
   // 選ぶとすぐに反映して先頭から再生し直す。両方まとめて変えられるよう、
   // 選んでもシートは閉じない
-  void _openSlideshowSettings() {
-    showModalBottomSheet<void>(
+  // 再生順・再生方法の設定シート。
+  // シートを開いている間は再生を止め、選んだ内容はシートを閉じたときに反映する
+  // （選ぶたびに最初から再生し直さないため）
+  Future<void> _openSlideshowSettings() async {
+    final bool wasPlaying = _isSlideshowPlaying;
+    if (wasPlaying) _pauseSlideshow();
+
+    SlideshowOrder order = _slideshowOrder;
+    SlideshowStyle style = _slideshowStyle;
+
+    await showModalBottomSheet<void>(
       context: context,
       backgroundColor: _panelColor,
       shape: const RoundedRectangleBorder(
@@ -1709,23 +1718,17 @@ _currentTrajectoryIndex = -1;
                   _buildOptionGroup<SlideshowOrder>(
                     title: '再生順',
                     values: SlideshowOrder.values,
-                    selected: _slideshowOrder,
+                    selected: order,
                     labelOf: (o) => o.label,
-                    onSelected: (o) {
-                      _changeSlideshowSettings(order: o);
-                      setSheetState(() {});
-                    },
+                    onSelected: (o) => setSheetState(() => order = o),
                   ),
                   const SizedBox(height: 18),
                   _buildOptionGroup<SlideshowStyle>(
                     title: '再生方法',
                     values: SlideshowStyle.values,
-                    selected: _slideshowStyle,
+                    selected: style,
                     labelOf: (st) => st.label,
-                    onSelected: (st) {
-                      _changeSlideshowSettings(style: st);
-                      setSheetState(() {});
-                    },
+                    onSelected: (st) => setSheetState(() => style = st),
                   ),
                 ],
               ),
@@ -1734,6 +1737,15 @@ _currentTrajectoryIndex = -1;
         },
       ),
     );
+    if (!mounted) return;
+
+    if (order != _slideshowOrder || style != _slideshowStyle) {
+      // 設定が変わったら、新しい設定で最初から再生する
+      await _changeSlideshowSettings(order: order, style: style);
+    } else if (wasPlaying) {
+      // 変わっていなければ、止めたところから続ける
+      _togglePlayback();
+    }
   }
 
   // 設定シート内の選択肢の一群（選択中は白地）
