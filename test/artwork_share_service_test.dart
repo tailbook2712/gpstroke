@@ -248,6 +248,6 @@ void main() {
     final id = ArtworkShareService.generateShareId();
     expect(id, matches(RegExp(r'^[A-Za-z0-9]{20}$')));
     expect(ArtworkShareService.buildShareUrl(id),
-        'https://tailbook2712.github.io/gpstroke/share/?id=$id');
+        'https://gpstroke.web.app/s/$id');
   });
 }

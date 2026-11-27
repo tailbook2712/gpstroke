@@ -61,3 +61,5 @@ web/
 
 !*.gitignore
 .env
+# Firebase CLI のデプロイ用のキャッシュ
+.firebase/

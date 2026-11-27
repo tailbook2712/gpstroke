@@ -1,0 +1,22 @@
+{
+  "name": "gpstroke-functions",
+  "description": "GPStroke の作品の共有ページ（Firebase Hosting の /s/** から呼ばれる Cloud Functions）",
+  "private": true,
+  "main": "lib/index.js",
+  "engines": {
+    "node": "22"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "tsc && node --test \"lib/**/*.test.js\"",
+    "serve": "npm run build && firebase emulators:start --only functions,firestore,hosting"
+  },
+  "dependencies": {
+    "firebase-admin": "^14.5.1",
+    "firebase-functions": "^7.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.7",
+    "typescript": "^5.9.3"
+  }
+}

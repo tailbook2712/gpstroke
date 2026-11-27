@@ -18,21 +18,21 @@ import 'utils/utils.dart';
 ///
 /// 作品のスライドショーをアプリ未使用者でもブラウザで再生できるように、
 /// 作品データを Firestore のトップレベルコレクション `shared_artworks` に
-/// 書き出し、GitHub Pages 上の閲覧ページ（docs/share/index.html）への
+/// 書き出し、共有ページ（`https://gpstroke.web.app/s/{shareId}`）への
 /// リンクを生成する。
 ///
-/// 閲覧ページは Firestore REST API で `shared_artworks/{shareId}` を
-/// 匿名で読み取るため、Firestore のセキュリティルールで当該コレクションの
-/// 公開読み取りを許可しておく必要がある（firestore.rules を参照）。
+/// 共有ページは Firebase Hosting から Cloud Functions（functions/src/index.ts）に
+/// 渡され、Functions が `shared_artworks/{shareId}` を管理者の権限で読んで、
+/// 共有データと OGP の meta タグを埋め込んだ HTML を返す。そのため、
+/// 共有データを一般に読ませる必要はない（firestore.rules を参照）。
 class ArtworkShareService {
-  /// 閲覧ページのベース URL（GitHub Pages の docs/share/）
-  static const String shareBaseUrl =
-      'https://tailbook2712.github.io/gpstroke/share/';
+  /// 共有ページのベース URL（Firebase Hosting のサイト gpstroke）
+  static const String shareBaseUrl = 'https://gpstroke.web.app/s/';
 
   /// 共有データを保存する Firestore コレクション名
   static const String collectionName = 'shared_artworks';
 
-  /// 共有データのスキーマバージョン（閲覧ページ側と合わせる）
+  /// 共有データのスキーマバージョン（共有ページ側と合わせる）
   static const int payloadVersion = 1;
 
   final FirebaseFirestore _db;
@@ -44,8 +44,8 @@ class ArtworkShareService {
   })  : _db = firestore ?? FirebaseFirestore.instance,
         _authService = authService ?? AuthService();
 
-  /// 共有 ID から閲覧ページの URL を組み立てる
-  static String buildShareUrl(String shareId) => '$shareBaseUrl?id=$shareId';
+  /// 共有 ID から共有ページの URL を組み立てる
+  static String buildShareUrl(String shareId) => '$shareBaseUrl$shareId';
 
   /// 作品ごとに一意で、再共有しても変わらない共有 ID を導出する（URL 安全な 20 文字）。
   ///
