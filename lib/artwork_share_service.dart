@@ -47,12 +47,12 @@ class ArtworkShareService {
   /// 共有 ID から共有ページの URL を組み立てる
   static String buildShareUrl(String shareId) => '$shareBaseUrl$shareId';
 
-  /// 作品ごとに一意で、再共有しても変わらない共有 ID を導出する（URL 安全な 20 文字）。
+  /// ユーザー ID と作品 ID から導いた共有 ID（URL 安全な 20 文字）。
   ///
-  /// ユーザー ID と作品 ID のハッシュから作るため、同じ作品を何度共有しても
-  /// 同じリンクになり（Firestore 上のドキュメントは上書き更新される）、
-  /// 端末を変えたり Firestore から作品を復元した後でもリンクが変わらない。
-  /// ユーザー ID を知らなければ推測できない。
+  /// 以前は共有 ID をこの方法で作っていた。同じ作品は何度共有しても同じ ID に
+  /// なるため、共有を止めても、もう一度共有すると以前のリンクがまた見られてしまう。
+  /// 今はランダムな ID（[generateShareId]）で共有し、この ID は、共有 ID を
+  /// 作品に保存していなかった頃の共有データを止める・消すときだけに使う
   static String deriveShareId({
     required String ownerUid,
     required String artworkKey,
@@ -61,8 +61,7 @@ class ArtworkShareService {
     return base64UrlEncode(digest.bytes.sublist(0, 15)); // 15 bytes → 20 文字
   }
 
-  /// 推測されにくいランダムな共有 ID を生成する（英数字 20 文字）。
-  /// 作品 ID を持たない古い作品ファイル向けのフォールバック。
+  /// 推測されにくいランダムな共有 ID を生成する（英数字 20 文字）
   static String generateShareId({Random? random}) {
     const chars =
         'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
@@ -72,19 +71,12 @@ class ArtworkShareService {
 
   /// 作品のキャンバスの状態（Artwork.toCanvasData）から共有 ID を決める。
   ///
-  /// 優先順位:
-  /// 1. 作品に保存済みの shareId（過去に発行したリンクを維持）
-  /// 2. 作品 ID から導出した ID（同じ作品なら常に同じリンク）
-  /// 3. 作品 ID が無い古いファイルはランダム ID
-  static String resolveShareId(Map<String, dynamic> data, String ownerUid) {
+  /// 共有中の作品（共有 ID を保存済み）はその ID を使い、同じリンクのままにする。
+  /// 共有していない作品（共有を止めた作品を含む）は、新しいランダムな ID にする
+  static String resolveShareId(Map<String, dynamic> data) {
     final meta = (data['meta'] as Map?)?.cast<String, dynamic>() ?? const {};
     final existing = meta['shareId'] as String?;
     if (existing != null && existing.isNotEmpty) return existing;
-
-    final artworkId = (meta['artworkId'] as String?) ?? '';
-    if (artworkId.isNotEmpty) {
-      return deriveShareId(ownerUid: ownerUid, artworkKey: artworkId);
-    }
     return generateShareId();
   }
 
@@ -93,7 +85,8 @@ class ArtworkShareService {
   /// 1. 作品が参照している軌跡を読み、キャンバスの状態を組み立てる
   /// 2. 各ストロークの記録日時・歩数・距離を補完し、記録順に並べた共有データを作る
   /// 3. Firestore の `shared_artworks/{shareId}` に保存する
-  /// 4. 共有 ID を作品に保存する（再共有時に同じリンクを使い、作品の削除時に共有データも消すため）
+  /// 4. 共有 ID を作品に保存する（共有中は同じリンクを使い、共有の停止や作品の削除のときに
+  ///    共有データを消すため）
   Future<ArtworkShareResult> shareArtwork(Artwork artwork) async {
     final uid = _authService.userId;
     if (uid == null) {
@@ -108,7 +101,7 @@ class ArtworkShareService {
       if (trajectory != null) trajectories[trajectory.id] = trajectory;
     }
     final data = current.toCanvasData(trajectories);
-    final shareId = resolveShareId(data, uid);
+    final shareId = resolveShareId(data);
 
     final payload = await buildSharePayload(
       data,
@@ -178,11 +171,6 @@ class ArtworkShareService {
       url: buildShareUrl(shareId),
       artworkName: payload['artworkName'] as String,
     );
-  }
-
-  /// 共有リンクを削除する（Firestore のドキュメントを削除）
-  Future<void> unshareArtwork(String shareId) async {
-    await _db.collection(collectionName).doc(shareId).delete();
   }
 
   /// 作品ファイルの meta に記録されたストローク情報が不完全な場合に、

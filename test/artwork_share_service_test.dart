@@ -227,20 +227,22 @@ void main() {
           isNot(base));
     });
 
-    test('resolveShareId は保存済み shareId → 作品 ID 導出 → ランダムの順で決める', () {
+    test('resolveShareId は共有中なら保存済みの ID、そうでなければランダムな ID にする', () {
+      // 共有中の作品は同じリンクのまま
       expect(
         ArtworkShareService.resolveShareId(
-            {'meta': {'artworkId': 'art-1', 'shareId': 'keep-this'}}, 'uid-1'),
+            {'meta': {'artworkId': 'art-1', 'shareId': 'keep-this'}}),
         'keep-this',
       );
-      expect(
-        ArtworkShareService.resolveShareId({'meta': {'artworkId': 'art-1'}}, 'uid-1'),
-        ArtworkShareService.deriveShareId(ownerUid: 'uid-1', artworkKey: 'art-1'),
-      );
-      final random1 = ArtworkShareService.resolveShareId({'meta': {}}, 'uid-1');
-      final random2 = ArtworkShareService.resolveShareId({'meta': {}}, 'uid-1');
+      // 共有していない（停止した）作品は、作品 ID から導いた ID ではなく新しいランダムな ID
+      final random1 =
+          ArtworkShareService.resolveShareId({'meta': {'artworkId': 'art-1'}});
+      final random2 =
+          ArtworkShareService.resolveShareId({'meta': {'artworkId': 'art-1'}});
       expect(random1, matches(RegExp(r'^[A-Za-z0-9]{20}$')));
       expect(random1, isNot(random2));
+      expect(random1,
+          isNot(ArtworkShareService.deriveShareId(ownerUid: 'uid-1', artworkKey: 'art-1')));
     });
   });
 

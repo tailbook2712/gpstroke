@@ -10,6 +10,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'artwork.dart';
 import 'artwork_creation_screen.dart';
 import 'artwork_share_service.dart';
+import 'artwork_store.dart';
 import 'trajectory.dart';
 import 'trajectory_store.dart';
 import 'utils/slideshow_order.dart';
@@ -107,8 +108,11 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
   bool _isMapAligned = false;
   CameraPosition? _alignedCameraPosition;
 
-  // 作品共有（共有リンク生成中フラグ）
+  // 作品共有（共有リンクの生成中・共有の停止中フラグ）
   bool _isSharing = false;
+
+  // 共有中なら共有 ID（共有していなければ null）
+  String? _shareId;
 
   @override
   void initState() {
@@ -133,6 +137,14 @@ class _ArtworkDetailScreenState extends State<ArtworkDetailScreen>
       _loadCanvasState();
     });
     _loadSlideshowPreferences();
+
+    // 共有の状態は、この画面の外（ほかの画面での共有・停止）で変わっていることがあるため、
+    // 手元の最新の作品から読む
+    _shareId = widget.artwork.shareId;
+    ArtworkStore.get(widget.artwork.id).then((artwork) {
+      if (!mounted || artwork == null) return;
+      setState(() => _shareId = artwork.shareId);
+    });
   }
 
   Future<void> _loadSlideshowPreferences() async {
@@ -476,6 +488,16 @@ _currentTrajectoryIndex = -1;
     }
   }
 
+  // 共有ボタン: 共有していない作品はリンクを作って送る。共有中の作品は、
+  // リンクを送り直すか、共有を停止するかを選ぶ
+  Future<void> _onSharePressed() async {
+    if (_shareId == null) {
+      await _shareArtwork();
+    } else {
+      await _showSharingSheet();
+    }
+  }
+
   // 作品のスライドショーを再生できる共有リンクを生成し、OS の共有シートを開く
   Future<void> _shareArtwork() async {
     if (_isSharing) return;
@@ -484,6 +506,7 @@ _currentTrajectoryIndex = -1;
     try {
       final result = await ArtworkShareService().shareArtwork(widget.artwork);
       if (!mounted) return;
+      setState(() => _shareId = result.shareId);
 
       // iPad では共有シートの表示位置が必要
       final box = context.findRenderObject() as RenderBox?;
@@ -506,6 +529,99 @@ _currentTrajectoryIndex = -1;
           : '共有リンクの生成に失敗しました: $e';
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(message)),
+      );
+    } finally {
+      if (mounted) setState(() => _isSharing = false);
+    }
+  }
+
+  // 共有中の作品: リンクを送り直すか、共有を停止するかを選ぶ
+  Future<void> _showSharingSheet() async {
+    final shareId = _shareId;
+    if (shareId == null) return;
+
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 0, 20, 4),
+              child: Text(
+                'この作品を共有中です',
+                style: Theme.of(sheetContext).textTheme.titleMedium,
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+              child: SelectableText(
+                ArtworkShareService.buildShareUrl(shareId),
+                style: TextStyle(fontSize: 13, color: Colors.grey[700]),
+              ),
+            ),
+            ListTile(
+              leading: const Icon(Icons.share),
+              title: const Text('リンクをもう一度送る'),
+              onTap: () => Navigator.pop(sheetContext, 'resend'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.link_off, color: Colors.red),
+              title: const Text('共有を停止',
+                  style: TextStyle(color: Colors.red)),
+              subtitle: const Text('このリンクで作品を見られなくなります'),
+              onTap: () => Navigator.pop(sheetContext, 'stop'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (!mounted) return;
+    if (action == 'resend') await _shareArtwork();
+    if (action == 'stop') await _confirmStopSharing();
+  }
+
+  // 確認してから共有を停止する
+  Future<void> _confirmStopSharing() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('共有を停止しますか？'),
+        content: const Text(
+          'このリンクを知っている人は、作品を見られなくなります'
+          '（反映まで1分ほどかかることがあります）。\n'
+          'もう一度共有すると、新しいリンクになります。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('キャンセル'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            child: const Text('停止'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    setState(() => _isSharing = true);
+    try {
+      final updated = await ArtworkStore.stopSharing(widget.artwork);
+      if (!mounted) return;
+      setState(() => _shareId = updated.shareId);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('共有を停止しました')),
+      );
+    } catch (e) {
+      print("❌ 共有の停止に失敗: $e");
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('共有を停止できませんでした: $e')),
       );
     } finally {
       if (mounted) setState(() => _isSharing = false);
@@ -1338,9 +1454,15 @@ _currentTrajectoryIndex = -1;
                       height: 20,
                       child: CircularProgressIndicator(strokeWidth: 2),
                     )
-                  : const Icon(Icons.share),
-              tooltip: '作品を共有',
-              onPressed: _isSharing ? null : _shareArtwork,
+                  // 共有中の作品は、緑の点で分かるようにする
+                  : Badge(
+                      isLabelVisible: _shareId != null,
+                      smallSize: 9,
+                      backgroundColor: Colors.green,
+                      child: const Icon(Icons.share),
+                    ),
+              tooltip: _shareId != null ? '共有中' : '作品を共有',
+              onPressed: _isSharing ? null : _onSharePressed,
             ),
           if (_trajectories.isNotEmpty)
             IconButton(

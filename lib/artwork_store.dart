@@ -141,6 +141,40 @@ class ArtworkStore {
     );
   }
 
+  /// 共有を停止する（停止した後の作品を返す）
+  ///
+  /// 共有データ（位置情報を含む公開データ）を消し、作品に保存した共有 ID も消す。
+  /// もう一度共有すると、新しいランダムな共有 ID（別のリンク）になるため、
+  /// 停止前のリンクは見られないままになる。共有データを消せなかったときは例外
+  static Future<Artwork> stopSharing(Artwork artwork) async {
+    final userId = _userId;
+    final memory = await _loadMemory(userId);
+    final current = memory[artwork.id] ?? artwork;
+    final shareId = current.shareId;
+
+    if (shareId != null) {
+      await _waitForServer(
+        FirebaseFirestore.instance
+            .collection(ArtworkShareService.collectionName)
+            .doc(shareId)
+            .delete(),
+        description: '共有データの削除 ($shareId)',
+      );
+    }
+
+    final updated = current.copyWith(clearShareId: true, updatedAt: DateTime.now());
+    memory[artwork.id] = updated;
+    await _waitForServer(
+      _collection(userId).doc(artwork.id).set({
+        'shareId': null,
+        'updatedAt': Timestamp.fromDate(updated.updatedAt),
+      }, SetOptions(merge: true)),
+      description: '共有 ID の削除 (${artwork.id})',
+    );
+    print('⏹️ 共有を停止しました: ${artwork.id}（$shareId）');
+    return updated;
+  }
+
   /// 作品を削除する
   ///
   /// 作品画像と、共有していれば共有データ（位置情報を含む公開データ）も削除する。

@@ -113,6 +113,20 @@ void main() {
       );
     });
 
+    test('共有を停止すると共有 ID を消せる（ほかの値は変わらない）', () {
+      final shared = artwork(shareId: 'abc');
+      expect(shared.copyWith(updatedAt: DateTime(2026, 11, 27)).shareId, 'abc');
+
+      final stopped = shared.copyWith(clearShareId: true);
+      expect(stopped.shareId, isNull);
+      expect(stopped.toFirestore()['shareId'], isNull);
+      expect(stopped.name, shared.name);
+      expect(stopped.strokes.length, shared.strokes.length);
+      // 停止した作品は、もう一度共有すると新しいランダムな ID になる
+      final data = stopped.toCanvasData({'walk-a': walkA, 'walk-b': walkB});
+      expect(ArtworkShareService.resolveShareId(data), isNot('abc'));
+    });
+
     test('Stroke.listFrom は読めない要素を飛ばす', () {
       final strokes = Stroke.listFrom([
         {'trajectoryId': 'a', 'x': 1, 'y': 2},
@@ -157,7 +171,7 @@ void main() {
     test('共有データを組み立てられる（作品に保存した共有 ID を使う）', () async {
       final data = artwork(shareId: 'saved-share-id')
           .toCanvasData({'walk-a': walkA, 'walk-b': walkB});
-      expect(ArtworkShareService.resolveShareId(data, 'uid'), 'saved-share-id');
+      expect(ArtworkShareService.resolveShareId(data), 'saved-share-id');
 
       final payload = await ArtworkShareService.buildSharePayload(
         data,

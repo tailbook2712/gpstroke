@@ -123,7 +123,13 @@ class Artwork {
   static bool isCurrentFormat(Map<String, dynamic> data) =>
       data['schemaVersion'] == schemaVersion;
 
-  Artwork copyWith({String? shareId, DateTime? updatedAt}) => Artwork(
+  /// 一部を変えた作品。[clearShareId] が true なら共有 ID を消す（共有を停止したとき）
+  Artwork copyWith({
+    String? shareId,
+    bool clearShareId = false,
+    DateTime? updatedAt,
+  }) =>
+      Artwork(
         id: id,
         name: name,
         createdAt: createdAt,
@@ -134,7 +140,7 @@ class Artwork {
         strokes: strokes,
         totalDistanceKm: totalDistanceKm,
         totalSteps: totalSteps,
-        shareId: shareId ?? this.shareId,
+        shareId: clearShareId ? null : (shareId ?? this.shareId),
       );
 
   Map<String, dynamic> toFirestore() => {

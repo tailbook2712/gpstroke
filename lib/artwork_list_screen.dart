@@ -128,14 +128,16 @@ class _ArtworkListScreenState extends State<ArtworkListScreen> {
                       // 長押しで削除（確認ダイアログを挟む）
                       return GestureDetector(
                         onLongPress: () => _confirmDeleteArtwork(artwork),
-                        onTap: () {
-                          Navigator.push(
+                        onTap: () async {
+                          await Navigator.push(
                             context,
                             MaterialPageRoute(
                               builder: (context) =>
                                   ArtworkDetailScreen(artwork: artwork),
                             ),
                           );
+                          // 作品詳細で共有・停止した結果（共有中の印）を反映する
+                          _loadArtworks();
                         },
                         child: Card(
                           elevation: 4,
@@ -147,10 +149,23 @@ class _ArtworkListScreenState extends State<ArtworkListScreen> {
                             children: [
                               // 画像部分 - アスペクト比を維持して表示
                               Expanded(
-                                child: ClipRRect(
-                                  borderRadius: BorderRadius.vertical(
-                                      top: Radius.circular(12)),
-                                  child: _buildImage(artwork),
+                                child: Stack(
+                                  children: [
+                                    Positioned.fill(
+                                      child: ClipRRect(
+                                        borderRadius: BorderRadius.vertical(
+                                            top: Radius.circular(12)),
+                                        child: _buildImage(artwork),
+                                      ),
+                                    ),
+                                    // 共有中（共有リンクで誰でも見られる）作品の印
+                                    if (artwork.shareId != null)
+                                      Positioned(
+                                        top: 6,
+                                        right: 6,
+                                        child: _buildSharedBadge(),
+                                      ),
+                                  ],
                                 ),
                               ),
                               // テキスト部分: 画像の下に表示
@@ -191,6 +206,32 @@ class _ArtworkListScreenState extends State<ArtworkListScreen> {
                     },
                   ),
                 ),
+    );
+  }
+
+  // 共有中の印
+  Widget _buildSharedBadge() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: Colors.green,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: const Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.share, size: 11, color: Colors.white),
+          SizedBox(width: 3),
+          Text(
+            '共有中',
+            style: TextStyle(
+              fontSize: 10,
+              color: Colors.white,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+        ],
+      ),
     );
   }
 
