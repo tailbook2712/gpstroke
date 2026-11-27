@@ -174,12 +174,19 @@ class TrajectoryStore {
     }
   }
 
+  /// その端末で、以前の形式の軌跡の移行（[migrateLegacy]）が終わっているか
+  static Future<bool> hasMigratedLegacy() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool('$_migratedKeyPrefix$_userId') == true;
+  }
+
   /// 以前の形式の軌跡（Firestore の `walking_data` と端末の SQLite）を移す
   ///
   /// 端末ごとに 1 回行う（終わったら印を付ける）。[sync] の後に呼び、
   /// trajectories にまだない軌跡だけを書き込むので、何度実行しても結果は変わらない。
   /// 端末の SQLite も読むのは、Firestore への保存に失敗して端末にしかない軌跡が
-  /// ありうるため。以前のデータは消さない（新しい形式で問題ないことを確かめてから消す）
+  /// ありうるため。以前のデータはここでは消さない（LegacyDataCleanup が、
+  /// 新しい形式がサーバーにあることを確かめてから消す）
   static Future<void> migrateLegacy() async {
     final userId = _userId;
     final prefs = await SharedPreferences.getInstance();

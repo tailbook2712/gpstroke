@@ -8,25 +8,17 @@ class DatabaseHelper {
   // v2: saved_routes テーブルを追加
   static final _databaseVersion = 2;
 
-  static final tableWalkingData = 'walking_data';
-  static final usedTrajectoriesTable = 'used_trajectories';
-  static final usedGarminActivitiesTable = 'used_garmin_activities';
   static final savedRoutesTable = 'saved_routes';
 
-  // walking_data テーブルのカラム
-  static final columnId = '_id';
-  static final columnGroupId = 'group_id';
-  static final columnDate = 'date';
-  static final columnSteps = 'steps';
-  static final columnDistance = 'distance';
-  static final columnPositions = 'positions'; // JSON形式で位置情報を保存
-  static final columnIsFromGarmin = 'is_from_garmin'; // Garminからのインポート判定
+  /// 以前の形式で軌跡を保存していた表（軌跡は Firestore の trajectories に移した）
+  static final tableWalkingData = 'walking_data';
 
-  // used_trajectories テーブルのカラム
-  static final columnUsedTrajectoryGroupId = 'group_id';
-
-  // used_garmin_activities テーブルのカラム
-  static final columnUsedGarminGroupId = 'group_id';
+  /// 以前の形式の表（軌跡と使用済みの記録）。移行が終わった端末では削除する
+  static const List<String> legacyTables = [
+    'walking_data',
+    'used_trajectories',
+    'used_garmin_activities',
+  ];
 
   // saved_routes テーブルのカラム
   static final columnRouteId = '_id';
@@ -81,41 +73,37 @@ class DatabaseHelper {
     ''');
   }
 
+  // 新しく作る DB には、保存ルートの表だけを作る
+  // （軌跡・使用済みの記録の表は以前の形式。以前からある DB には残っているが、
+  // 移行の前に消すとデータを失うため、onUpgrade では消さず dropLegacyTables で消す）
   Future _onCreate(Database db, int version) async {
-    await db.execute('''
-      CREATE TABLE $tableWalkingData (
-        $columnId INTEGER PRIMARY KEY AUTOINCREMENT,
-        $columnGroupId TEXT NOT NULL,
-        $columnDate TEXT NOT NULL,
-        $columnSteps INTEGER NOT NULL,
-        $columnDistance REAL NOT NULL,
-        $columnPositions TEXT NOT NULL,
-        $columnIsFromGarmin INTEGER NOT NULL DEFAULT 0
-      )
-    ''');
-
-    await db.execute('''
-      CREATE TABLE $usedTrajectoriesTable (
-        $columnUsedTrajectoryGroupId TEXT PRIMARY KEY
-      )
-    ''');
-
-    await db.execute('''
-      CREATE TABLE $usedGarminActivitiesTable (
-        $columnUsedGarminGroupId TEXT PRIMARY KEY
-      )
-    ''');
-
     await _createSavedRoutesTable(db);
   }
 
   /// 以前の形式で端末に保存していた軌跡（walking_data テーブルの行）をすべて返す
   ///
   /// 軌跡は Firestore の trajectories に保存するようになったため、
-  /// TrajectoryStore.migrateLegacy が移行のために読むだけに使う
+  /// TrajectoryStore.migrateLegacy が移行のために読むだけに使う。表がなければ空
   Future<List<Map<String, dynamic>>> getLegacyWalkingRows() async {
     Database db = await database;
+    if (!await _tableExists(db, tableWalkingData)) return [];
     return await db.query(tableWalkingData);
+  }
+
+  /// 以前の形式の表を削除する（軌跡の移行が終わった端末で、LegacyDataCleanup が呼ぶ）
+  Future<void> dropLegacyTables() async {
+    Database db = await database;
+    for (final table in legacyTables) {
+      await db.execute('DROP TABLE IF EXISTS $table');
+    }
+  }
+
+  Future<bool> _tableExists(Database db, String table) async {
+    final rows = await db.rawQuery(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+      [table],
+    );
+    return rows.isNotEmpty;
   }
 
   // ルート提案で生成したルートを保存
