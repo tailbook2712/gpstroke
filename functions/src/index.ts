@@ -26,10 +26,11 @@ const DEFAULT_HOST = 'gpstroke.web.app';
 /**
  * CDN（Firebase Hosting）にキャッシュさせる時間（秒）
  *
- * 共有を解除した（作品を削除した）作品は、長くてもこの時間で見られなくなる
+ * 共有を停止した（または作品を削除した）作品は、長くてもこの時間で見られなくなる。
+ * 停止がすぐ反映されるよう短めにしている（その分、Functions と Firestore の読み込みは増える）
  */
-const PAGE_CACHE_SECONDS = 300;
-const IMAGE_CACHE_SECONDS = 3600;
+const PAGE_CACHE_SECONDS = 60;
+const IMAGE_CACHE_SECONDS = 300;
 const NOT_FOUND_CACHE_SECONDS = 60;
 
 /**
