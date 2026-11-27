@@ -10,7 +10,10 @@ import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:image/image.dart' as img;
 import 'package:path_provider/path_provider.dart';
 
+import 'artwork.dart';
 import 'auth_service.dart';
+import 'legacy_canvas_conversion.dart';
+import 'trajectory_store.dart';
 
 /// 途中保存した作品（下書き）の保存・読み込み・削除
 ///
@@ -25,9 +28,23 @@ import 'auth_service.dart';
 /// に保存し（下書きの一覧を読むときに画像まで読まないよう、別のドキュメントにする）、
 /// 端末内にもキャッシュする。下絵がある下書きには `hasGuideImage: true` が入る。
 ///
+/// 下書きは軌跡を参照（`strokes`。要素は Stroke.toMap の形）で持ち、
+/// 保存日時は Timestamp の `updatedAt` に入る。軌跡の座標をコピーで持っていた
+/// 以前の形式の下書きは、読み込んだときに新しい形式に変換して書き足す。
+///
+/// 下書きは件数が少なく 1 件が小さいため、アプリの起動時に [refresh] でサーバーから
+/// すべて読み、以降はメモリに持った一覧を使う（画面を開くたびにサーバーには問い合わせない）。
+///
 /// 各下書きの Map には、下書きを識別する `draftId` が入る。
 class DraftStore {
   DraftStore._();
+
+  /// サーバーから読み込むときに待つ時間
+  static const Duration _serverReadTimeout = Duration(seconds: 20);
+
+  /// 読み込んだ下書き（ID → 下書き）。[_memoryUserId] のユーザーのもの
+  static String? _memoryUserId;
+  static Future<Map<String, Map<String, dynamic>>>? _memory;
 
   /// オフラインのとき、サーバーへの反映を待たずに先へ進むまでの時間
   ///
@@ -45,13 +62,16 @@ class DraftStore {
   /// 下絵画像の長辺の上限（キャンバスは画面幅に合わせて表示するので、これで十分）
   static const int maxGuideImageSide = 1600;
 
-  static DocumentReference<Map<String, dynamic>> _userDoc() {
+  static String _currentUserId() {
     final userId = AuthService().userId;
     if (userId == null) {
       throw StateError('ログインしていないため、下書きを扱えません');
     }
-    return FirebaseFirestore.instance.collection('users').doc(userId);
+    return userId;
   }
+
+  static DocumentReference<Map<String, dynamic>> _userDoc() =>
+      FirebaseFirestore.instance.collection('users').doc(_currentUserId());
 
   static CollectionReference<Map<String, dynamic>> _collection() =>
       _userDoc().collection('drafts');
@@ -64,42 +84,121 @@ class DraftStore {
   static String newDraftId() =>
       'draft_${DateTime.now().toIso8601String().replaceAll(':', '-')}';
 
-  /// 保存されている下書きをすべて読み込む
+  /// 保存されている下書きをすべて返す
   static Future<List<Map<String, dynamic>>> loadAll() async {
-    final drafts = <String, Map<String, dynamic>>{};
+    final memory = await _loadMemory(_currentUserId());
+    return memory.values.map((draft) => Map<String, dynamic>.from(draft)).toList();
+  }
 
-    // Firestore の下書き（オフライン時は端末内のキャッシュから読まれる）
-    CollectionReference<Map<String, dynamic>>? collection;
+  /// サーバーからすべての下書きを読み込む（アプリの起動時に呼ぶ）
+  ///
+  /// 読み込めなかったときは、端末内のキャッシュのまま進む
+  static Future<void> refresh() async {
+    final userId = _currentUserId();
     try {
-      collection = _collection();
-      final snapshot = await collection.get();
-      for (final doc in snapshot.docs) {
-        final data = Map<String, dynamic>.from(doc.data());
-        data['draftId'] = doc.id;
-        data['timestamp'] ??= '不明な日時';
-        drafts[doc.id] = data;
-      }
+      final drafts = await _readAll(userId, Source.server);
+      _memoryUserId = userId;
+      _memory = Future.value(drafts);
+      print('✅ 下書きをサーバーから読み込みました: ${drafts.length}件');
+    } on TimeoutException {
+      print('⏳ 下書きの読み込み: サーバーに接続できないため、端末内のデータを使います');
     } catch (e) {
+      print('❌ 下書きの読み込みエラー: $e');
+    }
+  }
+
+  /// 下書きの保存日時（分からない場合は null）
+  static DateTime? savedAtOf(Map<String, dynamic> draft) =>
+      parseTime(draft['updatedAt']) ?? parseTime(draft['timestamp']);
+
+  static Future<Map<String, Map<String, dynamic>>> _loadMemory(
+      String userId) {
+    if (_memoryUserId != userId) {
+      _memoryUserId = userId;
+      _memory = null;
+    }
+    return _memory ??= _readAll(userId, Source.cache);
+  }
+
+  /// Firestore の下書きと、以前の形式で端末内に保存されている下書きを読む
+  ///
+  /// [source] がサーバーで、読めなかった場合は例外。キャッシュから読めなかった場合は、
+  /// 端末内のファイルの下書きだけを返す。以前の形式の下書きは新しい形式に変換する
+  static Future<Map<String, Map<String, dynamic>>> _readAll(
+      String userId, Source source) async {
+    final collection = FirebaseFirestore.instance
+        .collection('users')
+        .doc(userId)
+        .collection('drafts');
+    final drafts = <String, Map<String, dynamic>>{};
+    final fromFirestore = <String>{};
+    var firestoreRead = false;
+    try {
+      final snapshot = await collection
+          .get(GetOptions(source: source))
+          .timeout(_serverReadTimeout);
+      for (final doc in snapshot.docs) {
+        drafts[doc.id] = Map<String, dynamic>.from(doc.data())
+          ..['draftId'] = doc.id;
+        fromFirestore.add(doc.id);
+      }
+      firestoreRead = true;
+    } catch (e) {
+      if (source == Source.server) rethrow;
       // 読み込めなかった場合も、端末内に残っている下書きは表示する
-      print('❌ Firestoreからの下書き読み込みエラー: $e');
-      collection = null;
+      print('❌ 端末内の下書きの読み込みエラー: $e');
     }
 
-    // 以前の形式で端末内に保存されている下書き
+    // 以前の形式（#145 より前）で端末内に保存されている下書き
+    final legacyFiles = <_LegacyDraft>[];
     for (final legacy in await _loadLegacyFiles()) {
       final draftId = legacy.draftId;
       if (drafts.containsKey(draftId)) {
         // すでに Firestore に移してある（ファイルの削除だけ残っていた）
-        if (collection != null) unawaited(_deleteLegacyFile(legacy.file));
+        if (firestoreRead) unawaited(_deleteLegacyFile(legacy.file));
         continue;
       }
       drafts[draftId] = legacy.data;
-      if (collection != null && legacy.readable) {
-        unawaited(_migrate(collection, legacy));
+      if (legacy.readable) legacyFiles.add(legacy);
+    }
+
+    // 軌跡の座標をコピーで持っている下書きを、軌跡への参照に変換する
+    final legacyIds = [
+      for (final entry in drafts.entries)
+        if (isLegacyDraft(entry.value)) entry.key,
+    ];
+    if (legacyIds.isNotEmpty) {
+      final resolver = LegacyStrokeResolver(await TrajectoryStore.loadAll());
+      for (final id in legacyIds) {
+        drafts[id] = convertLegacyDraft(drafts[id]!, resolver);
+      }
+      // 下書きが参照する軌跡を先に保存する
+      for (final trajectory in resolver.created) {
+        await TrajectoryStore.add(trajectory);
+      }
+      for (final id in legacyIds.where(fromFirestore.contains)) {
+        if (isLegacyDraft(drafts[id]!)) continue; // 読めずに変換できなかった
+        try {
+          // 以前のフィールドは残したまま、新しい形式のフィールドを書き足す
+          await _waitForServer(
+            collection.doc(id).set(
+                Map<String, dynamic>.from(drafts[id]!)..remove('draftId'),
+                SetOptions(merge: true)),
+            description: '以前の形式の下書きの変換 ($id)',
+          );
+          print('✅ 以前の形式の下書きを変換しました: $id');
+        } catch (e) {
+          print('❌ 以前の形式の下書きの書き込みエラー ($id): $e');
+        }
       }
     }
 
-    return drafts.values.toList();
+    if (firestoreRead) {
+      for (final legacy in legacyFiles) {
+        unawaited(_migrate(collection, legacy, drafts[legacy.draftId]!));
+      }
+    }
+    return drafts;
   }
 
   /// 下書きを保存し、保存した下書き（`draftId` 付き）を返す
@@ -145,9 +244,10 @@ class DraftStore {
     );
     print('✅ 下書きをFirestoreに保存しました: $id');
 
+    final saved = {...data, 'draftId': id};
+    (await _loadMemory(_currentUserId()))[id] = saved;
     return {
-      ...data,
-      'draftId': id,
+      ...saved,
       if (guideImageError != null) 'guideImageError': guideImageError,
     };
   }
@@ -197,19 +297,17 @@ class DraftStore {
     // 以前の形式の下書きであれば、端末内のファイルも消す
     final file = await _legacyFileOf(draftId);
     if (file != null) await _deleteLegacyFile(file);
+    (await _loadMemory(_currentUserId())).remove(draftId);
     print('🗑️ 下書きを削除しました: $draftId');
   }
 
   /// 下書きを新しい順に並べ替える（日時が分からないものは末尾）
   static List<Map<String, dynamic>> newestFirst(
       Iterable<Map<String, dynamic>> drafts) {
-    DateTime? savedAt(Map<String, dynamic> draft) =>
-        DateTime.tryParse('${draft['timestamp']}');
-
     return drafts.toList()
       ..sort((a, b) {
-        final timeA = savedAt(a);
-        final timeB = savedAt(b);
+        final timeA = savedAtOf(a);
+        final timeB = savedAtOf(b);
         if (timeA == null && timeB == null) return 0;
         if (timeA == null) return 1;
         if (timeB == null) return -1;
@@ -362,10 +460,11 @@ class DraftStore {
   static Future<void> _migrate(
     CollectionReference<Map<String, dynamic>> collection,
     _LegacyDraft legacy,
+    Map<String, dynamic> converted,
   ) async {
     if (!_migratingIds.add(legacy.draftId)) return;
     try {
-      final data = Map<String, dynamic>.from(legacy.data)
+      final data = Map<String, dynamic>.from(converted)
         ..remove('draftId')
         ..remove('guideImagePath');
 

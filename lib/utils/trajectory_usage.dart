@@ -1,10 +1,14 @@
 import 'package:geolocator/geolocator.dart';
 
+import '../artwork.dart';
+
 /// 軌跡が下書きや完成作品に使われているかを、保存データの中身から求める
 ///
 /// 軌跡の使用は一度きりにする。「使用済み」を消せない印として記録するのではなく、
-/// いま存在する下書き・完成作品が参照している軌跡を使用中とみなすことで、
+/// いま存在する下書き・完成作品が参照している軌跡（strokes）を使用中とみなすことで、
 /// 下書きや作品を削除すれば、その軌跡が自動的に軌跡リストへ戻るようにする。
+/// 座標の署名は、軌跡を参照で持つ前の古いデータを手持ちの軌跡と照合するときに使う
+/// （LegacyStrokeResolver）。
 class TrajectoryUsage {
   TrajectoryUsage._();
 
@@ -45,78 +49,13 @@ class TrajectoryUsage {
     }
   }
 
-  /// 下書き・作品に保存された軌跡 1本から考えられる groupId をすべて返す
+  /// 作品・下書きの strokes に使われている軌跡の ID
   ///
-  /// - 下書きは `groupId`、作品は `details.groupId` に保存している
-  /// - 保存されていない古いデータや、保存時に groupId が分からなかった軌跡は、
-  ///   [groupIdBySignature]（手持ちの軌跡の署名 → groupId）と座標を照合する
-  static Set<String> groupIdsOfSavedTrajectory(
-    Map<dynamic, dynamic> trajectory,
-    Map<String, String> groupIdBySignature,
-  ) {
-    final groupIds = <String>{};
-
-    final saved = trajectory['groupId'];
-    if (saved is String && saved.isNotEmpty) groupIds.add(saved);
-
-    final details = trajectory['details'];
-    if (details is Map) {
-      final savedInDetails = details['groupId'];
-      if (savedInDetails is String && savedInDetails.isNotEmpty) {
-        groupIds.add(savedInDetails);
-      }
-    }
-
-    final signature = signatureOfSavedPositions(trajectory['positions']);
-    final matched = signature == null ? null : groupIdBySignature[signature];
-    if (matched != null) groupIds.add(matched);
-
-    return groupIds;
-  }
-
-  /// 下書きの軌跡をキャンバスに復元するときの groupId（特定できなければ null）
-  static String? groupIdOfDraftTrajectory(
-    Map<dynamic, dynamic> trajectory,
-    Map<String, String> groupIdBySignature,
-  ) {
-    final saved = trajectory['groupId'];
-    if (saved is String && saved.isNotEmpty) return saved;
-    final signature = signatureOfSavedPositions(trajectory['positions']);
-    return signature == null ? null : groupIdBySignature[signature];
-  }
-
-  /// 下書き・作品のキャンバスデータ（`trajectories` を持つ Map）の集まりから、
-  /// 使われている軌跡の groupId の集合を求める
-  static Set<String> usedGroupIds(
-    Iterable<Map<dynamic, dynamic>> canvases,
-    Map<String, String> groupIdBySignature,
-  ) {
-    final groupIds = <String>{};
-    for (final canvas in canvases) {
-      final trajectories = canvas['trajectories'];
-      if (trajectories is! List) continue;
-      for (final trajectory in trajectories.whereType<Map>()) {
-        groupIds
-            .addAll(groupIdsOfSavedTrajectory(trajectory, groupIdBySignature));
-      }
-    }
-    return groupIds;
-  }
-
-  /// 完成作品に使われている軌跡 [usedByArtworks] から、使用済みの表を決め直す
-  ///
-  /// 作品の一覧をサーバーから確かに取得できた（[confirmedByServer]）ときは、
-  /// 表を作品の内容で置き換える。削除された作品の軌跡や、過去に誤って付いた印は
-  /// ここで外れ、軌跡リストに戻る。
-  /// オフラインなどでキャッシュしか読めなかったときは、一覧が欠けているおそれが
-  /// あるので、[current] に足すだけにして何も外さない
-  static Set<String> reconcile({
-    required Set<String> current,
-    required Set<String> usedByArtworks,
-    required bool confirmedByServer,
-  }) {
-    return confirmedByServer
-        ? {...usedByArtworks}
-        : {...current, ...usedByArtworks};
+  /// いま存在する作品・下書きが参照している軌跡を使用中とみなす
+  static Set<String> usedTrajectoryIds(Iterable<Iterable<Stroke>> strokeLists) {
+    return {
+      for (final strokes in strokeLists)
+        for (final stroke in strokes) stroke.trajectoryId,
+    };
   }
 }

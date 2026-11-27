@@ -1,13 +1,15 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 import 'dart:math';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:crypto/crypto.dart';
 import 'package:geolocator/geolocator.dart';
 
+import 'artwork.dart';
+import 'artwork_store.dart';
 import 'auth_service.dart';
+import 'trajectory.dart';
 import 'trajectory_store.dart';
 import 'utils/polyline_codec.dart';
 import 'utils/utils.dart';
@@ -68,10 +70,10 @@ class ArtworkShareService {
     return List.generate(20, (_) => chars[rng.nextInt(chars.length)]).join();
   }
 
-  /// 作品ファイルから共有 ID を決める。
+  /// 作品のキャンバスの状態（Artwork.toCanvasData）から共有 ID を決める。
   ///
   /// 優先順位:
-  /// 1. 作品ファイルの meta に保存済みの shareId（過去に発行したリンクを維持）
+  /// 1. 作品に保存済みの shareId（過去に発行したリンクを維持）
   /// 2. 作品 ID から導出した ID（同じ作品なら常に同じリンク）
   /// 3. 作品 ID が無い古いファイルはランダム ID
   static String resolveShareId(Map<String, dynamic> data, String ownerUid) {
@@ -88,21 +90,24 @@ class ArtworkShareService {
 
   /// 作品の共有リンクを生成する。
   ///
-  /// 1. 作品ファイル（キャンバス状態 JSON）を読み込む
+  /// 1. 作品が参照している軌跡を読み、キャンバスの状態を組み立てる
   /// 2. 各ストロークの記録日時・歩数・距離を補完し、記録順に並べた共有データを作る
   /// 3. Firestore の `shared_artworks/{shareId}` に保存する
-  /// 4. 生成した shareId を作品ファイルの meta に書き戻す（再共有時に同じリンクを使うため）
-  Future<ArtworkShareResult> shareArtwork(File canvasFile) async {
+  /// 4. 共有 ID を作品に保存する（再共有時に同じリンクを使い、作品の削除時に共有データも消すため）
+  Future<ArtworkShareResult> shareArtwork(Artwork artwork) async {
     final uid = _authService.userId;
     if (uid == null) {
       throw StateError('作品を共有するにはログインが必要です');
     }
 
-    final Map<String, dynamic> data =
-        jsonDecode(await canvasFile.readAsString()) as Map<String, dynamic>;
-
-    final meta = (data['meta'] as Map<String, dynamic>?) ?? <String, dynamic>{};
-    final existingShareId = meta['shareId'] as String?;
+    // 同じ画面で共有し直す場合に備え、共有 ID を保存した後の作品を使う
+    final current = await ArtworkStore.get(artwork.id) ?? artwork;
+    final trajectories = <String, Trajectory>{};
+    for (final stroke in current.strokes) {
+      final trajectory = await TrajectoryStore.get(stroke.trajectoryId);
+      if (trajectory != null) trajectories[trajectory.id] = trajectory;
+    }
+    final data = current.toCanvasData(trajectories);
     final shareId = resolveShareId(data, uid);
 
     final payload = await buildSharePayload(
@@ -163,11 +168,9 @@ class ArtworkShareService {
       rethrow;
     }
 
-    // 共有 ID を作品ファイルに保存して、再共有時に同じリンクを再利用する
-    if (existingShareId != shareId) {
-      meta['shareId'] = shareId;
-      data['meta'] = meta;
-      await canvasFile.writeAsString(jsonEncode(data));
+    // 共有 ID を作品に保存して、再共有時に同じリンクを再利用する
+    if (current.shareId != shareId) {
+      await ArtworkStore.setShareId(current.id, shareId);
     }
 
     return ArtworkShareResult(

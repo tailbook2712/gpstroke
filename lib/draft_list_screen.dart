@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
 
 import 'draft_store.dart';
 import 'utils/canvas_scale.dart';
@@ -26,7 +27,10 @@ class DraftListScreen extends StatelessWidget {
             itemCount: drafts.length,
             itemBuilder: (context, index) {
               final draft = drafts[index];
-              final timestamp = draft['timestamp'] ?? '不明な日時';
+              final savedAt = DraftStore.savedAtOf(draft);
+              final timestamp = savedAt == null
+                  ? '日時不明'
+                  : DateFormat('yyyy/MM/dd HH:mm').format(savedAt);
               // 下書きは保存時のスケールで再開されるため、一覧でも分かるようにする
               final scale = (draft['scaleBarDistance'] as num?)?.toDouble();
 
