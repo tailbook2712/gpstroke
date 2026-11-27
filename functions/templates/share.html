@@ -3,11 +3,19 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<title>GPStroke 作品</title>
-<meta name="description" content="日常の歩行の軌跡（ストローク）を集めて描いた GPS アートのスライドショー">
-<meta property="og:title" content="GPStroke で歩いて描いた作品">
-<meta property="og:description" content="歩いた軌跡を集めて描いた GPS アートです。各ストロークがいつ・どこで歩いたものかをアニメーションで見られます。">
+<!--
+  作品の共有ページのテンプレート。Cloud Functions（functions/src/index.ts）が
+  {{...}} を埋めて返す（SNS のクローラーは JavaScript を実行しないため、
+  OGP の meta タグと共有データはサーバー側で埋め込む）
+-->
+<title>{{TITLE}}</title>
+<meta name="description" content="{{DESCRIPTION}}">
+<meta property="og:title" content="{{TITLE}}">
+<meta property="og:description" content="{{DESCRIPTION}}">
 <meta property="og:type" content="website">
+<meta property="og:url" content="{{PAGE_URL}}">
+<meta property="og:image" content="{{IMAGE_URL}}">
+<meta property="og:site_name" content="GPStroke">
 <meta name="twitter:card" content="summary">
 <style>
   :root {
@@ -244,21 +252,22 @@
 </div>
 <div id="status"><div><div class="spinner"></div><div id="status-text">作品を読み込んでいます…</div></div></div>
 
+<!-- 共有データ（作品が見つからない場合は null） -->
+<script id="share-data" type="application/json">{{SHARE_DATA}}</script>
 <script>
 /* =========================================================================
  * 設定
  * ---------------------------------------------------------------------- */
 const CONFIG = {
-  // Firebase プロジェクト（Firestore REST API の読み取りに使用）
-  FIREBASE_PROJECT_ID: 'walktrackerapp-9e00e',
-  // Firebase の Web API キー（公開前提のキー。Firestore ルール側で保護する）
-  FIREBASE_API_KEY: 'AIzaSyC6DJzKfyXr3Fo7bRZbVC8gImRV_D0w9LM',
   // Google Maps JavaScript API のブラウザ用キー
-  // （Google Cloud Console で「HTTP リファラー: https://tailbook2712.github.io/*」に
-  //   制限した Maps JavaScript API 用キーを発行して設定する。
+  // （Google Cloud Console で「HTTP リファラー: https://gpstroke.web.app/*」と
+  //   「API の制限: Maps JavaScript API」をかけたキーを設定する。
   //   未設定の場合は地図なしでストロークと記録情報のみ再生する）
   MAPS_API_KEY: 'AIzaSyAxCULH__PkKKLl3ZHt_YH7MNSzws3ZYVY',
-  COLLECTION: 'shared_artworks',
+  // Google Maps のマップ ID（JavaScript・ベクター・「回転」を有効にしたもの）
+  // 指定すると、地図の向き（heading）を変えてストロークの回転に合わせる（地名の文字は正立したまま）。
+  // 未設定のときや、ベクター地図を表示できない環境では、地図全体を CSS で回転させる
+  MAP_ID: '59a88af2f342ba3a8ca74a1e',
 };
 
 /* スライドショーのタイミング（ミリ秒、1 倍速時） */
@@ -369,34 +378,17 @@ function screenToLatLng(stroke, sx, sy) {
 }
 
 /* =========================================================================
- * Firestore REST
+ * 共有データ（Cloud Functions がページに埋め込む）
  * ---------------------------------------------------------------------- */
-function fromFirestoreValue(v) {
-  if (v == null) return null;
-  if ('stringValue' in v) return v.stringValue;
-  if ('integerValue' in v) return parseInt(v.integerValue, 10);
-  if ('doubleValue' in v) return v.doubleValue;
-  if ('booleanValue' in v) return v.booleanValue;
-  if ('nullValue' in v) return null;
-  if ('timestampValue' in v) return v.timestampValue;
-  if ('arrayValue' in v) return (v.arrayValue.values || []).map(fromFirestoreValue);
-  if ('mapValue' in v) return fromFirestoreFields(v.mapValue.fields || {});
-  return null;
-}
-function fromFirestoreFields(fields) {
-  const out = {};
-  for (const k of Object.keys(fields)) out[k] = fromFirestoreValue(fields[k]);
-  return out;
-}
-async function fetchSharedArtwork(id) {
-  const url = `https://firestore.googleapis.com/v1/projects/${CONFIG.FIREBASE_PROJECT_ID}` +
-    `/databases/(default)/documents/${CONFIG.COLLECTION}/${encodeURIComponent(id)}?key=${CONFIG.FIREBASE_API_KEY}`;
-  const res = await fetch(url);
-  if (res.status === 404) throw new Error('NOT_FOUND');
-  if (res.status === 403) throw new Error('FORBIDDEN');
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const json = await res.json();
-  return fromFirestoreFields(json.fields || {});
+function readSharedArtwork() {
+  const el = document.getElementById('share-data');
+  if (!el) return null;
+  try {
+    return JSON.parse(el.textContent);
+  } catch (e) {
+    console.error(e);
+    return null;
+  }
 }
 
 /* =========================================================================
@@ -428,6 +420,8 @@ const viewer = {
   // 地図
   map: null, mapPolyline: null, mapsReady: false, mapsFailed: false,
   mapRotation: 0, mapResidualScale: 1, mapEffectScale: 1,
+  vectorMap: false,     // 地図の向き（heading）を変えられるベクター地図か
+  lastCamera: null,     // 最後に合わせたカメラ（地図の種類が決まったときに合わせ直す）
   // 再生
   playing: false, speed: 1, speedOptions: [1, 2, 3],
   currentIndex: -1, run: 0,
@@ -546,7 +540,16 @@ function loadMapsApi() {
         clickableIcons: false,
         isFractionalZoomEnabled: true,
         mapTypeId: 'roadmap',
+        ...(CONFIG.MAP_ID ? { mapId: CONFIG.MAP_ID, heading: 0, tilt: 0 } : {}),
       });
+      // ベクター地図かどうかは、地図の表示が始まってから分かる
+      const updateRenderingType = () => {
+        viewer.vectorMap = !!CONFIG.MAP_ID &&
+          viewer.map.getRenderingType() === google.maps.RenderingType.VECTOR;
+        if (viewer.lastCamera) setCamera(viewer.lastCamera);
+      };
+      viewer.map.addListener('renderingtype_changed', updateRenderingType);
+      updateRenderingType();
     } catch (e) {
       console.warn('Google Maps の初期化に失敗:', e);
       viewer.mapsFailed = true;
@@ -570,7 +573,8 @@ function applyMapTransform() {
  * （artwork_detail_screen.dart の _calculateWebMercatorMapAlignment の移植）
  *  - 中心: ステージ中心に描画される地理座標（オーバーレイ変換の逆算）
  *  - ズーム: 1 mercator ラジアンあたりの表示ピクセル数から算出
- *  - 回転: ストロークの回転角をそのまま地図レイヤーに適用
+ *  - 回転: ストロークの回転角。ベクター地図では地図の向き（heading）で、
+ *          それ以外では地図レイヤーの CSS 回転で合わせる（setCamera）
  */
 function alignedCamera(stroke) {
   const cw = viewer.artwork.canvasWidth, ch = viewer.artwork.canvasHeight;
@@ -582,11 +586,23 @@ function alignedCamera(stroke) {
 
 function setCamera(cam) {
   if (!viewer.map) return;
-  viewer.map.moveCamera({ center: cam.center, zoom: cam.zoom });
+  viewer.lastCamera = cam;
+  viewer.mapRotation = cam.rotation;
+  if (viewer.vectorMap) {
+    // ベクター地図: 地図の向きを変えて回す（地名の文字は正立したまま。アプリと同じ見え方）。
+    // CSS の rotate は時計回り、heading は地図の上が向く方位なので、符号が逆になる
+    const heading = ((-cam.rotation * 180 / Math.PI) % 360 + 360) % 360;
+    viewer.map.moveCamera({ center: cam.center, zoom: cam.zoom, heading, tilt: 0 });
+    // マップ ID で回転が有効になっていないなどで向きが変わらなかったときは、CSS で回す
+    const actualHeading = viewer.map.getHeading();
+    const diff = Math.abs((((actualHeading ?? 0) - heading) % 360 + 540) % 360 - 180);
+    if (diff < 1) viewer.mapRotation = 0;
+  } else {
+    viewer.map.moveCamera({ center: cam.center, zoom: cam.zoom });
+  }
   const actual = viewer.map.getZoom();
   // フラクショナルズームが効かない環境向けに、残差を CSS スケールで補正
   viewer.mapResidualScale = (typeof actual === 'number') ? Math.pow(2, cam.zoom - actual) : 1;
-  viewer.mapRotation = cam.rotation;
   applyMapTransform();
 }
 
@@ -786,24 +802,12 @@ function bindControls() {
 /* ---- 起動 ---- */
 async function main() {
   bindControls();
-  const id = new URLSearchParams(location.search).get('id');
-  if (!id) {
-    setStatus('共有リンクが正しくありません。<br>GPStroke アプリの作品画面から共有されたリンクを開いてください。', false);
+  const doc = readSharedArtwork();
+  if (!doc) {
+    setStatus('作品が見つかりませんでした。<br>共有が解除されたか、リンクが正しくない可能性があります。', false);
     return;
   }
   loadMapsApi();
-  let doc;
-  try {
-    doc = await fetchSharedArtwork(id);
-  } catch (e) {
-    console.error(e);
-    if (e.message === 'NOT_FOUND' || e.message === 'FORBIDDEN') {
-      setStatus('作品が見つかりませんでした。<br>共有が解除されたか、リンクが正しくない可能性があります。', false);
-    } else {
-      setStatus('作品の読み込みに失敗しました。<br>通信環境を確認して再読み込みしてください。', false);
-    }
-    return;
-  }
   if (!doc.strokes || !doc.strokes.length || !doc.canvasWidth || !doc.canvasHeight) {
     setStatus('この作品には再生できるストロークがありません。', false);
     return;

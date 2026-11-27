@@ -2,10 +2,10 @@ rules_version = '2';
 
 // GPStroke Firestore セキュリティルール
 //
-// - users/{userId}/**    : 各ユーザー自身のみ読み書き可能（軌跡・作品・使用済み軌跡）
-// - shared_artworks/{id} : 作品共有機能（docs/share/index.html）向け。
-//                          閲覧ページが未ログインで読み取るため公開読み取りを許可し、
-//                          書き込みは作成者本人（ownerUid が一致）に限定する。
+// - users/{userId}/**    : 各ユーザー自身のみ読み書き可能（軌跡・作品・作品画像・下書き）
+// - shared_artworks/{id} : 作品の共有データ。共有ページ（Cloud Functions の sharePage）が
+//                          管理者の権限で読んで返すため、一般の読み取りは許可しない。
+//                          読み書きは作成者本人（ownerUid が一致）に限定する。
 //
 // デプロイ: `firebase deploy --only firestore:rules`
 // （Firebase コンソールの「Firestore Database > ルール」に貼り付けても可）
@@ -17,8 +17,10 @@ service cloud.firestore {
     }
 
     match /shared_artworks/{shareId} {
-      // 共有リンクを知っている人は誰でも閲覧できる
-      allow get: if true;
+      // 作成者本人だけが読める。存在しない ID は、共有の作成や作品の削除の前に
+      // 確かめられるよう、ログインしていれば読める（存在しないことだけが分かる）
+      allow get: if request.auth != null
+        && (resource == null || resource.data.ownerUid == request.auth.uid);
       // 一覧取得（コレクション全体の列挙）は禁止
       allow list: if false;
 

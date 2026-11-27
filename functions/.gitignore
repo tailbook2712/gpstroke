@@ -1,0 +1,4 @@
+# コンパイル結果（デプロイ時に npm run build で作る）
+lib/
+node_modules/
+*.local
