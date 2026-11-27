@@ -35,10 +35,28 @@ class HealthKitService {
     }
   }
 
-  /// 接続済みか（HealthKit は読み取り許可の状態を返さないため，許可ダイアログの完了を接続とみなす）
+  /// 接続済みか
+  ///
+  /// HealthKit は読み取り許可の状態を返さないため，許可ダイアログの完了を接続とみなす。
+  /// ただし，再インストールなどで HealthKit の許可がリセットされ，まだ尋ねていない
+  /// 種類がある場合は，未接続に戻す（接続済みのままだと，同期が
+  /// 「Authorization not determined」で失敗する）
   Future<bool> isConnected() async {
     final prefs = await SharedPreferences.getInstance();
-    return prefs.getBool(_connectedKey) ?? false;
+    if (!(prefs.getBool(_connectedKey) ?? false)) return false;
+
+    try {
+      final status = await _channel.invokeMethod<String>('authorizationStatus');
+      if (status == 'shouldRequest') {
+        print('⚠️ HealthKit の許可がリセットされているため，未接続に戻します');
+        await prefs.setBool(_connectedKey, false);
+        return false;
+      }
+    } catch (e) {
+      // 判定できないときは，保存済みの状態のまま進める（同期の前にも確認する）
+      print('❌ HealthKit の許可状態の確認エラー: $e');
+    }
+    return true;
   }
 
   /// 初回遷移時の接続確認ダイアログを表示済みか
