@@ -13,6 +13,7 @@ import 'artwork_store.dart';
 import 'auth_service.dart';
 import 'draft_store.dart';
 import 'garmin_import_screen.dart';
+import 'legacy_data_cleanup.dart';
 import 'saved_route_list_screen.dart';
 import 'trajectory.dart';
 import 'trajectory_store.dart';
@@ -271,6 +272,8 @@ class _WalkingTrackerScreenState extends State<WalkingTrackerScreen>
     await ArtworkStore.migrateLocalFiles(); // 端末内にだけある作品を移す（端末ごとに 1 回）
     await DraftStore.refresh();
     await _checkUnfinishedRecording(); // バックグラウンド終了で未保存の記録がないか確認
+    // 移行が終わった以前の形式のデータを片付ける（端末ごとに 1 回）
+    await LegacyDataCleanup.run();
   }
 
   /// 位置情報の許可を確認し、必要ならリクエストする。許可されていれば true。

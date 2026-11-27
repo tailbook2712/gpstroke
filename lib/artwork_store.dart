@@ -29,7 +29,8 @@ import 'trajectory_store.dart';
 /// 画像は端末内にないものだけを取りに行く（[loadImage]）。
 ///
 /// 以前の形式（軌跡の座標をコピーで持ち、画像を base64 で持っていた作品）は、読み込んだ
-/// ときに新しい形式に変換して書き足す。以前のフィールドは消さずに残す。
+/// ときに新しい形式に変換して書き足す。以前のフィールドは、LegacyDataCleanup が
+/// 新しい形式がサーバーにあることを確かめてから消す。
 class ArtworkStore {
   ArtworkStore._();
 
@@ -149,25 +150,6 @@ class ArtworkStore {
 
     await _deleteSharedArtwork(userId, artwork);
 
-    // 以前の形式の作品が持っていた「使った軌跡の記録」（サブコレクション）
-    try {
-      final records = await _collection(userId)
-          .doc(artwork.id)
-          .collection('used_trajectories')
-          .get()
-          .timeout(_serverReadTimeout);
-      if (records.docs.isNotEmpty) {
-        final batch = FirebaseFirestore.instance.batch();
-        for (final doc in records.docs) {
-          batch.delete(doc.reference);
-        }
-        await _waitForServer(batch.commit(),
-            description: '使った軌跡の記録の削除 (${artwork.id})');
-      }
-    } catch (e) {
-      print('❌ 使った軌跡の記録の削除エラー (${artwork.id}): $e');
-    }
-
     try {
       await _waitForServer(_imageDoc(userId, artwork.id).delete(),
           description: '作品画像の削除 (${artwork.id})');
@@ -180,6 +162,7 @@ class ArtworkStore {
     (await _loadMemory(userId)).remove(artwork.id);
 
     // 端末内のキャッシュと、以前の形式で端末に保存していたファイル
+    // （移行前の端末で消さずにおくと、移行のときに作品が作り直されてしまう）
     for (final file in [
       await _imageCacheFile(userId, artwork.id),
       ...await _legacyFilesOf(userId, artwork.id),
@@ -201,10 +184,6 @@ class ArtworkStore {
     final cacheFile = await _imageCacheFile(userId, artworkId);
     if (await cacheFile.exists()) return cacheFile;
 
-    // 以前の形式で端末に保存していた画像
-    final legacyImage = await _legacyImageFile(userId, artworkId);
-    if (await legacyImage.exists()) return legacyImage;
-
     try {
       final snapshot =
           await _imageDoc(userId, artworkId).get().timeout(_serverReadTimeout);
@@ -222,12 +201,18 @@ class ArtworkStore {
     }
   }
 
+  /// その端末で、端末内にだけある作品の移行（[migrateLocalFiles]）が終わっているか
+  static Future<bool> hasMigratedLocalFiles() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool('$_localFilesMigratedKeyPrefix$_userId') == true;
+  }
+
   /// 端末内にだけある作品（以前の形式のファイル）を移す
   ///
   /// 端末ごとに 1 回行う（終わったら印を付ける）。[refresh] でサーバーの作品を
   /// すべて読めたときだけ行い、サーバーにない作品（Firestore への保存に失敗していた作品）
   /// を新しい形式で保存する。サーバーにある作品には、端末のファイルにだけ残っていた
-  /// 共有 ID を書き足す。ファイルは消さない
+  /// 共有 ID を書き足す。ファイルはここでは消さない（LegacyDataCleanup が消す）
   static Future<void> migrateLocalFiles() async {
     final userId = _userId;
     final prefs = await SharedPreferences.getInstance();
@@ -421,6 +406,7 @@ class ArtworkStore {
           await _saveImage(userId, artwork.id, image.bytes);
         }
         // 以前のフィールドは残したまま、新しい形式のフィールドを書き足す
+        // （以前のフィールドは LegacyDataCleanup が消す）
         await _waitForServer(
           _collection(userId)
               .doc(artwork.id)

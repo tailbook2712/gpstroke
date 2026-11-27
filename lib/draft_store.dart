@@ -180,6 +180,7 @@ class DraftStore {
         if (isLegacyDraft(drafts[id]!)) continue; // 読めずに変換できなかった
         try {
           // 以前のフィールドは残したまま、新しい形式のフィールドを書き足す
+          // （以前のフィールドは LegacyDataCleanup が消す）
           await _waitForServer(
             collection.doc(id).set(
                 Map<String, dynamic>.from(drafts[id]!)..remove('draftId'),
